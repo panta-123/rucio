@@ -325,6 +325,66 @@ class FilterEngine:
 
         return query_str
 
+    def create_elastic_query(self, additional_filters={}):
+        """
+        Returns a single elastic query describing the filters expression.
+
+        :param additional_filters: additional filters to be applied to all clauses.
+        :returns: a elastic query string describing the filters expression.
+        """
+        # {'lte', 'gte', 'gt', 'lt', 'ne' or ''}
+        # {gt , gte , lt , lte}
+
+        # Add additional filters, applied as AND clauses to each OR group.
+        #[{'key1': 'value1', 'key2.lte': 'value2'}, {'key3.gte, 'value3'}].
+        #Keypairs in the same dictionary are AND'ed together, dictionaries are OR'ed together
+        for or_group in self._filters:
+            for filter in additional_filters:
+                or_group.append(list(filter))
+
+        or_expressions = []
+        for or_group in self._filters:
+            and_expressions = []
+            for and_group in or_group:
+                key, oper, value = and_group
+                if isinstance(value, str) and any([char in value for char in ['*', '%']]):   # wildcards
+                    if value in ('*', '%', u'*', u'%'):                                      # match wildcard exactly == no filtering on key
+                        continue
+                    else:                                                                    # partial match with wildcard == like || notlike
+                        if oper == operator.eq:
+                            expression = {
+                                key: {
+                                    '$regex': fnmatch.translate(value)                       # translate partial wildcard expression to regex
+                                }
+                            }
+                        elif oper == operator.ne:
+                            expression = {
+                                key: {
+                                    '$not': {
+                                        '$regex': fnmatch.translate(value)                  # translate partial wildcard expression to regex
+                                    }
+                                }
+                            }
+                else:
+                    # mongodb operator keywords follow the same function names as operator package but prefixed with $
+                    expression = {
+                        key: {
+                            '${}'.format(oper.__name__): value
+                        }
+                    }
+
+                and_expressions.append(expression)
+            if len(and_expressions) > 1:                            # $and key must have array as value...
+                or_expressions.append({'and': and_expressions})
+            else:
+                or_expressions.append(and_expressions[0])           # ...otherwise just use the first, and only, entry.
+        if len(or_expressions) > 1:
+            query_str = {'or': or_expressions}                     # $or key must have array as value...
+        else:
+            query_str = or_expressions[0]                           # ...otherwise just use the first, and only, entry.
+
+        return query_str
+
     def create_postgres_query(self, additional_filters={}, fixed_table_columns=('scope', 'name', 'vo'),
                               jsonb_column='data'):
         """

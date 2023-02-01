@@ -279,7 +279,7 @@ class TestDidMetaMongo:
 @pytest.fixture
 def elastic_meta():
     return ElasticDidMeta(
-        host='elastic',
+        host='elasticsearch',
         port=27017,
         index='test_db'
     )

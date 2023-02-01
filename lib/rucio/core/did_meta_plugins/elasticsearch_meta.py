@@ -13,12 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+#
+# Author(s):
+# - Anil Panta <anilpanta2@gmail.con>, 2023
+
+'''
+ Elasticsearch based metadata plugin.
+'''
+
 import operator
 from typing import TYPE_CHECKING
 
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ConnectionError as ElasticConnectionError
 from elasticsearch.helpers import BulkIndexError, bulk
+from elasticsearch.exceptions import (
+        ConnectionError as ElasticConnectionError,
+        TransportError,
+        NotFoundError,
+        RequestError,
+    )
+from elasticsearch_dsl import Search, Q, A
+
 
 from rucio.common import config
 from rucio.common import exception
@@ -36,23 +52,33 @@ IMMUTABLE_KEYS = [
 class ElasticDidMeta(DidMetaPlugin):
     def __init__(self, host=None, port=None, user=None, password=None, index=None):
         super(ElasticDidMeta, self).__init__()
-        if host is None:
-            host = config.config_get('metadata', 'elastic_service_host')
-        if port is None:
-            port = config.config_get('metadata', 'elastic_service_port')
-        if user is None:
-            user = config.config_get('metadata', 'elastic_user')
-        if password is None:
-            password = config.config_get('metadata', 'elastic_password')
+        #if host is None:
+        #    host = config.config_get('metadata', 'elastic_service_host')
+        #if port is None:
+        #    port = config.config_get('metadata', 'elastic_service_port')
+        #if user is None:
+        #    user = config.config_get('metadata', 'elastic_user')
+        #if password is None:
+        #    password = config.config_get('metadata', 'elastic_password')
         if index is None:
-            self.index = config.config_get('metadata', 'metaIndex')
+            self.index = 'test_myelastic'#config.config_get('metadata', 'metaIndex')
         #if mapping is None:
         #    mapping = config_get('metadata', 'mapping')
-        self.__url = "http://{user}:{password}@{host}:{port}"
+        #self.__url = "http://{user}:{password}@{host}:{port}"
+        self.__url = "http://172.21.0.5:9200/"
         self.client = Elasticsearch(self.__url, timeout = timeout)
-
+        
+        try:
+            self.client.indices.exists(self.index)
+        except TransportError as e:
+            try:
+                self.client.indices.create(index=self.index, body={"mappings": None})  # ES7
+            except Exception as e:  # pylint: disable=broad-except
+                raise e
         self.plugin_name = "ELASTIC"
 
+    def drop_index(self):
+        self.client.indices.delete(index=self.index, ignore=[400, 404])
 
     def get_metadata(self, scope, name, *, session: "Optional[Session]" = None):
         """
@@ -98,13 +124,21 @@ class ElasticDidMeta(DidMetaPlugin):
         for key in IMMUTABLE_KEYS:
             if key in meta:
                 meta.pop(key)
-        meta['scope'] = scope.external
-        meta['name'] = name
-        meta['VO'] = scope.vo
         try:
-            self.client.index(index=self.index, body=meta, id=docID, params={"op_type": op_type})
+            doc = self.get_metadata(scope, name)
+            meta.update(doc)
+            try:
+                self.client.index(index=self.index, body=meta, id=docID)#, params={"op_type": op_type})
+            except Exception as e:
+                raise e
         except Exception as e:
-            raise e
+            meta['scope'] = scope.external
+            meta['name'] = name
+            meta['vo'] = scope.vo
+            try:
+                self.client.index(index=self.index, body=meta, id=docID)#, params={"op_type": op_type})
+            except Exception as e:
+                raise e
 
         
     def delete_metadata(self, scope, name, key, *, session: "Optional[Session]" = None):
@@ -116,13 +150,12 @@ class ElasticDidMeta(DidMetaPlugin):
         :param key: the key to be deleted
         """
         docID = "{}:{}".format(scope.internal, name)
-        meta = {key: ""}
+        meta = {"doc": { key: "" } }
         try:
             self.client.update(index=self.index, id=docID,  body=meta)
         except Exception as e:
             raise e
 
-    '''
     def list_dids(self, scope, filters, did_type='collection', ignore_case=False, limit=None,
                   offset=None, long=False, recursive=False, ignore_dids=None, *, session: "Optional[Session]" = None):
         if not ignore_dids:
@@ -134,35 +167,48 @@ class ElasticDidMeta(DidMetaPlugin):
 
         # instantiate fe and create mongo query
         fe = FilterEngine(filters, model_class=None, strict_coerce=False)
-        mongo_query_str = fe.create_mongo_query(
+        elastic_query_str = fe.create_elastic_query(
             additional_filters=[
                 ('scope', operator.eq, scope.internal),
                 ('vo', operator.eq, scope.vo)
             ]
         )
-        # term query for exact match
-        # "filter": [ 
-        # { "term":  { key : value }},
-        #{ "range": { "publish_date": { "gte": "2015-01-01" }}}
-        # and is 
-         q = Q("match", title='python') | Q("match", title='django')
 
-        s = self._Search(self.index)
-        for filter in fe:
-                key : {}
-        for key,value in condDict.items():
-            kwargs = {key:value}
-            s = s.filter('terms', **kwargs)
-        for key,value in greater.items():
-            kwargs = {key :{ 'gte':value}}
-            s = s.filter('range', **kwargs)
-        for key,value in smaller.items():
-            kwargs = {key :{ 'lt':value}}
-            s = s.filter('range', **kwargs)
-        for key,value in smaller.items():
-            kwargs = {key :{ 'lt':value}}
-            s = s.filter('range', **kwargs)
-    '''
+        s = Search(using=self.client)
+        s = s.query(elastic_query_str)
+        if recursive:
+            # TODO: possible, but requires retrieving the results of a concurrent sqla query to call list_content on for datasets and containers
+            raise exception.UnsupportedOperation("'{}' metadata module does not currently support recursive searches".format(
+                self.plugin_name.lower()
+            ))
+
+
+        if long:
+            if limit:
+                # default 10,000 in es
+                s = s[:limit]
+            query_result = s.execute()
+            for did in query_result:
+                did_full = "{}:{}".format(did.scope, did.name)
+                if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
+                    ignore_dids.add(did_full)
+                    yield {
+                        'scope': InternalScope(did.scope),
+                        'name': did.name,
+                        'did_type': "N/A",
+                        'bytes': "N/A",
+                        'length': "N/A"
+                    }
+        else:
+            if limit:
+                # default 10,000 in es
+                s = s[:limit]
+            query_result = s.execute()
+            for did in query_result:
+                did_full = "{}:{}".format(did.scope, did.name)
+                if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
+                    ignore_dids.add(did_full)
+                    yield did.name
 
     def manages_key(self, key, *, session: "Optional[Session]" = None):
         return True

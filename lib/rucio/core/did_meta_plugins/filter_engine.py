@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy
 from sqlalchemy import cast, or_, and_
 from sqlalchemy.sql.expression import text
+from elasticsearch_dsl import Search, Q, A
 
 from rucio.common import exception
 from rucio.common.utils import parse_did_filter_from_string_fe
@@ -41,6 +42,15 @@ OPERATORS_CONVERSION_LUT = {
     "gt": operator.gt,
     "ne": operator.ne,
     "": operator.eq
+}
+
+ELASTIC_OP_MAP = {
+    operator.eq: "=",
+    operator.ne: "!",
+    operator.gt: "gt",
+    operator.lt: "lt",
+    operator.ge: "gte",
+    operator.le: "lte"
 }
 
 # lookup table converting pythonic operators to oracle operators
@@ -337,53 +347,47 @@ class FilterEngine:
 
         # Add additional filters, applied as AND clauses to each OR group.
         #[{'key1': 'value1', 'key2.lte': 'value2'}, {'key3.gte, 'value3'}].
+
         #Keypairs in the same dictionary are AND'ed together, dictionaries are OR'ed together
         for or_group in self._filters:
             for filter in additional_filters:
                 or_group.append(list(filter))
-
-        or_expressions = []
+        should = []
         for or_group in self._filters:
-            and_expressions = []
+            musts= []
+            must_not = []
             for and_group in or_group:
                 key, oper, value = and_group
-                if isinstance(value, str) and any([char in value for char in ['*', '%']]):   # wildcards
+                key = str(key)
+                if isinstance(value, str) and any([char in value for char in ['*', '%']]):
                     if value in ('*', '%', u'*', u'%'):                                      # match wildcard exactly == no filtering on key
-                        continue
+                        q = Q('wildcard', **{key:value})
+                        musts.append(q)
                     else:                                                                    # partial match with wildcard == like || notlike
                         if oper == operator.eq:
-                            expression = {
-                                key: {
-                                    '$regex': fnmatch.translate(value)                       # translate partial wildcard expression to regex
-                                }
-                            }
-                        elif oper == operator.ne:
-                            expression = {
-                                key: {
-                                    '$not': {
-                                        '$regex': fnmatch.translate(value)                  # translate partial wildcard expression to regex
-                                    }
-                                }
-                            }
+                            q = Q('wildcard', **{key:value})
+                            musts.append(q)
+                        if oper == operator.ne:
+                            q = Q('wildcard', **{key:value})
+                            must_not.append(q)
+
                 else:
-                    # mongodb operator keywords follow the same function names as operator package but prefixed with $
-                    expression = {
-                        key: {
-                            '${}'.format(oper.__name__): value
-                        }
-                    }
+                    if oper in [operator.lt, operator.gt,operator.ge, operator.le]: #range query
+                        elsop = ELASTIC_OP_MAP[oper]
+                        q = Q('range', **{key: {elsop : value }})
+                        musts.append(q)
+                    
+                    if oper == operator.eq:
+                        q =  Q('term', **{key:value})
+                        musts.append(q)
+                    if oper == operator.ne:
+                        q = Q('term', **{key:value})
+                        must_not.append(q) 
+            q1 = Q('bool', must=musts, must_not=must_not)
+            should.append(q1)
 
-                and_expressions.append(expression)
-            if len(and_expressions) > 1:                            # $and key must have array as value...
-                or_expressions.append({'and': and_expressions})
-            else:
-                or_expressions.append(and_expressions[0])           # ...otherwise just use the first, and only, entry.
-        if len(or_expressions) > 1:
-            query_str = {'or': or_expressions}                     # $or key must have array as value...
-        else:
-            query_str = or_expressions[0]                           # ...otherwise just use the first, and only, entry.
-
-        return query_str
+        q = Q('bool',should=should)
+        return q
 
     def create_postgres_query(self, additional_filters={}, fixed_table_columns=('scope', 'name', 'vo'),
                               jsonb_column='data'):

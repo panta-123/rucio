@@ -65,7 +65,8 @@ class ElasticDidMeta(DidMetaPlugin):
         #if mapping is None:
         #    mapping = config_get('metadata', 'mapping')
         #self.__url = "http://{user}:{password}@{host}:{port}"
-        self.__url = "http://172.21.0.5:9200/"
+        self.__url = "http://{host}:{port}"
+        #self.__url = "http://172.21.0.5:9200/"
         self.client = Elasticsearch(self.__url, timeout = timeout)
         
         try:

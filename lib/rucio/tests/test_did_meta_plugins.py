@@ -280,7 +280,7 @@ class TestDidMetaMongo:
 def elastic_meta():
     return ElasticDidMeta(
         host='elasticsearch',
-        port=27017,
+        port=9300,
         index='test_db'
     )
 

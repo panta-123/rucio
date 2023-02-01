@@ -286,7 +286,7 @@ def elastic_meta():
 
 
 @skip_rse_tests_with_accounts
-class TestDidElasticMongo:
+class TestDidMetaElastic:
 
     @pytest.mark.dirty
     def test_set_get_metadata(self, mock_scope, root_account, elastic_meta):

@@ -326,7 +326,7 @@ class TestDidMetaElastic:
         elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1)
         elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2)
 
-        dids = mongo_meta.list_dids(mock_scope, {meta_key1: meta_value1})
+        dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1})
         results = sorted(list(dids))
 
         assert len(results) == 2

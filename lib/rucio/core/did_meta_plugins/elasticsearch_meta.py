@@ -75,7 +75,7 @@ class ElasticDidMeta(DidMetaPlugin):
         self.client = Elasticsearch([host], scheme="http",port=port,timeout = timeout)
         
         try:
-            self.client.indices.exists(self.index)
+            self.client.indices.exists(index=self.index)
         except TransportError as e:
             try:
                 self.client.indices.create(index=self.index, body={"mappings": None})  # ES7
@@ -97,7 +97,7 @@ class ElasticDidMeta(DidMetaPlugin):
         """
 
         docID = "{}:{}".format(scope.internal, name)
-        doc = self.client.get(self.index, docID)["_source"]
+        doc = self.client.get(index=self.index, id=docID)["_source"]
         if not doc:
             raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))
         return doc

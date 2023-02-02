@@ -315,7 +315,7 @@ class TestDidMetaElastic:
 
         tmp_dsn2 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account)
-        mongo_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2)
+        elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2)
 
         tmp_dsn3 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn3, did_type="DATASET", account=root_account)

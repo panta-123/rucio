@@ -64,6 +64,8 @@ class ElasticDidMeta(DidMetaPlugin):
         #    password = config.config_get('metadata', 'elastic_password')
         if index is None:
             self.index = 'test_myelastic'#config.config_get('metadata', 'metaIndex')
+        else:
+            self.index = index
         #if mapping is None:
         #    mapping = config_get('metadata', 'mapping')
         #self.__url = "http://{user}:{password}@{host}:{port}"

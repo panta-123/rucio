@@ -276,12 +276,13 @@ class TestDidMetaMongo:
         # assert [{'scope': (tmp_scope), 'name': tmp_dsn4}] == results
         assert [tmp_dsn4] == results
 
+
 @pytest.fixture
 def elastic_meta():
     return ElasticDidMeta(
         host='elasticsearch',
-        port=9300,
-        index='test_db'
+        port=9200,
+        index='test_index'
     )
 
 

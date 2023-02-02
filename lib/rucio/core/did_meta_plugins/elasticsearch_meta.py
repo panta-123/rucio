@@ -42,14 +42,16 @@ from rucio.common.types import InternalScope
 from rucio.core.did_meta_plugins.did_meta_plugin_interface import DidMetaPlugin
 from rucio.core.did_meta_plugins.filter_engine import FilterEngine
 
-timeout = 100 # sec
-IMMUTABLE_KEYS = [ 
+timeout = 100  # sec
+IMMUTABLE_KEYS = [
     'scope',            # generated on insert
     'name',             # generated on insert
     'vo'                # generated on insert
 ]
 
 class ElasticDidMeta(DidMetaPlugin):
+
+
     def __init__(self, host=None, port=None, user=None, password=None, index=None):
         super(ElasticDidMeta, self).__init__()
         #if host is None:
@@ -65,9 +67,10 @@ class ElasticDidMeta(DidMetaPlugin):
         #if mapping is None:
         #    mapping = config_get('metadata', 'mapping')
         #self.__url = "http://{user}:{password}@{host}:{port}"
-        self.__url = "http://{host}:{port}"
+        #self.__url = "http://{host}:{port}"
         #self.__url = "http://172.21.0.5:9200/"
-        self.client = Elasticsearch(self.__url, timeout = timeout)
+        #self.client = Elasticsearch(self.__url, timeout = timeout)
+        self.client = Elasticsearch([host], scheme="http",port=port,timeout = timeout)
         
         try:
             self.client.indices.exists(self.index)
@@ -129,7 +132,7 @@ class ElasticDidMeta(DidMetaPlugin):
             doc = self.get_metadata(scope, name)
             meta.update(doc)
             try:
-                self.client.index(index=self.index, body=meta, id=docID)#, params={"op_type": op_type})
+                self.client.index(index=self.index, body=meta, id=docID)
             except Exception as e:
                 raise e
         except Exception as e:
@@ -137,11 +140,10 @@ class ElasticDidMeta(DidMetaPlugin):
             meta['name'] = name
             meta['vo'] = scope.vo
             try:
-                self.client.index(index=self.index, body=meta, id=docID)#, params={"op_type": op_type})
+                self.client.index(index=self.index, body=meta, id=docID)  # , params={"op_type": op_type})
             except Exception as e:
                 raise e
 
-        
     def delete_metadata(self, scope, name, key, *, session: "Optional[Session]" = None):
         """
         Delete a key from metadata.
@@ -151,9 +153,9 @@ class ElasticDidMeta(DidMetaPlugin):
         :param key: the key to be deleted
         """
         docID = "{}:{}".format(scope.internal, name)
-        meta = {"doc": { key: "" } }
+        meta = {"doc": {key: "" }}
         try:
-            self.client.update(index=self.index, id=docID,  body=meta)
+            self.client.update(index=self.index, id=docID, body=meta)
         except Exception as e:
             raise e
 
@@ -182,7 +184,6 @@ class ElasticDidMeta(DidMetaPlugin):
             raise exception.UnsupportedOperation("'{}' metadata module does not currently support recursive searches".format(
                 self.plugin_name.lower()
             ))
-
 
         if long:
             if limit:

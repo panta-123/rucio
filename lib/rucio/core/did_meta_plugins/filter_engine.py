@@ -354,39 +354,39 @@ class FilterEngine:
                 or_group.append(list(filter))
         should = []
         for or_group in self._filters:
-            musts= []
+            musts = []
             must_not = []
             for and_group in or_group:
                 key, oper, value = and_group
                 key = str(key)
                 if isinstance(value, str) and any([char in value for char in ['*', '%']]):
                     if value in ('*', '%', u'*', u'%'):                                      # match wildcard exactly == no filtering on key
-                        q = Q('wildcard', **{key:value})
+                        q = Q('wildcard', **{key: value})
                         musts.append(q)
                     else:                                                                    # partial match with wildcard == like || notlike
                         if oper == operator.eq:
-                            q = Q('wildcard', **{key:value})
+                            q = Q('wildcard', **{key: value})
                             musts.append(q)
                         if oper == operator.ne:
-                            q = Q('wildcard', **{key:value})
+                            q = Q('wildcard', **{key: value})
                             must_not.append(q)
 
                 else:
-                    if oper in [operator.lt, operator.gt,operator.ge, operator.le]: #range query
+                    if oper in [operator.lt, operator.gt,operator.ge, operator.le]:  # range query
                         elsop = ELASTIC_OP_MAP[oper]
-                        q = Q('range', **{key: {elsop : value }})
+                        q = Q('range', **{key: {elsop: value }})
                         musts.append(q)
-                    
+
                     if oper == operator.eq:
-                        q =  Q('term', **{key:value})
+                        q = Q('term', **{key: value})
                         musts.append(q)
                     if oper == operator.ne:
-                        q = Q('term', **{key:value})
-                        must_not.append(q) 
+                        q = Q('term', **{key: value})
+                        must_not.append(q)
             q1 = Q('bool', must=musts, must_not=must_not)
             should.append(q1)
 
-        q = Q('bool',should=should)
+        q = Q('bool', should=should)
         return q
 
     def create_postgres_query(self, additional_filters={}, fixed_table_columns=('scope', 'name', 'vo'),

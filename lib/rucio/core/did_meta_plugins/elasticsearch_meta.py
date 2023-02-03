@@ -33,6 +33,7 @@ from elasticsearch.exceptions import (
         NotFoundError,
         RequestError,
     )
+
 from elasticsearch_dsl import Search, Q, A
 
 
@@ -76,7 +77,7 @@ class ElasticDidMeta(DidMetaPlugin):
         
         try:
             self.client.indices.exists(index=self.index)
-        except TransportError as e:
+        except Exception as e:
             try:
                 self.client.indices.create(index=self.index, body={"mappings": None})  # ES7
             except Exception as e:  # pylint: disable=broad-except
@@ -134,7 +135,7 @@ class ElasticDidMeta(DidMetaPlugin):
             doc = self.get_metadata(scope, name)
             meta.update(doc)
             try:
-                self.client.index(index=self.index, body=meta, id=docID)
+                self.client.index(index=self.index, document=meta, id=docID)
             except Exception as e:
                 raise e
         except Exception as e:
@@ -142,7 +143,7 @@ class ElasticDidMeta(DidMetaPlugin):
             meta['name'] = name
             meta['vo'] = scope.vo
             try:
-                self.client.index(index=self.index, body=meta, id=docID)  # , params={"op_type": op_type})
+                self.client.index(index=self.index, document=meta, id=docID)  # , params={"op_type": op_type})
             except Exception as e:
                 raise e
 

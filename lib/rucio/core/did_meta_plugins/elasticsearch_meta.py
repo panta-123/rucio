@@ -180,7 +180,7 @@ class ElasticDidMeta(DidMetaPlugin):
             ]
         )
 
-        s = Search(using=self.client)
+        s = Search(using=self.client, index = self.index)
         s = s.query(elastic_query_str)
         if recursive:
             # TODO: possible, but requires retrieving the results of a concurrent sqla query to call list_content on for datasets and containers

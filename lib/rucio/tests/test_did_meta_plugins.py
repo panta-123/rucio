@@ -308,7 +308,7 @@ class TestDidMetaElastic:
         meta_key2 = 'my_key_%s' % generate_uuid()
         meta_value1 = 'my_value_%s' % generate_uuid()
         meta_value2 = 'my_value_%s' % generate_uuid()
-
+        elastic_meta()
         tmp_dsn1 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account)
         elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1)

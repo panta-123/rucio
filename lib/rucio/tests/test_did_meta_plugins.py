@@ -281,7 +281,7 @@ class TestDidMetaMongo:
 class TestDidMetaElastic:
 
     @pytest.mark.dirty
-    def test_set_get_metadata(self, mock_scope, root_account, elastic_meta):
+    def test_set_get_metadata(self, mock_scope, root_account):
         """ DID Meta (MONGO): Get/set did meta """
         elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
         did_name = did_name_generator('dataset')
@@ -292,7 +292,7 @@ class TestDidMetaElastic:
         assert elastic_meta.get_metadata(scope=mock_scope, name=did_name)[meta_key] == meta_value
 
     @pytest.mark.dirty
-    def test_list_did_meta(self, mock_scope, root_account, elastic_meta):
+    def test_list_did_meta(self, mock_scope, root_account):
         """ DID Meta (MONGO): List did meta """
         elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
         meta_key1 = 'my_key_%s' % generate_uuid()

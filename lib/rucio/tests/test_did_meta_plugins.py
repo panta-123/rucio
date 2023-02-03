@@ -277,22 +277,13 @@ class TestDidMetaMongo:
         assert [tmp_dsn4] == results
 
 
-@pytest.fixture
-def elastic_meta():
-    return ElasticDidMeta(
-        host='elasticsearch',
-        port=9200,
-        index='test_index'
-    )
-
-
 @skip_rse_tests_with_accounts
 class TestDidMetaElastic:
 
     @pytest.mark.dirty
     def test_set_get_metadata(self, mock_scope, root_account, elastic_meta):
         """ DID Meta (MONGO): Get/set did meta """
-
+        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
         did_name = did_name_generator('dataset')
         meta_key = 'my_key_%s' % generate_uuid()
         meta_value = 'my_value_%s' % generate_uuid()
@@ -303,12 +294,12 @@ class TestDidMetaElastic:
     @pytest.mark.dirty
     def test_list_did_meta(self, mock_scope, root_account, elastic_meta):
         """ DID Meta (MONGO): List did meta """
-
+        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
         meta_key1 = 'my_key_%s' % generate_uuid()
         meta_key2 = 'my_key_%s' % generate_uuid()
         meta_value1 = 'my_value_%s' % generate_uuid()
         meta_value2 = 'my_value_%s' % generate_uuid()
-        elastic_meta()
+
         tmp_dsn1 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account)
         elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1)

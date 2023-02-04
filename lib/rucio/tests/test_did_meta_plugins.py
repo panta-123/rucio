@@ -283,7 +283,7 @@ class TestDidMetaElastic:
     @pytest.mark.dirty
     def test_set_get_metadata(self, mock_scope, root_account):
         """ DID Meta (ELASTIC): Get/set did meta """
-        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
+        elastic_meta= ElasticDidMeta(host='172.21.0.5', port=9200, index='test_index')
         did_name = did_name_generator('dataset')
         meta_key = 'my_key_%s' % generate_uuid()
         meta_value = 'my_value_%s' % generate_uuid()
@@ -294,7 +294,7 @@ class TestDidMetaElastic:
     @pytest.mark.dirty
     def test_list_did_meta(self, mock_scope, root_account):
         """ DID Meta (ELASTIC): List did meta """
-        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
+        elastic_meta= ElasticDidMeta(host='172.21.0.5', port=9200, index='test_index')
         meta_key1 = 'my_key_%s' % generate_uuid()
         meta_key2 = 'my_key_%s' % generate_uuid()
         meta_value1 = 'my_value_%s' % generate_uuid()

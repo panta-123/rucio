@@ -77,9 +77,11 @@ class ElasticDidMeta(DidMetaPlugin):
         
         try:
             print(self.client.indices.exists(index=self.index))
-        except Exception as e:
+        except Exception as e: #  TransportError as e:
             try:
+                print('I am creating index as it doesnot exists')
                 print(self.client.indices.create(index=self.index, body={"mappings": None}))  # ES7
+                print('')
             except Exception as e:  # pylint: disable=broad-except
                 raise e
         self.plugin_name = "ELASTIC"
@@ -211,7 +213,9 @@ class ElasticDidMeta(DidMetaPlugin):
                 s = s[:limit]
             query_result = s.execute()
             print(query_result)
-            for did in query_result:
+            for hit in s:
+                print(hit)
+            for did in s:
                 print(did)
                 did_full = "{}:{}".format(did.scope, did.name)
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs

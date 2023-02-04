@@ -135,7 +135,7 @@ class ElasticDidMeta(DidMetaPlugin):
             doc = self.get_metadata(scope, name)
             meta.update(doc)
             try:
-                self.client.index(index=self.index, document=meta, id=docID)
+                print(self.client.index(index=self.index, document=meta, id=docID))
             except Exception as e:
                 raise e
         except Exception as e:
@@ -143,7 +143,7 @@ class ElasticDidMeta(DidMetaPlugin):
             meta['name'] = name
             meta['vo'] = scope.vo
             try:
-                self.client.index(index=self.index, document=meta, id=docID)  # , params={"op_type": op_type})
+                print(self.client.index(index=self.index, document=meta, id=docID))  # , params={"op_type": op_type})
             except Exception as e:
                 raise e
 

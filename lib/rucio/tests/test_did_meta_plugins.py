@@ -301,23 +301,28 @@ class TestDidMetaElastic:
         meta_value2 = 'my_value_%s' % generate_uuid()
 
         tmp_dsn1 = did_name_generator('dataset')
-        add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account)
-        elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1)
-
+        print(add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account))
+        print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1))
+        print('1st did')
         tmp_dsn2 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account)
-        elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2)
+        print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2))
+        print('2 did')
 
         tmp_dsn3 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn3, did_type="DATASET", account=root_account)
-        elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn3, key=meta_key2, value=meta_value1)
+        print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn3, key=meta_key2, value=meta_value1))
+        print('3 did')
 
         tmp_dsn4 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn4, did_type="DATASET", account=root_account)
-        elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1)
-        elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2)
+        print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1))
+        print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2))
+        print('4 did')
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1})
+        print(dids)
+        print('lis_did')
         results = sorted(list(dids))
 
         assert len(results) == 2

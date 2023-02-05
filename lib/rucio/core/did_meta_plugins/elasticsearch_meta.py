@@ -76,12 +76,10 @@ class ElasticDidMeta(DidMetaPlugin):
         self.client = Elasticsearch([host], scheme="http",port=port,timeout = timeout)
         
         try:
-            print(self.client.indices.exists(index=self.index))
+            self.client.indices.exists(index=self.index)
         except Exception as e: #  TransportError as e:
             try:
-                print('I am creating index as it doesnot exists')
-                print(self.client.indices.create(index=self.index, body={"mappings": None}))  # ES7
-                print('')
+                self.client.indices.create(index=self.index, body={"mappings": None})  # ES7
             except Exception as e:  # pylint: disable=broad-except
                 raise e
         self.plugin_name = "ELASTIC"
@@ -137,7 +135,7 @@ class ElasticDidMeta(DidMetaPlugin):
             doc = self.get_metadata(scope, name)
             meta.update(doc)
             try:
-                print(self.client.index(index=self.index, document=meta, id=docID))
+                self.client.index(index=self.index, document=meta, id=docID)
             except Exception as e:
                 raise e
         except Exception as e:
@@ -145,7 +143,7 @@ class ElasticDidMeta(DidMetaPlugin):
             meta['name'] = name
             meta['vo'] = scope.vo
             try:
-                print(self.client.index(index=self.index, document=meta, id=docID))  # , params={"op_type": op_type})
+                self.client.index(index=self.index, document=meta, id=docID)  # , params={"op_type": op_type})
             except Exception as e:
                 raise e
 
@@ -177,14 +175,13 @@ class ElasticDidMeta(DidMetaPlugin):
         fe = FilterEngine(filters, model_class=None, strict_coerce=False)
         elastic_query_str = fe.create_elastic_query(
             additional_filters=[
-                ('scope', operator.eq, scope.internal),
+                ('scope', operator.eq, scope.external),
                 ('vo', operator.eq, scope.vo)
             ]
         )
 
         s = Search(using=self.client, index=self.index)
         s = s.query(elastic_query_str)
-        print(s)
         if recursive:
             # TODO: possible, but requires retrieving the results of a concurrent sqla query to call list_content on for datasets and containers
             raise exception.UnsupportedOperation("'{}' metadata module does not currently support recursive searches".format(
@@ -212,11 +209,7 @@ class ElasticDidMeta(DidMetaPlugin):
                 # default 10,000 in es
                 s = s[:limit]
             query_result = s.execute()
-            print(query_result)
-            for hit in s:
-                print(hit)
             for did in s:
-                print(did)
                 did_full = "{}:{}".format(did.scope, did.name)
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)

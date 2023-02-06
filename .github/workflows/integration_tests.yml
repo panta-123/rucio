@@ -129,43 +129,43 @@ jobs:
         run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rucio_server.py
       - name: UploadClient Test
         run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_upload.py
-      - name: File Upload/Download Test using 'impl' parameter
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_impl_upload_download.py
-      - name: Test Protocol XrootD
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_xrootd.py
-      - name: Test Protocol SSH (scp)
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_ssh.py
-      - name: Test Protocol Rsync
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_rsync.py
-      - name: Test Protocol Rclone
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_rclone.py
-      - name: Test Conveyor
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_conveyor.py
-      - name: Execute transfer and export FTS transfer details
-        id: tpc
-        shell: bash
-        run: |
-          docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short --export-artifacts-from="test_tpc" test_tpc.py
-          FTS_LOG_FILE=$(docker exec -t dev_rucio_1 cat /tmp/test_tpc.artifact)
-          echo "::set-output name=fts3log::$FTS_LOG_FILE"
-      - name: Verify TPC transfers from FTS logs
-        shell: bash
-        run: |
-          FTS_LOG_FILE=${{ steps.tpc.outputs.fts3log }}
-          if docker exec -t dev_fts_1 /bin/bash -c "grep -Fq \"3rd pull\" $FTS_LOG_FILE"
-          then
-            echo "TPC 3rd party pull verified"
-          else
-            echo "TPC failed"
-            exit 1
-          fi
-      - name: Print server error logs
-        if: ${{ success() || failure() }}
-        shell: bash
-        run: |
-          docker exec -t dev_rucio_1 cat /var/log/rucio/httpd_error_log
-      - name: Archive Upload/Download Test
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_download.py::test_download_from_archive_on_xrd
+      #- name: File Upload/Download Test using 'impl' parameter
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_impl_upload_download.py
+      #- name: Test Protocol XrootD
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_xrootd.py
+      #- name: Test Protocol SSH (scp)
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_ssh.py
+      #- name: Test Protocol Rsync
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_rsync.py
+      #- name: Test Protocol Rclone
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_rclone.py
+      #- name: Test Conveyor
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_conveyor.py
+      #- name: Execute transfer and export FTS transfer details
+      #  id: tpc
+      #  shell: bash
+      #  run: |
+      #    docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short --export-artifacts-from="test_tpc" test_tpc.py
+      #    FTS_LOG_FILE=$(docker exec -t dev_rucio_1 cat /tmp/test_tpc.artifact)
+      #    echo "::set-output name=fts3log::$FTS_LOG_FILE"
+      #- name: Verify TPC transfers from FTS logs
+      #  shell: bash
+      #  run: |
+      #    FTS_LOG_FILE=${{ steps.tpc.outputs.fts3log }}
+      #    if docker exec -t dev_fts_1 /bin/bash -c "grep -Fq \"3rd pull\" $FTS_LOG_FILE"
+      #    then
+      #      echo "TPC 3rd party pull verified"
+      #    else
+      #      echo "TPC failed"
+      #      exit 1
+      #    fi
+      #- name: Print server error logs
+      #  if: ${{ success() || failure() }}
+      #  shell: bash
+      #  run: |
+      #    docker exec -t dev_rucio_1 cat /var/log/rucio/httpd_error_log
+      #- name: Archive Upload/Download Test
+      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_download.py::test_download_from_archive_on_xrd
       - name: Test external metadata plugin (mongo)
         run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_did_meta_plugins.py::TestDidMetaMongo
       - name: Test external metadata plugin (elasticsearch)

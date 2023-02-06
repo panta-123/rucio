@@ -97,7 +97,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :returns: The metadata for the did
         """
 
-        docID = "{}:{}".format(scope.internal, name)
+        docID = "{}:{}".format(str(scope.internal), str(name))
         doc = self.client.get(index=self.index, id=docID)["_source"]
         if not doc:
             raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))
@@ -126,7 +126,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
-        docID = "{}:{}".format(scope.internal, name)
+        docID = "{}:{}".format(str(scope.internal), str(name))
         op_type = 'create'
         for key in IMMUTABLE_KEYS:
             if key in meta:
@@ -139,9 +139,9 @@ class ElasticDidMeta(DidMetaPlugin):
             except Exception as e:
                 raise e
         except Exception as e:
-            meta['scope'] = scope.external
-            meta['name'] = name
-            meta['vo'] = scope.vo
+            meta['scope'] = str(scope.external)
+            meta['name'] = str(name)
+            meta['vo'] = str(scope.vo)
             try:
                 self.client.index(index=self.index, document=meta, id=docID)  # , params={"op_type": op_type})
             except Exception as e:
@@ -155,7 +155,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: the name of the did
         :param key: the key to be deleted
         """
-        docID = "{}:{}".format(scope.internal, name)
+        docID = "{}:{}".format(str(scope.internal), str(name))
         meta = {"doc": {key: "" }}
         try:
             self.client.update(index=self.index, id=docID, body=meta)
@@ -175,8 +175,8 @@ class ElasticDidMeta(DidMetaPlugin):
         fe = FilterEngine(filters, model_class=None, strict_coerce=False)
         elastic_query_str = fe.create_elastic_query(
             additional_filters=[
-                ('scope', operator.eq, scope.external),
-                ('vo', operator.eq, scope.vo)
+                ('scope', operator.eq, str(scope.external)),
+                ('vo', operator.eq, str(scope.vo))
             ]
         )
 
@@ -194,12 +194,12 @@ class ElasticDidMeta(DidMetaPlugin):
                 s = s[:limit]
             query_result = s.execute()
             for did in query_result:
-                did_full = "{}:{}".format(did.scope, did.name)
+                did_full = "{}:{}".format(str(did.scope), str(did.name))
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)
                     yield {
                         'scope': InternalScope(did.scope),
-                        'name': did.name,
+                        'name': str(did.name),
                         'did_type': "N/A",
                         'bytes': "N/A",
                         'length': "N/A"
@@ -210,7 +210,7 @@ class ElasticDidMeta(DidMetaPlugin):
                 s = s[:limit]
             query_result = s.execute()
             for did in s:
-                did_full = "{}:{}".format(did.scope, did.name)
+                did_full = "{}:{}".format(str(did.scope), str(did.name))
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)
                     yield did.name

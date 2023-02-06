@@ -84,7 +84,7 @@ class ElasticDidMeta(DidMetaPlugin):
                 raise e
         self.plugin_name = "ELASTIC"
 
-    def client(self):
+    def sclient(self):
         return self.client
 
     def drop_index(self):

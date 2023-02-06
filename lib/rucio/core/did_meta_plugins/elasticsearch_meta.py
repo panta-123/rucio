@@ -84,6 +84,9 @@ class ElasticDidMeta(DidMetaPlugin):
                 raise e
         self.plugin_name = "ELASTIC"
 
+    def client(self):
+        return self.client
+
     def drop_index(self):
         self.client.indices.delete(index=self.index, ignore=[400, 404])
 

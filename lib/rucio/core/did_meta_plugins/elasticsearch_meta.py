@@ -192,7 +192,7 @@ class ElasticDidMeta(DidMetaPlugin):
             if limit:
                 # default 10,000 in es
                 s = s[:limit]
-            query_result = s.execute()
+            query_result =s.scan()  #  s.execute()
             for did in query_result:
                 did_full = "{}:{}".format(str(did.scope), str(did.name))
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
@@ -208,8 +208,8 @@ class ElasticDidMeta(DidMetaPlugin):
             if limit:
                 # default 10,000 in es
                 s = s[:limit]
-            query_result = s.execute()
-            for did in s:
+            query_result = s.scan()  #  s.execute()
+            for did in query_result:
                 did_full = "{}:{}".format(str(did.scope), str(did.name))
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)

@@ -304,26 +304,32 @@ class TestDidMetaElastic:
         print(add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1))
         print('1st did')
+        print(elastic_meta.getalldoc())
         tmp_dsn2 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2))
         print('2 did')
+        print(elastic_meta.getalldoc())
 
         tmp_dsn3 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn3, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn3, key=meta_key2, value=meta_value1))
         print('3 did')
+        print(elastic_meta.getalldoc())
 
         tmp_dsn4 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn4, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2))
         print('4 did')
+        print(elastic_meta.getalldoc())
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1})
         print('list_dids')
         print(list(dids))
-        results = sorted(list(dids))
+        results = []
+        for d in dids:
+            results.append(d)
         print(results)
         assert len(results) == 2
 

@@ -84,8 +84,8 @@ class ElasticDidMeta(DidMetaPlugin):
                 raise e
         self.plugin_name = "ELASTIC"
 
-    def sclient(self):
-        return self.client
+    #def sclient(self):
+    #    return self.client
 
     def drop_index(self):
         self.client.indices.delete(index=self.index, ignore=[400, 404])
@@ -221,12 +221,12 @@ class ElasticDidMeta(DidMetaPlugin):
     def manages_key(self, key, *, session: "Optional[Session]" = None):
         return True
 
-    def getalldoc(self):
-        res = self.client.search(index=self.index, body = {
-        'size' : 100,
-        'query': {
-        'match_all' : {}}})
-        return res
+    #def getalldoc(self):
+    #    res = self.client.search(index=self.index, body = {
+    #    'size' : 100,
+    #    'query': {
+    #    'match_all' : {}}})
+    #    return res
 
     def get_plugin_name(self):
         """

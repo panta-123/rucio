@@ -146,8 +146,11 @@ class ElasticDidMeta(DidMetaPlugin):
             meta['scope'] = str(scope.external)
             meta['name'] = str(name)
             meta['vo'] = str(scope.vo)
+            meta2 = {}
+            for key, value in meta.items():
+                meta2[str(key)] = value
             try:
-                self.client.index(index=self.index, document=meta, id=docID)  # , params={"op_type": op_type})
+                self.client.index(index=self.index, document=meta2, id=docID)  # , params={"op_type": op_type})
             except Exception as e:
                 raise e
 

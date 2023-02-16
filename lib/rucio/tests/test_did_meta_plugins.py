@@ -303,8 +303,7 @@ class TestDidMetaElastic:
     @pytest.mark.dirty
     def test_list_did_meta(self, mock_scope, root_account):
         """ DID Meta (ELASTIC): List did meta """
-        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index2')
-        #print(elastic_meta.sclient().indices.stats(index='test_index2'))
+        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
             
         meta_key1 = 'my_key_%s' % generate_uuid()
         meta_key2 = 'my_key_%s' % generate_uuid()
@@ -314,38 +313,22 @@ class TestDidMetaElastic:
         tmp_dsn1 = did_name_generator('dataset')
         print(add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1))
-        #x = "{}:{}".format(str(mock_scope.internal), str(tmp_dsn1))
-        #doc = elastic_meta.sclient().get(index='test_index' id=x)["_source"]
-        #print(doc)
         print('1st did')
-        #print(elastic_meta.getalldoc())
         tmp_dsn2 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2))
-        #x = "{}:{}".format(str(mock_scope.internal), str(tmp_dsn2))
-        #doc = elastic_meta.sclient().get(index='test_index' id=x)["_source"]
-        #print(doc)
-        #print('2 did')
-        #print(elastic_meta.getalldoc())
+
 
         tmp_dsn3 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn3, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn3, key=meta_key2, value=meta_value1))
-        #x = "{}:{}".format(str(mock_scope.internal), str(tmp_dsn3))
-        #doc = elastic_meta.sclient().get(index='test_index' id=x)["_source"]
-        #print(doc)
         print('3 did')
-        #print(elastic_meta.getalldoc())
 
         tmp_dsn4 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn4, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2))
-        #x = "{}:{}".format(str(mock_scope.internal), str(tmp_dsn4))
-        #doc = elastic_meta.sclient().get(index='test_index' id=x)["_source"]
-        #print(doc)
         print('4 did')
-        #print(elastic_meta.getalldoc())
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1})
         print('list_dids')

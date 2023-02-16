@@ -291,7 +291,6 @@ class TestDidMetaElastic:
         elastic_meta.set_metadata(scope=mock_scope, name=did_name, key=meta_key, value=meta_value)
         assert elastic_meta.get_metadata(scope=mock_scope, name=did_name)[meta_key] == meta_value
 
-        elastic_meta= ElasticDidMeta(host='elasticsearch', port=9200, index='test_index')
         did_name2 = did_name_generator('dataset')
         meta_key2 = 'my_key_%s' % generate_uuid()
         meta_value2 = 'my_value_%s' % generate_uuid()

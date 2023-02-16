@@ -23,6 +23,7 @@
 
 import operator
 from typing import TYPE_CHECKING
+import hashlib
 
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ConnectionError as ElasticConnectionError
@@ -100,7 +101,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :returns: The metadata for the did
         """
 
-        docID = "{}:{}".format(str(scope.internal), str(name))
+        docID = "{}{}".format(str(scope.internal), str(name))
         doc = self.client.get(index=self.index, id=docID)["_source"]
         if not doc:
             raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))
@@ -129,7 +130,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
-        docID = "{}:{}".format(str(scope.internal), str(name))
+        docID = "{}{}".format(str(scope.internal), str(name))
         op_type = 'create'
         for key in IMMUTABLE_KEYS:
             if key in meta:
@@ -158,7 +159,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: the name of the did
         :param key: the key to be deleted
         """
-        docID = "{}:{}".format(str(scope.internal), str(name))
+        docID = "{}{}".format(str(scope.internal), str(name))
         meta = {"doc": {key: "" }}
         try:
             self.client.update(index=self.index, id=docID, body=meta)

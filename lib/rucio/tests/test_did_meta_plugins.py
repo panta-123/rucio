@@ -312,11 +312,13 @@ class TestDidMetaElastic:
         tmp_dsn1 = did_name_generator('dataset')
         print(add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1))
+        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn1))
         print(tmp_dsn1)
         print('1st did')
         tmp_dsn2 = did_name_generator('dataset')
         print(add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2))
+        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn2))
         print('2 did')
         print(tmp_dsn2)
 
@@ -324,6 +326,7 @@ class TestDidMetaElastic:
         tmp_dsn3 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn3, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn3, key=meta_key2, value=meta_value1))
+        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn3))
         print(tmp_dsn3)
         print('3 did')
         
@@ -331,7 +334,9 @@ class TestDidMetaElastic:
         tmp_dsn4 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn4, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1))
+        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn4))
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2))
+        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn4))
         print(tmp_dsn4)
         print('4 did')
 

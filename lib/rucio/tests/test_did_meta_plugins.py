@@ -334,7 +334,7 @@ class TestDidMetaElastic:
         tmp_dsn4 = did_name_generator('dataset')
         add_did(scope=mock_scope, name=tmp_dsn4, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key1, value=meta_value1))
-        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn4))
+        print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn4))  # show
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn4, key=meta_key2, value=meta_value2))
         print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn4))
         print(tmp_dsn4)

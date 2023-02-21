@@ -345,7 +345,7 @@ class TestDidMetaElastic:
         print(list(dids))
         print({meta_key1: meta_value1})
         results = []
-        for d in dids:
+        for d in list(dids):
             results.append(d)
         print(results)
         assert len(results) == 2
@@ -356,7 +356,7 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value2})
         results = []
-        for d in dids:
+        for d in list(dids):
             results.append(d)
         assert len(results) == 1
         # assert [{'scope': (tmp_scope), 'name': str(tmp_dsn2)}] == results
@@ -364,7 +364,7 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key2: meta_value1})
         results = []
-        for d in dids:
+        for d in list(dids):
             results.append(d)
         assert len(results) == 1
         # assert [{'scope': (tmp_scope), 'name': tmp_dsn3}] == results
@@ -372,7 +372,7 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1, meta_key2: meta_value2})
         results = []
-        for d in dids:
+        for d in list(dids):
             results.append(d)
         assert len(results) == 1
         # assert [{'scope': (tmp_scope), 'name': tmp_dsn4}] == results

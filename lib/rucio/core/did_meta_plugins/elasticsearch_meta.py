@@ -200,13 +200,13 @@ class ElasticDidMeta(DidMetaPlugin):
                 # default 10,000 in es
                 s = s[:limit]
             query_result =s.scan()  #  s.execute()
-            for did in query_result:
-                did_full = "{}:{}".format(str(did.scope), str(did.name))
+            for did in query_result["hits"]["hits"]:
+                did_full = "{}:{}".format(str(did["_source"]["scope"]), str(did["_source"]["name"]))
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)
                     yield {
-                        'scope': InternalScope(did.scope),
-                        'name': str(did.name),
+                        'scope': InternalScope(did["_source"]["scope"]),
+                        'name': str(did["_source"]["name"]),
                         'did_type': "N/A",
                         'bytes': "N/A",
                         'length': "N/A"
@@ -216,11 +216,11 @@ class ElasticDidMeta(DidMetaPlugin):
                 # default 10,000 in es
                 s = s[:limit]
             query_result = s.scan()  #  s.execute()
-            for did in query_result:
-                did_full = "{}:{}".format(str(did.scope), str(did.name))
+            for did in query_result["hits"]["hits"]:
+                did_full = "{}:{}".format(str(did["_source"]["scope"]), str(did["_source"]["name"]))
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)
-                    yield did.name
+                    yield did["_source"]["name"]
 
     def manages_key(self, key, *, session: "Optional[Session]" = None):
         return True

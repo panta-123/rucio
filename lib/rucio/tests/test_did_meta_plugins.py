@@ -310,13 +310,13 @@ class TestDidMetaElastic:
         meta_value2 = 'my_value_%s' % generate_uuid()
 
         tmp_dsn1 = did_name_generator('dataset')
-        print(add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account))
+        add_did(scope=mock_scope, name=tmp_dsn1, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn1, key=meta_key1, value=meta_value1))
         print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn1))
         print(tmp_dsn1)
         print('1st did')
         tmp_dsn2 = did_name_generator('dataset')
-        print(add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account))
+        add_did(scope=mock_scope, name=tmp_dsn2, did_type="DATASET", account=root_account)
         print(elastic_meta.set_metadata(scope=mock_scope, name=tmp_dsn2, key=meta_key1, value=meta_value2))
         print(elastic_meta.get_metadata(scope=mock_scope, name=tmp_dsn2))
         print('2 did')
@@ -342,10 +342,11 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1})
         print('list_dids')
+        print(type(dids))
         print(list(dids))
         print({meta_key1: meta_value1})
         results = []
-        for d in list(dids):
+        for d in dids:
             results.append(d)
         print(results)
         assert len(results) == 2
@@ -356,7 +357,7 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value2})
         results = []
-        for d in list(dids):
+        for d in dids:
             results.append(d)
         assert len(results) == 1
         # assert [{'scope': (tmp_scope), 'name': str(tmp_dsn2)}] == results
@@ -364,7 +365,7 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key2: meta_value1})
         results = []
-        for d in list(dids):
+        for d in dids:
             results.append(d)
         assert len(results) == 1
         # assert [{'scope': (tmp_scope), 'name': tmp_dsn3}] == results
@@ -372,7 +373,7 @@ class TestDidMetaElastic:
 
         dids = elastic_meta.list_dids(mock_scope, {meta_key1: meta_value1, meta_key2: meta_value2})
         results = []
-        for d in list(dids):
+        for d in dids:
             results.append(d)
         assert len(results) == 1
         # assert [{'scope': (tmp_scope), 'name': tmp_dsn4}] == results

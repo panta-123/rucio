@@ -21,7 +21,7 @@ from rucio.common.constants import RESERVED_KEYS
 from rucio.common.exception import RucioException
 from rucio.common.schema import validate_schema
 from rucio.common.types import InternalAccount, InternalScope
-from rucio.common.utils import api_update_return_dict
+from rucio.common.utils import api_update_return_dict, extract_scope_bulk
 from rucio.core import did, naming_convention, meta as meta_core
 from rucio.core.rse import get_rse_id
 from rucio.db.sqla.constants import DIDType
@@ -724,3 +724,16 @@ def remove_dids_from_followed(dids, account, issuer, *, session: "Session", vo='
 
     account = InternalAccount(account, vo=vo)
     return did.remove_dids_from_followed(dids=dids, account=account, session=session)
+
+@read_session
+def extract_scope_bulk(dids: list, scopes: Optional[list] = None):
+    """
+    Gets a list with dcitionary containing scope and did for all the dids.
+   
+    :param dids: The list of dids to extract scope of.
+    :param scopes: The list of scopes.
+
+    :returns: a list with  dictionary containing scope and did. [{"scope", "<scope>", "did","<did>"}]
+    """
+    result = extract_scope_bulk(dids, scopes=scopes)
+    return result

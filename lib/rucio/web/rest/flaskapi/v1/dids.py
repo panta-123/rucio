@@ -22,12 +22,12 @@ from rucio.api.did import add_did, add_dids, list_content, list_content_history,
     list_files, scope_list, get_did, set_metadata, get_metadata, get_metadata_bulk, set_status, attach_dids, \
     detach_dids, attach_dids_to_dids, get_dataset_by_guid, list_parent_dids, create_did_sample, list_new_dids, \
     resurrect, get_users_following_did, remove_did_from_followed, add_did_to_followed, delete_metadata, \
-    set_metadata_bulk, set_dids_metadata_bulk
+    set_metadata_bulk, set_dids_metadata_bulk, extract_scope_bulk
 from rucio.api.rule import list_replication_rules, list_associated_replication_rules_for_file
 from rucio.common.exception import ScopeNotFound, DatabaseException, DataIdentifierNotFound, DataIdentifierAlreadyExists, \
     DuplicateContent, AccessDenied, KeyNotFound, Duplicate, InvalidValueForKey, UnsupportedStatus, \
     UnsupportedOperation, RSENotFound, RuleNotFound, InvalidMetadata, InvalidPath, FileAlreadyExists, InvalidObject, FileConsistencyMismatch
-from rucio.common.utils import render_json, APIEncoder
+from rucio.common.utils import render_json, APIEncoder, render_json_list
 from rucio.db.sqla.constants import DIDType
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
 from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
@@ -115,6 +115,68 @@ class Scope(ErrorHandlingMethodView):
         except DataIdentifierNotFound as error:
             return generate_http_error_flask(404, error)
 
+class ExactScopeBulk(ErrorHandlingMethodView):
+
+    @check_accept_header_wrapper_flask(['application/json'])
+    def post(self):
+        """
+          ---
+          summary: extract scope.
+          description: extract scope 
+          tags:
+            - Data Identifiers
+          requestBody:
+            content:
+              'application/x-json-stream':
+                schema:
+                  type: object
+                  required:
+                  - dids
+                  properties:
+                    dids:
+                      description: The dids.
+                      type: array
+                      items:
+                        description: A did.
+                        type: string
+                    scopes:
+                      description: The scopes list.
+                      type: array
+                      items:
+                        description: A scope.
+                        type: string
+                        default: None
+                        properties:
+                          name:
+                            description: The name of the did.
+                            type: string
+                          scope:
+                            description: The scope of the did.
+                            type: string
+          responses:
+            200:
+              description: OK
+              content:
+                application/json:
+                  schema:
+                    description: A list of dictionaries containing scope and did.
+                    type: array
+                    items:
+                      type: object
+                      description: list wih scope and did dict.
+            400:
+              description: Cannot decode json parameter list
+        """
+        parameters = json_parameters()
+        dids = param_get(parameters, 'dids')
+        scopes = param_get(parameters, 'scopes', default=None)
+        try:
+            result = extract_scope_bulk(dids, scopes=scopes)
+            return Response(render_json_list(result), 200, content_type='application/json')
+        except ValueError as error:
+            return generate_http_error_flask(400, error, 'Cannot decode json parameter list')
+        except Exception as error:
+            return generate_http_error_flask(500, error)
 
 class Search(ErrorHandlingMethodView):
 
@@ -2154,6 +2216,8 @@ def blueprint():
 
     scope_view = Scope.as_view('scope')
     bp.add_url_rule('/<scope>/', view_func=scope_view, methods=['get', ])
+    scope_view = ExactScopeBulk.as_view('extract_scope')
+    #bp.add_url_rule('/<scope>/', view_func=scope_view, methods=['get', ])
     guid_lookup_view = GUIDLookup.as_view('guid_lookup')
     bp.add_url_rule('/<guid>/guid', view_func=guid_lookup_view, methods=['get', ])
     search_view = Search.as_view('search')

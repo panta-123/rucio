@@ -804,12 +804,6 @@ def extract_scope(did, scopes=None, default_extract=_DEFAULT_EXTRACT):
         extract_scope_convention = default_extract
     return _EXTRACT_SCOPE_ALGORITHMS[extract_scope_convention](did=did, scopes=scopes)
 
-def extract_scope_bulk(dids: list, scopes: Optional[list] = None, default_extract: str = _DEFAULT_EXTRACT):
-    results = []
-    for did in dids:
-        scope, did = extract_scope(did, scopes=scopes, default_extract=default_extract)
-        results.append({"scope": scope, "did": did})
-    return results
 
 def pid_exists(pid):
     """

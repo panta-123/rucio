@@ -117,7 +117,7 @@ class Scope(ErrorHandlingMethodView):
 
 class ExactScopeBulk(ErrorHandlingMethodView):
 
-    @check_accept_header_wrapper_flask(['application/json'])
+    @check_accept_header_wrapper_flask(['application/x-json-stream'])
     def post(self):
         """
           ---
@@ -159,11 +159,18 @@ class ExactScopeBulk(ErrorHandlingMethodView):
               content:
                 application/json:
                   schema:
-                    description: A list of dictionaries containing scope and did.
+                    description:  Line seperated dictionary of scope and name.
                     type: array
                     items:
                       type: object
                       description: list wih scope and did dict.
+                      properties:
+                        scope:
+                          description: The scope of the did.
+                          type: string
+                        name:
+                          description: The name of the did.
+                          type: string
             400:
               description: Cannot decode json parameter list
         """
@@ -171,12 +178,10 @@ class ExactScopeBulk(ErrorHandlingMethodView):
         dids = param_get(parameters, 'dids')
         scopes = param_get(parameters, 'scopes', default=None)
         try:
-            result = extract_scope_bulk(dids, scopes=scopes)
-            return Response(render_json_list(result), 200, content_type='application/json')
+            for did in extract_scope_bulk(dids, scopes=scopes):
+                yield render_json(**did) + '\n'
         except ValueError as error:
             return generate_http_error_flask(400, error, 'Cannot decode json parameter list')
-        except Exception as error:
-            return generate_http_error_flask(500, error)
 
 class Search(ErrorHandlingMethodView):
 
@@ -2216,8 +2221,8 @@ def blueprint():
 
     scope_view = Scope.as_view('scope')
     bp.add_url_rule('/<scope>/', view_func=scope_view, methods=['get', ])
-    scope_view = ExactScopeBulk.as_view('extract_scope')
-    #bp.add_url_rule('/<scope>/', view_func=scope_view, methods=['get', ])
+    extract_scope_view = ExactScopeBulk.as_view('extract_scope')
+    bp.add_url_rule('/extractscope', view_func=extract_scope_view, methods=['post', ])
     guid_lookup_view = GUIDLookup.as_view('guid_lookup')
     bp.add_url_rule('/<guid>/guid', view_func=guid_lookup_view, methods=['get', ])
     search_view = Search.as_view('search')

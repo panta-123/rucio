@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,30 +17,38 @@ import datetime
 import hmac
 import time
 from hashlib import sha1
+from typing import Literal
+from urllib.parse import urlencode, urlparse
 
 import boto3
 from botocore.client import Config
 from dogpile.cache.api import NO_VALUE
 from google.oauth2.service_account import Credentials
-from urllib.parse import urlparse, urlencode
 
-from rucio.common.cache import make_region_memcached
+from rucio.common.cache import MemcacheRegion
 from rucio.common.config import config_get, get_rse_credentials
+from rucio.common.constants import RseAttr
 from rucio.common.exception import UnsupportedOperation
 from rucio.core.monitor import MetricManager
 from rucio.core.rse import get_rse_attribute
 
 CREDS_GCS = None
 
-REGION = make_region_memcached(expiration_time=900)
+REGION = MemcacheRegion(expiration_time=900)
 METRICS = MetricManager(module=__name__)
 
 
-def get_signed_url(rse_id: str, service: str, operation: str, url: str, lifetime=600) -> str:
+def get_signed_url(
+        rse_id: str,
+        service: Literal['gsc', 's3', 'swift'],
+        operation: Literal['read', 'write', 'delete'],
+        url: str,
+        lifetime: int = 600
+) -> str:
     """
     Get a signed URL for a particular service and operation.
 
-    The signed URL will be valid for 1 hour but can be overriden.
+    The signed URL will be valid for 1 hour but can be overridden.
 
     :param rse_id: The ID of the RSE that the URL points to.
     :param service: The service to authorise, either 'gcs', 's3' or 'swift'.
@@ -87,8 +94,8 @@ def get_signed_url(rse_id: str, service: str, operation: str, url: str, lifetime
         else:
             # GCS is timezone-sensitive, don't use UTC
             # has to be converted to Unixtime
-            lifetime = datetime.datetime.now() + datetime.timedelta(seconds=lifetime)
-            lifetime = int(time.mktime(lifetime.timetuple()))
+            lifetime_datetime = datetime.datetime.now() + datetime.timedelta(seconds=lifetime)
+            lifetime = int(time.mktime(lifetime_datetime.timetuple()))
 
         # sign the path only
         path = components.path
@@ -112,7 +119,7 @@ def get_signed_url(rse_id: str, service: str, operation: str, url: str, lifetime
         # get RSE S3 URL style (path or host)
         # path-style: https://s3.region-code.amazonaws.com/bucket-name/key-name
         # host-style: https://bucket-name.s3.region-code.amazonaws.com/key-name
-        s3_url_style = get_rse_attribute(rse_id, 's3_url_style')
+        s3_url_style = get_rse_attribute(rse_id, RseAttr.S3_URL_STYLE)
 
         # no S3 URL style specified, assume path-style
         if s3_url_style is None:
@@ -210,7 +217,7 @@ def get_signed_url(rse_id: str, service: str, operation: str, url: str, lifetime
 
         # create signed URL
         with METRICS.timer('signswift'):
-            hmac_body = u'%s\n%s\n%s' % (swiftop, expires, components.path)
+            hmac_body = '%s\n%s\n%s' % (swiftop, expires, components.path)
             # Python 3 hmac only accepts bytes or bytearray
             sig = hmac.new(bytearray(tempurl_key, 'utf-8'), bytearray(hmac_body, 'utf-8'), sha1).hexdigest()
             signed_url = f'https://{host}{components.path}?temp_url_sig={sig}&temp_url_expires={expires}'

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,40 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from re import match
-from datetime import datetime, timedelta
 from configparser import NoSectionError
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta
+from re import match
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from sqlalchemy import or_, select, update
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.exc import IntegrityError, NoResultFound
 
-from rucio.common.config import config_get
-from rucio.common.exception import RucioException, LifetimeExceptionDuplicate, LifetimeExceptionNotFound, UnsupportedOperation, ConfigNotFound
-from rucio.common.utils import generate_uuid, str_to_date
 import rucio.common.policy
+from rucio.common.config import config_get, config_get_int, config_get_list
+from rucio.common.constants import RseAttr
+from rucio.common.exception import ConfigNotFound, LifetimeExceptionDuplicate, LifetimeExceptionNotFound, RucioException, UnsupportedOperation
+from rucio.common.utils import generate_uuid, str_to_date
 from rucio.core.message import add_message
-
 from rucio.core.rse import list_rse_attributes
-
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import DIDType, LifetimeExceptionsState
-from rucio.db.sqla.session import transactional_session, stream_session, read_session
+from rucio.db.sqla.session import read_session, stream_session, transactional_session
 
 if TYPE_CHECKING:
-    from typing import Any, Dict, Iterator, List, Optional, Union
-    from rucio.common.types import InternalAccount, InternalScope
+    from collections.abc import Iterable, Iterator, Sequence
+
     from sqlalchemy.orm import Session
+
+    from rucio.common.types import InternalAccount, InternalScope
 
 
 @stream_session
 def list_exceptions(
-        exception_id: 'Optional[str]',
-        states: 'List[LifetimeExceptionsState]',
+        exception_id: Optional[str],
+        states: Optional['Iterable[LifetimeExceptionsState]'],
         *,
         session: 'Session',
-) -> 'Iterator[Dict[str, Any]]':
+) -> 'Iterator[dict[str, Any]]':
     """
     List exceptions to Lifetime Model.
 
@@ -57,9 +56,9 @@ def list_exceptions(
 
     state_clause = []
     if states:
-        state_clause = [models.LifetimeExceptions.state == state for state in states]
+        state_clause = [models.LifetimeException.state == state for state in states]
 
-    query = select(models.LifetimeExceptions)
+    query = select(models.LifetimeException)
     if state_clause != []:
         query = query.where(or_(*state_clause))
     if exception_id:
@@ -75,14 +74,14 @@ def list_exceptions(
 
 @transactional_session
 def add_exception(
-        dids: 'List[Dict[str, Any]]',
+        dids: "Iterable[dict[str, Any]]",
         account: 'InternalAccount',
-        pattern: 'Optional[str]',
+        pattern: Optional[str],
         comments: str,
-        expires_at: 'Optional[Union[str, datetime]]',
+        expires_at: Optional[Union[str, datetime]],
         *,
         session: 'Session'
-) -> 'Dict[str, Any]':
+) -> dict[str, Any]:
     """
     Add exceptions to Lifetime Model.
 
@@ -99,20 +98,20 @@ def add_exception(
     result = dict()
     result['exceptions'] = dict()
     try:
-        max_extension = config_get('lifetime_model', 'max_extension', default=None, session=session)
+        max_extension = config_get_int('lifetime_model', 'max_extension', session=session)
         if max_extension:
             if not expires_at:
                 expires_at = datetime.utcnow() + timedelta(days=max_extension)
             else:
                 if isinstance(expires_at, str):
                     expires_at = str_to_date(expires_at)
-                if expires_at > datetime.utcnow() + timedelta(days=max_extension):
+                if expires_at and (expires_at > datetime.utcnow() + timedelta(days=max_extension)):
                     expires_at = datetime.utcnow() + timedelta(days=max_extension)
     except (ConfigNotFound, ValueError, NoSectionError):
         max_extension = None
 
     try:
-        cutoff_date = config_get('lifetime_model', 'cutoff_date', default=None, session=session)
+        cutoff_date = config_get('lifetime_model', 'cutoff_date', session=session)
     except (ConfigNotFound, NoSectionError):
         raise UnsupportedOperation('Cannot submit exception at that date.')
     try:
@@ -149,12 +148,12 @@ def add_exception(
 
 @transactional_session
 def __add_exception(
-        dids: 'List[Dict[str, Any]]',
+        dids: 'Sequence[dict[str, Any]]',
         account: 'InternalAccount',
-        pattern: 'Optional[str]',
+        pattern: Optional[str],
         comments: str,
-        expires_at: 'Optional[Union[str, datetime]]',
-        estimated_volume: 'Optional[int]' = None,
+        expires_at: Optional[Union[str, datetime]],
+        estimated_volume: Optional[int] = None,
         *,
         session: 'Session',
 ) -> str:
@@ -202,8 +201,8 @@ def __add_exception(
                 did_type = DIDType[did['did_type']]
             else:
                 did_type = did['did_type']
-        new_exception = models.LifetimeExceptions(id=exception_id, scope=did['scope'], name=did['name'], did_type=did_type,
-                                                  account=account, pattern=pattern, comments=reason, state=LifetimeExceptionsState.WAITING, expires_at=lifetime)
+        new_exception = models.LifetimeException(id=exception_id, scope=did['scope'], name=did['name'], did_type=did_type,
+                                                 account=account, pattern=pattern, comments=reason, state=LifetimeExceptionsState.WAITING, expires_at=lifetime)
         if len(text) < 3000:
             text += '%s %s %s\n' % (str(did_type), did['scope'], did['name'])
         else:
@@ -223,9 +222,7 @@ def __add_exception(
     text += '\n'
     text += 'Approve:   https://rucio-ui.cern.ch/lifetime_exception?id=%s&action=approve\n' % str(exception_id)
     text += 'Deny:      https://rucio-ui.cern.ch/lifetime_exception?id=%s&action=deny\n' % str(exception_id)
-    approvers_email = config_get('lifetime_model', 'approvers_email', default=[], session=session)
-    if approvers_email:
-        approvers_email = approvers_email.split(',')  # pylint: disable=no-member
+    approvers_email = config_get_list('lifetime_model', 'approvers_email', default=[], session=session)
 
     add_message(event_type='email',
                 payload={'body': text, 'to': approvers_email,
@@ -253,9 +250,9 @@ def update_exception(
         raise UnsupportedOperation
 
     query = update(
-        models.LifetimeExceptions
+        models.LifetimeException
     ).where(
-        models.LifetimeExceptions.id == exception_id
+        models.LifetimeException.id == exception_id
     ).values(
         state=state,
         updated_at=datetime.utcnow()
@@ -269,10 +266,10 @@ def update_exception(
 def define_eol(
         scope: 'InternalScope',
         name: str,
-        rses: 'List[Dict[str, Any]]',
+        rses: 'Iterable[dict[str, Any]]',
         *,
         session: 'Session',
-) -> 'Optional[datetime]':
+) -> Optional[datetime]:
     """
     ATLAS policy for rules on SCRATCHDISK
 
@@ -286,7 +283,7 @@ def define_eol(
         return None
 
     # Check if on ATLAS managed space
-    if [rse for rse in rses if list_rse_attributes(rse_id=rse['id'], session=session).get('type') in ['LOCALGROUPDISK', 'LOCALGROUPTAPE', 'GROUPDISK', 'GROUPTAPE']]:
+    if [rse for rse in rses if list_rse_attributes(rse_id=rse['id'], session=session).get(RseAttr.TYPE) in ['LOCALGROUPDISK', 'LOCALGROUPTAPE', 'GROUPDISK', 'GROUPTAPE']]:
         return None
     # Now check the lifetime policy
     try:
@@ -302,11 +299,11 @@ def define_eol(
         return None
     policy_dict = rucio.common.policy.get_lifetime_policy()
     did_type = 'other'
-    if scope.external.startswith('mc'):
+    if scope.external.startswith('mc'):  # type: ignore
         did_type = 'mc'
-    elif scope.external.startswith('data'):
+    elif scope.external.startswith('data'):  # type: ignore
         did_type = 'data'
-    elif scope.external.startswith('valid'):
+    elif scope.external.startswith('valid'):  # type: ignore
         did_type = 'valid'
     else:
         did_type = 'other'

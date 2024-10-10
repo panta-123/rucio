@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
-from typing import Any, Dict, List
 from dataclasses import dataclass
-
-
-ReportDict = Dict[str, Any]
+from enum import Enum
+from typing import Any
 
 
 class Severity(Enum):
@@ -47,10 +43,13 @@ class ReportDiagnostic:
     range_end_char: int
 
     @classmethod
-    def from_dict(cls, obj: Dict[str, Any]):
+    def from_dict(cls, obj: dict[str, Any]):
+        file = obj.get('file')
+        if file is None:
+            file = obj.get('uri', {}).get('_filePath')
         return cls(
             severity=Severity(obj['severity']),
-            file=obj['file'],
+            file=file,
             rule=obj['rule'],
             message=obj['message'],
             range_start_line=obj['range']['start']['line'],
@@ -74,7 +73,7 @@ class ReportSummary:
     time_seconds: float
 
     @classmethod
-    def from_dict(cls, obj: Dict[str, Any]):
+    def from_dict(cls, obj: dict[str, Any]):
         return cls(
             num_files=obj['filesAnalyzed'],
             num_errors=obj['errorCount'],
@@ -87,10 +86,10 @@ class ReportSummary:
 @dataclass
 class Report:
     summary: ReportSummary
-    diagnostics: List[ReportDiagnostic]
+    diagnostics: list[ReportDiagnostic]
 
     @classmethod
-    def from_dict(cls, obj: ReportDict):
+    def from_dict(cls, obj: dict[str, Any]):
         return cls(
             summary=ReportSummary.from_dict(obj['summary']),
             diagnostics=list(map(ReportDiagnostic.from_dict, obj['generalDiagnostics'])),

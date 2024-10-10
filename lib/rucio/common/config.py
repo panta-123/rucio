@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,19 +14,153 @@
 
 """Provides functions to access the local configuration. The configuration locations are provided by get_config_dirs."""
 
-import os
+import configparser
 import json
-import sys
-
-from rucio.common.exception import ConfigNotFound, DatabaseException
-
-import configparser as ConfigParser
+import os
+from typing import TYPE_CHECKING, Any, Optional, TypeVar, Union, overload
 
 from rucio.common import exception
+from rucio.common.exception import ConfigNotFound, DatabaseException
+
+_T = TypeVar('_T')
+_U = TypeVar('_U')
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sqlalchemy.orm import Session
 
 
-def config_get(section, option, raise_exception=True, default=None, clean_cached=False, check_config_table=True,
-               session=None, use_cache=True, expiration_time=900, extract_function=ConfigParser.ConfigParser.get):
+def convert_to_any_type(value: str) -> Union[bool, int, float, str]:
+    if value.lower() in ['true', 'yes', 'on']:
+        return True
+    elif value.lower() in ['false', 'no', 'off']:
+        return False
+
+    for conv in (int, float):
+        try:
+            return conv(value)
+        except:
+            pass
+
+    return value
+
+
+def _convert_to_boolean(value: Union[str, bool]) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ['true', 'yes', 'on', '1']:
+        return True
+    elif value.lower() in ['false', 'no', 'off', '0']:
+        return False
+    raise ValueError('Not a boolean: %s' % value)
+
+
+@overload
+def config_get(
+        section: str,
+        option: str,
+        *,
+        clean_cached: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> str:
+    ...
+
+
+@overload
+def config_get(
+        section: str,
+        option: str,
+        *,
+        default: _T = ...,
+        clean_cached: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> Union[str, _T]:
+    ...
+
+
+@overload
+def config_get(
+        section: str,
+        option: str,
+        raise_exception: bool,
+        default: _T = ...,
+        *,
+        clean_cached: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> Union[str, _T]:
+    ...
+
+
+@overload
+def config_get(
+        section: str,
+        option: str,
+        *,
+        clean_cached: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+        convert_type_fnc: 'Callable[[str], _T]',
+) -> _T:
+    ...
+
+
+@overload
+def config_get(
+        section: str,
+        option: str,
+        *,
+        default: _T = ...,
+        clean_cached: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+        convert_type_fnc: 'Callable[[str], _U]',
+) -> Union[_T, _U]:
+    ...
+
+
+@overload
+def config_get(
+        section: str,
+        option: str,
+        raise_exception: bool,
+        default: _T = ...,
+        *,
+        clean_cached: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+        convert_type_fnc: 'Callable[[str], _U]',
+) -> Union[_T, _U]:
+    ...
+
+
+def config_get(
+        section: str,
+        option: str,
+        raise_exception: bool = True,
+        default: _U = None,
+        clean_cached: bool = False,
+        check_config_table: bool = True,
+        session: "Optional[Session]" = None,
+        use_cache: bool = True,
+        expiration_time: int = 900,
+        convert_type_fnc: 'Callable[[str], _T]' = lambda x: x,
+) -> Union[_T, _U]:
     """
     Return the string value for a given option in a section
 
@@ -46,7 +179,7 @@ def config_get(section, option, raise_exception=True, default=None, clean_cached
                       from server/daemon
     :param expiration_time: Time after that the cached value gets ignored. Only used if not found in config file and if
                             it is called from server/daemon
-    :param extract_function: The method of ConfigParser.ConfigParser to call to retrieve the value.
+    :param convert_type_fnc: A function used to parse the string config value into the desired destination type
 
     :returns: the configuration value.
 
@@ -55,13 +188,13 @@ def config_get(section, option, raise_exception=True, default=None, clean_cached
     :raises RuntimeError
     """
     try:
-        return extract_function(get_config(), section, option)
-    except (ConfigParser.NoOptionError, ConfigParser.NoSectionError, RuntimeError) as err:
+        return convert_type_fnc(get_config().get(section, option))
+    except (configparser.NoOptionError, configparser.NoSectionError, ConfigNotFound) as err:
         try:
-            legacy_config = get_legacy_config(section, option, extract_function)
+            legacy_config = get_legacy_config(section, option)
             if legacy_config is not None:
-                return legacy_config
-        except RuntimeError:
+                return convert_type_fnc(legacy_config)
+        except ConfigNotFound:
             pass
 
         from rucio.common.utils import is_client
@@ -71,7 +204,8 @@ def config_get(section, option, raise_exception=True, default=None, clean_cached
             try:
                 return __config_get_table(section=section, option=option, raise_exception=raise_exception,
                                           default=default, clean_cached=clean_cached, session=session,
-                                          use_cache=use_cache, expiration_time=expiration_time)
+                                          use_cache=use_cache, expiration_time=expiration_time,
+                                          convert_type_fnc=convert_type_fnc)
             except (ConfigNotFound, DatabaseException, ImportError):
                 raise err
         else:
@@ -82,13 +216,12 @@ def config_get(section, option, raise_exception=True, default=None, clean_cached
             return default
 
 
-def get_legacy_config(section, option, extract_function):
+def get_legacy_config(section: str, option: str):
     """
     Returns a legacy config value, if it is present.
 
     :param section: The section of the new config.
     :param option: The option of the new config.
-    :param extract_function: The method of ConfigParser.ConfigParser to call to retrieve the value.
     :returns: The string value of the legacy option if one is found, None otherwise.
     """
     LEGACY_SECTION_NAME = {}
@@ -98,12 +231,12 @@ def get_legacy_config(section, option, extract_function):
     option = LEGACY_OPTION_NAME.get(option, option)
 
     if config_has_option(section, option):
-        return extract_function(get_config(), section, option)
+        return get_config().get(section, option)
 
     return None
 
 
-def config_has_section(section):
+def config_has_section(section: str) -> bool:
     """
     Indicates whether the named section is present in the configuration. The DEFAULT section is not acknowledged.
 
@@ -113,7 +246,7 @@ def config_has_section(section):
     return get_config().has_section(section)
 
 
-def config_has_option(section, option):
+def config_has_option(section: str, option: str) -> bool:
     """
     Indicates whether the named option is present in the configuration. The DEFAULT section is not acknowledged.
 
@@ -124,7 +257,7 @@ def config_has_option(section, option):
     return get_config().has_option(section, option)
 
 
-def config_add_section(section):
+def config_add_section(section: str):
     """
     Add a new section to the configuration object.  Throws DuplicateSectionError if it already exists.
 
@@ -134,8 +267,58 @@ def config_add_section(section):
     return get_config().add_section(section)
 
 
-def config_get_int(section, option, raise_exception=True, default=None, check_config_table=True, session=None,
-                   use_cache=True, expiration_time=900):
+@overload
+def config_get_int(
+        section: str,
+        option: str,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> int:
+    ...
+
+
+@overload
+def config_get_int(
+        section: str,
+        option: str,
+        *,
+        default: int = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> int:
+    ...
+
+
+@overload
+def config_get_int(
+        section: str,
+        option: str,
+        raise_exception: bool,
+        default: _T = ...,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> Union[int, _T]:
+    ...
+
+
+def config_get_int(
+        section: str,
+        option: str,
+        raise_exception: bool = True,
+        default=None,
+        check_config_table: bool = True,
+        session: "Optional[Session]" = None,
+        use_cache: bool = True,
+        expiration_time: int = 900,
+):
     """
     Return the integer value for a given option in a section
 
@@ -157,21 +340,71 @@ def config_get_int(section, option, raise_exception=True, default=None, check_co
     :raises RuntimeError
     :raises ValueError
     """
-    return int(config_get(
+    return config_get(
         section,
         option,
         raise_exception=raise_exception,
         default=default,
         check_config_table=check_config_table,
         session=session,
-        use_cache=True,
+        use_cache=use_cache,
         expiration_time=expiration_time,
-        extract_function=ConfigParser.ConfigParser.getint
-    ))
+        convert_type_fnc=int,
+    )
 
 
-def config_get_float(section, option, raise_exception=True, default=None, check_config_table=True, session=None,
-                     use_cache=True, expiration_time=900):
+@overload
+def config_get_float(
+        section: str,
+        option: str,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> float:
+    ...
+
+
+@overload
+def config_get_float(
+        section: str,
+        option: str,
+        *,
+        default: float = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> float:
+    ...
+
+
+@overload
+def config_get_float(
+        section: str,
+        option: str,
+        raise_exception,
+        default: _T = ...,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> Union[float, _T]:
+    ...
+
+
+def config_get_float(
+        section: str,
+        option: str,
+        raise_exception: bool = True,
+        default=None,
+        check_config_table: bool = True,
+        session: "Optional[Session]" = None,
+        use_cache: bool = True,
+        expiration_time: int = 900,
+):
     """
     Return the floating point value for a given option in a section
 
@@ -194,21 +427,71 @@ def config_get_float(section, option, raise_exception=True, default=None, check_
     :raises RuntimeError
     :raises ValueError
     """
-    return float(config_get(
+    return config_get(
         section,
         option,
         raise_exception=raise_exception,
         default=default,
         check_config_table=check_config_table,
         session=session,
-        use_cache=True,
+        use_cache=use_cache,
         expiration_time=expiration_time,
-        extract_function=ConfigParser.ConfigParser.getfloat
-    ))
+        convert_type_fnc=float,
+    )
 
 
-def config_get_bool(section, option, raise_exception=True, default=None, check_config_table=True, session=None,
-                    use_cache=True, expiration_time=900):
+@overload
+def config_get_bool(
+        section: str,
+        option: str,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> bool:
+    ...
+
+
+@overload
+def config_get_bool(
+        section: str,
+        option: str,
+        *,
+        default: bool = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> bool:
+    ...
+
+
+@overload
+def config_get_bool(
+        section: str,
+        option: str,
+        raise_exception,
+        default: _T = ...,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> Union[bool, _T]:
+    ...
+
+
+def config_get_bool(
+        section: str,
+        option: str,
+        raise_exception: bool = True,
+        default=None,
+        check_config_table: bool = True,
+        session: "Optional[Session]" = None,
+        use_cache: bool = True,
+        expiration_time: int = 900,
+):
     """
     Return the boolean value for a given option in a section
 
@@ -231,21 +514,71 @@ def config_get_bool(section, option, raise_exception=True, default=None, check_c
     :raises RuntimeError
     :raises ValueError
     """
-    return bool(config_get(
+    return config_get(
         section,
         option,
         raise_exception=raise_exception,
         default=default,
         check_config_table=check_config_table,
         session=session,
-        use_cache=True,
+        use_cache=use_cache,
         expiration_time=expiration_time,
-        extract_function=ConfigParser.ConfigParser.getboolean
-    ))
+        convert_type_fnc=_convert_to_boolean,
+    )
 
 
-def config_get_list(section, option, raise_exception=True, default=None, check_config_table=True, session=None,
-                    use_cache=True, expiration_time=900):
+@overload
+def config_get_list(
+        section: str,
+        option: str,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> list[str]:
+    ...
+
+
+@overload
+def config_get_list(
+        section: str,
+        option: str,
+        *,
+        default: list[str] = ...,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> list[str]:
+    ...
+
+
+@overload
+def config_get_list(
+        section: str,
+        option: str,
+        raise_exception,
+        default: _T = ...,
+        *,
+        check_config_table: bool = ...,
+        session: "Optional[Session]" = ...,
+        use_cache: bool = ...,
+        expiration_time: int = ...,
+) -> Union[list[str], _T]:
+    ...
+
+
+def config_get_list(
+        section: str,
+        option: str,
+        raise_exception: bool = True,
+        default=None,
+        check_config_table: bool = True,
+        session: "Optional[Session]" = None,
+        use_cache: bool = True,
+        expiration_time: int = 900,
+):
     """
     Return a list for a given option in a section
 
@@ -268,21 +601,22 @@ def config_get_list(section, option, raise_exception=True, default=None, check_c
     :raises RuntimeError
     :raises ValueError
     """
-    string = config_get(
+    value = config_get(
         section,
         option,
         raise_exception=raise_exception,
         default=default,
         check_config_table=check_config_table,
         session=session,
-        use_cache=True,
+        use_cache=use_cache,
         expiration_time=expiration_time,
-        extract_function=ConfigParser.ConfigParser.get
     )
-    return __convert_string_to_list(string)
+    if isinstance(value, str):
+        value = __convert_string_to_list(value)
+    return value
 
 
-def __convert_string_to_list(string):
+def __convert_string_to_list(string: str) -> list[str]:
     """
     Convert a comma separated string to a list
     :param string: The input string.
@@ -291,12 +625,21 @@ def __convert_string_to_list(string):
     """
     if not string or not string.strip():
         return []
-    string = string.split(',')
-    return [item.strip(' ') for item in string]
+    return [item.strip(' ') for item in string.split(',')]
 
 
-def __config_get_table(section, option, raise_exception=True, default=None, clean_cached=False, session=None,
-                       use_cache=True, expiration_time=900):
+def __config_get_table(
+        section: str,
+        option: str,
+        *,
+        raise_exception: bool = True,
+        default: _T = None,
+        clean_cached: bool = True,
+        session: "Optional[Session]" = None,
+        use_cache: bool = True,
+        expiration_time: int = 900,
+        convert_type_fnc: Optional['Callable[[str], _T]'],
+) -> _T:
     """
     Search for a section-option configuration parameter in the configuration table
 
@@ -317,7 +660,7 @@ def __config_get_table(section, option, raise_exception=True, default=None, clea
     try:
         from rucio.core.config import get as core_config_get
         return core_config_get(section, option, default=default, session=session, use_cache=use_cache,
-                               expiration_time=expiration_time)
+                               expiration_time=expiration_time, convert_type_fnc=convert_type_fnc)
     except (ConfigNotFound, DatabaseException, ImportError) as err:
         if raise_exception and default is None:
             raise err
@@ -326,17 +669,17 @@ def __config_get_table(section, option, raise_exception=True, default=None, clea
         return default
 
 
-def config_get_options(section):
+def config_get_options(section: str) -> list[str]:
     """Return all options from a given section"""
     return get_config().options(section)
 
 
-def config_get_items(section):
+def config_get_items(section: str) -> list[tuple[str, str]]:
     """Return all (name, value) pairs from a given section"""
     return get_config().items(section)
 
 
-def config_remove_option(section, option):
+def config_remove_option(section: str, option: str) -> bool:
     """
     Remove the specified option from a given section.
 
@@ -349,7 +692,7 @@ def config_remove_option(section, option):
     return get_config().remove_option(section, option)
 
 
-def config_set(section, option, value):
+def config_set(section: str, option: str, value: str) -> None:
     """
     Set a configuration option in a given section.
 
@@ -362,45 +705,45 @@ def config_set(section, option, value):
     return get_config().set(section, option, value)
 
 
-def get_config_dirs():
+def get_config_dirs() -> list[str]:
     """
     Returns all available configuration directories in order:
     - $RUCIO_HOME/etc/
     - $VIRTUAL_ENV/etc/
+    - $CONDA_PREFIX/etc
     - /opt/rucio/
     """
     configdirs = []
 
-    if 'RUCIO_HOME' in os.environ:
-        configdirs.append('%s/etc/' % os.environ['RUCIO_HOME'])
-
-    if 'VIRTUAL_ENV' in os.environ:
-        configdirs.append('%s/etc/' % os.environ['VIRTUAL_ENV'])
+    env_vars = ['RUCIO_HOME', 'VIRTUAL_ENV', 'CONDA_PREFIX']
+    configdirs.extend([os.path.join(os.environ[var], 'etc', '') for var in env_vars if var in os.environ])
 
     configdirs.append('/opt/rucio/etc/')
 
     return configdirs
 
 
-def get_lfn2pfn_algorithm_default():
+def get_lfn2pfn_algorithm_default() -> str:
     """Returns the default algorithm name for LFN2PFN translation for this server."""
     default_lfn2pfn = "hash"
     try:
         default_lfn2pfn = config_get('policy', 'lfn2pfn_algorithm_default')
-    except (ConfigParser.NoOptionError, ConfigParser.NoSectionError, RuntimeError):
+    except (configparser.NoOptionError, configparser.NoSectionError, ConfigNotFound, RuntimeError):
         pass
     return default_lfn2pfn
 
 
-def get_rse_credentials(path_to_credentials_file=None):
+def get_rse_credentials(path_to_credentials_file: Optional[Union[str, os.PathLike]] = None) -> dict[str, Any]:
     """ Returns credentials for RSEs. """
 
     path = ''
     if path_to_credentials_file:  # Use specific file for this connect
         path = path_to_credentials_file
     else:  # Use file defined in th RSEMgr
-        path = (os.path.join(confdir, 'rse-accounts.cfg') for confdir in get_config_dirs())
-        path = next(iter(filter(os.path.exists, path)), None)
+        for confdir in get_config_dirs():
+            p = os.path.join(confdir, 'rse-accounts.cfg')
+            if os.path.exists(p):
+                path = p
     try:
         # Load all user credentials
         with open(path) as cred_file:
@@ -413,7 +756,7 @@ def get_rse_credentials(path_to_credentials_file=None):
 __CONFIG = None
 
 
-def get_config():
+def get_config() -> configparser.ConfigParser:
     """Factory function for the configuration class. Returns the ConfigParser instance."""
     global __CONFIG
     if __CONFIG is None:
@@ -421,7 +764,7 @@ def get_config():
     return __CONFIG.parser
 
 
-def clean_cached_config():
+def clean_cached_config() -> None:
     """Deletes the cached config singleton instance."""
     global __CONFIG
     __CONFIG = None
@@ -433,10 +776,7 @@ class Config:
     get_config_dirs or the use of the RUCIO_CONFIG environment variable.
     """
     def __init__(self):
-        if sys.version_info < (3, 2):
-            self.parser = ConfigParser.SafeConfigParser()
-        else:
-            self.parser = ConfigParser.ConfigParser()
+        self.parser = configparser.ConfigParser()
 
         if 'RUCIO_CONFIG' in os.environ:
             self.configfile = os.environ['RUCIO_CONFIG']
@@ -444,11 +784,13 @@ class Config:
             configs = [os.path.join(confdir, 'rucio.cfg') for confdir in get_config_dirs()]
             self.configfile = next(iter(filter(os.path.exists, configs)), None)
             if self.configfile is None:
-                raise RuntimeError('Could not load Rucio configuration file. '
-                                   'Rucio looked in the following paths for a configuration file, in order:'
-                                   '\n\t' + '\n\t'.join(configs))
+                raise ConfigNotFound(
+                    'Could not load Rucio configuration file. '
+                    'Rucio looked in the following paths for a configuration file, in order:'
+                    '\n\t' + '\n\t'.join(configs))
 
         if not self.parser.read(self.configfile) == [self.configfile]:
-            raise RuntimeError('Could not load Rucio configuration file. '
-                               'Rucio tried loading the following configuration file:'
-                               '\n\t' + self.configfile)
+            raise ConfigNotFound(
+                'Could not load Rucio configuration file. '
+                'Rucio tried loading the following configuration file:'
+                '\n\t' + self.configfile)

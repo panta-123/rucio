@@ -35,7 +35,7 @@ Using the standard environment
 
 Run the containers using docker-compose (again might need `sudo`)::
 
-    docker-compose --file etc/docker/dev/docker-compose.yml up -d
+    docker compose --file etc/docker/dev/docker-compose.yml up -d
 
 And verify that it is running properly::
 
@@ -49,27 +49,27 @@ Finally, you can jump into the container with::
 
 To verify that everything is in order, you can now either run the full unit tests or only set up the database. Running the full testing suite takes ~10 minutes::
 
-    tools/run_tests_docker.sh
+    tools/run_tests.sh
 
 Alternatively, you can bootstrap the test environment once with the `-i` option and then selectively or repeatedly run test case modules, test case groups, or even single test cases, for example::
 
-    tools/run_tests_docker.sh -i
-    tools/pytest.sh test_replica.py
-    tools/pytest.sh -vvv test_replica.py::TestReplicaCore
-    tools/pytest.sh -vvv --full-trace test_replica.py::TestReplicaCore::test_delete_replicas_from_datasets
+    tools/run_tests.sh -i
+    tools/pytest.sh tests/test_replica.py
+    tools/pytest.sh -vvv tests/test_replica.py::TestReplicaCore
+    tools/pytest.sh -vvv --full-trace tests/test_replica.py::TestReplicaCore::test_delete_replicas
 
 Using the environment including storage
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Again run the containers using docker-compose::
 
-    docker-compose --file etc/docker/dev/docker-compose-storage.yml up -d
+    docker compose --file etc/docker/dev/docker-compose.yml --profile storage up -d
 
 This should show you a few more running containers: the Rucio server, the PostgreSQL database, FTS and its associated MySQL database, the Graphite monitoring, and three XrootD storage servers.
 
 With this container you can upload and download data to/from the storage and submit data transfers. To set this up, add the `-r` option to the setup.::
 
-    tools/run_tests_docker.sh -ir
+    tools/run_tests.sh -ir
 
 This creates a few random files and uploads them, creates a few datasets and containers, and requests a replication rule for the container, which starts in state REPLICATING. To demonstrate the transfer capability, the daemons can be run in single-execution mode in order:::
 
@@ -89,14 +89,14 @@ Using the environment including monitoring
 
 Again run the containers using docker-compose::
 
-    docker-compose --file etc/docker/dev/docker-compose-storage-monit.yml up -d
+    docker compose --file etc/docker/dev/docker-compose.yml --profile storage --profile monitoring up -d
 
 
 Now you will have the same containers as before plus a full monitoring stack with Logstash, Elasticsearch, Kibana and Grafana.
 
 To create some events and write them to Elasticsearch first run again the tests as before::
 
-    tools/run_tests_docker.sh -ir
+    tools/run_tests.sh -ir
 
 
 Then you will have to run the transfer daemons (conveyor-\*) and messaging daemon (hermes) to send the events to ActiveMQ. There a script for that which repeats these daemons in single execution mode from the section in a loop::
@@ -111,7 +111,7 @@ When all the daemons ran you will be able to find the events in Kibana. If you r
 
 Additionally, there is also a Grafana server running with one simple dashboard. You can access it at http://localhost:3000. The default credentials are "admin/admin". Also ActiveMQ web console can be accessed at http://localhost:8161.
 
-If you would like to continously create some transfers and events there are scripts available for that. Open two different shells and in one run::
+If you would like to continuously create some transfers and events there are scripts available for that. Open two different shells and in one run::
 
     create_monit_data
 
@@ -201,7 +201,7 @@ Change anything you need, e.g. in the Dockerfile the code branch cloned to your 
 Compose as usual using docker-compose::
 
     cd /path/to/your/rucio/clone
-    docker-compose --file etc/docker/dev/docker-compose.yml up -d
+    docker compose --file etc/docker/dev/docker-compose.yml up -d
 
 
 
@@ -210,7 +210,7 @@ Start the daemons
 
 Daemons are not running in the docker environment, but all daemons support single-execution mode with the --run-once argument. Reset the system first with::
 
-    tools/run_tests_docker.sh -ir
+    tools/run_tests.sh -ir
 
 
 Some files are created. Let's add them to a new dataset::

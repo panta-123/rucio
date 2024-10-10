@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,14 +13,13 @@
 # limitations under the License.
 
 import json
-
 from typing import TYPE_CHECKING
 
-from sqlalchemy import or_, delete, update
+from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from rucio.common.constants import HermesService, MAX_MESSAGE_LENGTH
 from rucio.common.config import config_get_list
+from rucio.common.constants import MAX_MESSAGE_LENGTH, HermesService
 from rucio.common.exception import InvalidObject, RucioException
 from rucio.common.utils import APIEncoder, chunks
 from rucio.db.sqla import filter_thread_work
@@ -29,11 +27,12 @@ from rucio.db.sqla.models import Message, MessageHistory
 from rucio.db.sqla.session import transactional_session
 
 if TYPE_CHECKING:
-    from typing import Any, Dict, List, Optional
+    from typing import Any, Optional
+
     from sqlalchemy.orm import Session
 
-    MessageType = Dict[str, Any]
-    MessagesListType = List[MessageType]
+    MessageType = dict[str, Any]
+    MessagesListType = list[MessageType]
 
 
 @transactional_session
@@ -73,9 +72,12 @@ def add_messages(messages: "MessagesListType", *, session: "Session") -> None:
                     msg['payload'] = 'nolimit'
                 msgs.append(msg)
             except TypeError as err:  # noqa: F841
-                raise InvalidObject('Invalid JSON for payload: %(err)s' % locals())
+                raise InvalidObject(f'Invalid JSON for payload: {err}')
     for messages_chunk in chunks(msgs, 1000):
-        session.bulk_insert_mappings(Message, messages_chunk)
+        stmt = insert(
+            Message
+        )
+        session.execute(stmt, messages_chunk)
 
 
 @transactional_session
@@ -115,45 +117,58 @@ def retrieve_messages(bulk: int = 1000,
     """
     messages = []
     try:
-        subquery = session.query(Message.id)
-        subquery = filter_thread_work(session=session, query=subquery, total_threads=total_threads, thread_id=thread)
+        stmt_subquery = select(
+            Message.id
+        ).order_by(
+            Message.created_at
+        )
+        stmt_subquery = filter_thread_work(session=session, query=stmt_subquery, total_threads=total_threads, thread_id=thread)
         if event_type:
-            subquery = subquery.filter_by(event_type=event_type)
+            stmt_subquery = stmt_subquery.where(
+                Message.event_type == event_type
+            )
         elif old_mode:
-            subquery = subquery.filter(Message.event_type != 'email')
+            stmt_subquery = stmt_subquery.where(
+                Message.event_type != 'email'
+            )
 
         # Step 1:
         # MySQL does not support limits in nested queries, limit on the outer query instead.
         # This is not as performant, but the best we can get from MySQL.
         # FIXME: SQLAlchemy generates wrong nowait MySQL8 statement for MySQL5
         #        Remove once this is resolved in SQLAlchemy
+        stmt = select(
+            Message.id,
+            Message.created_at,
+            Message.event_type,
+            Message.payload,
+            Message.services
+        )
         if session.bind.dialect.name == 'mysql':
-            subquery = subquery.order_by(Message.created_at)
-            query = session.query(Message.id,
-                                  Message.created_at,
-                                  Message.event_type,
-                                  Message.payload,
-                                  Message.services)\
-                           .filter(Message.id.in_(subquery))
+            stmt = stmt.where(
+                Message.id.in_(stmt_subquery)
+            )
         else:
-            subquery = subquery.order_by(Message.created_at).limit(bulk)
-            query = session.query(Message.id,
-                                  Message.created_at,
-                                  Message.event_type,
-                                  Message.payload,
-                                  Message.services)\
-                           .filter(Message.id.in_(subquery))\
-                           .with_for_update(nowait=True)
+            stmt_subquery = stmt_subquery.limit(
+                bulk
+            )
+            stmt = stmt.where(
+                Message.id.in_(stmt_subquery)
+            ).with_for_update(
+                nowait=True
+            )
 
         # Step 2:
         # MySQL does not support limits in nested queries, limit on the outer query instead.
         # This is not as performant, but the best we can get from MySQL.
         if session.bind.dialect.name == 'mysql':
-            query = query.limit(bulk)
+            stmt = stmt.limit(
+                bulk
+            )
 
         # Step 3:
         # Assemble message object
-        for id_, created_at, event_type, payload, services in query:
+        for id_, created_at, event_type, payload, services in session.execute(stmt).all():
             message = {'id': id_,
                        'created_at': created_at,
                        'event_type': event_type,
@@ -161,8 +176,12 @@ def retrieve_messages(bulk: int = 1000,
 
             # Only switch SQL context when necessary
             if payload == 'nolimit':
-                nolimit_query = session.query(Message.payload_nolimit).filter(Message.id == id_).one()[0]
-                message['payload'] = json.loads(str(nolimit_query))
+                nolimit_stmt = select(
+                    Message.payload_nolimit
+                ).where(
+                    Message.id == id_
+                )
+                message['payload'] = json.loads(str(session.execute(nolimit_stmt).scalar_one()))
             else:
                 message['payload'] = json.loads(str(payload))
 
@@ -189,13 +208,22 @@ def delete_messages(messages: "MessagesListType", *, session: "Session") -> None
 
     try:
         if message_condition:
-            stmt = delete(Message).\
-                prefix_with("/*+ index(messages MESSAGES_ID_PK) */", dialect='oracle').\
-                where(or_(*message_condition)).\
-                execution_options(synchronize_session=False)
+            stmt = delete(
+                Message
+            ).prefix_with(
+                '/*+ INDEX(messages MESSAGES_ID_PK) */',
+                dialect='oracle'
+            ).where(
+                or_(*message_condition)
+            ).execution_options(
+                synchronize_session=False
+            )
             session.execute(stmt)
 
-            session.bulk_insert_mappings(MessageHistory, messages)
+            stmt = insert(
+                MessageHistory
+            )
+            session.execute(stmt, messages)
     except IntegrityError as e:
         raise RucioException(e.args)
 
@@ -209,7 +237,12 @@ def truncate_messages(*, session: "Session") -> None:
     """
 
     try:
-        session.query(Message).delete(synchronize_session=False)
+        stmt = delete(
+            Message
+        ).execution_options(
+            synchronize_session=False
+        )
+        session.execute(stmt)
     except IntegrityError as e:
         raise RucioException(e.args)
 
@@ -231,11 +264,18 @@ def update_messages_services(messages: "MessagesListType", services: str, *, ses
 
     try:
         if message_condition:
-            stmt = update(Message).\
-                prefix_with("/*+ index(messages MESSAGES_ID_PK) */", dialect='oracle').\
-                where(or_(*message_condition)).\
-                execution_options(synchronize_session=False).\
-                values(services=services)
+            stmt = update(
+                Message
+            ).prefix_with(
+                '/*+ INDEX(messages MESSAGES_ID_PK) */',
+                dialect='oracle'
+            ).where(
+                or_(*message_condition)
+            ).execution_options(
+                synchronize_session=False
+            ).values({
+                Message.services: services
+            })
             session.execute(stmt)
 
     except IntegrityError as err:

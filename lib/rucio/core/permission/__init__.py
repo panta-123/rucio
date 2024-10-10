@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,18 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from os import environ
-from typing import TYPE_CHECKING
-
+import importlib
 from configparser import NoOptionError, NoSectionError
+from os import environ
+from typing import TYPE_CHECKING, Any
+
 from rucio.common import config, exception
 from rucio.common.utils import check_policy_package_version
 
-import importlib
-
 if TYPE_CHECKING:
     from typing import Optional
+
     from sqlalchemy.orm import Session
+
+    from rucio.common.types import InternalAccount
 
 # dictionary of permission modules for each VO
 permission_modules = {}
@@ -67,13 +68,15 @@ if not multivo:
 
     try:
         module = importlib.import_module(POLICY)
-    except ImportError:
+    except ModuleNotFoundError:
         raise exception.PolicyPackageNotFound('Module ' + POLICY + ' not found')
+    except ImportError:
+        raise exception.ErrorLoadingPolicyPackage('An error occurred while loading module ' + POLICY)
 
     permission_modules["def"] = module
 
 
-def load_permission_for_vo(vo):
+def load_permission_for_vo(vo: str) -> None:
     GENERIC_FALLBACK = 'generic_multi_vo'
     if config.config_has_section('policy'):
         try:
@@ -96,13 +99,21 @@ def load_permission_for_vo(vo):
 
     try:
         module = importlib.import_module(POLICY)
-    except ImportError:
+    except ModuleNotFoundError:
         raise exception.PolicyPackageNotFound('Module ' + POLICY + ' not found')
+    except ImportError:
+        raise exception.ErrorLoadingPolicyPackage('An error occurred while loading module ' + POLICY)
 
     permission_modules[vo] = module
 
 
-def has_permission(issuer, action, kwargs, *, session: "Optional[Session]" = None):
+def has_permission(
+        issuer: "InternalAccount",
+        action: str,
+        kwargs: dict[str, Any],
+        *,
+        session: "Optional[Session]" = None
+) -> bool:
     if issuer.vo not in permission_modules:
         load_permission_for_vo(issuer.vo)
     return permission_modules[issuer.vo].has_permission(issuer, action, kwargs, session=session)

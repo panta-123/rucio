@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,12 +16,12 @@ import copy
 from sqlalchemy import and_, delete, exists, select
 from sqlalchemy.orm import aliased
 
-from rucio.core import config as config_db
+from rucio.core import config as core_config
 from rucio.core.vo import map_vo
 from rucio.db.sqla import models
-from rucio.db.sqla.session import transactional_session, get_session
-from rucio.tests.common import get_long_vo
+from rucio.db.sqla.session import get_session, transactional_session
 
+from .common import get_long_vo
 
 # Functions containing server-only includes that can't be included in client tests
 # For each table, get the foreign key constraints from all other tables towards this table.
@@ -116,13 +115,13 @@ def cleanup_db_deps(model, select_rows_stmt, *, session=None):
 
 
 def reset_config_table():
-    """ Clear the config table and install any default entires needed for the tests.
+    """ Clear the config table and install any default entries needed for the tests.
     """
     db_session = get_session()
     db_session.query(models.Config).delete()
     db_session.commit()
-    config_db.set("vo-map", "testvo1", "tst")
-    config_db.set("vo-map", "testvo2", "ts2")
+    core_config.set("vo-map", "testvo1", "tst")
+    core_config.set("vo-map", "testvo2", "ts2")
 
 
 def get_vo():

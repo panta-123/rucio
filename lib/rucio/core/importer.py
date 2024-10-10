@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,22 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
+from rucio.common.config import config_get
+from rucio.common.constants import RseAttr
 from rucio.common.exception import RSEOperationNotSupported
 from rucio.common.types import InternalAccount
-from rucio.core import rse as rse_module, distance as distance_module, account as account_module, identity as identity_module
+from rucio.core import account as account_module
+from rucio.core import distance as distance_module
+from rucio.core import identity as identity_module
+from rucio.core import rse as rse_module
 from rucio.db.sqla import models
-from rucio.db.sqla.constants import RSEType, AccountType, IdentityType
+from rucio.db.sqla.constants import AccountType, IdentityType, RSEType
 from rucio.db.sqla.session import transactional_session
-from rucio.common.config import config_get
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sqlalchemy.orm import Session
 
 
 @transactional_session
-def import_rses(rses, rse_sync_method='edit', attr_sync_method='edit', protocol_sync_method='edit', vo='def', *, session: "Session"):
+def import_rses(rses: dict[str, dict[str, Any]], rse_sync_method: str = 'edit', attr_sync_method: str = 'edit', protocol_sync_method: str = 'edit', vo: str = 'def', *, session: "Session") -> None:
     new_rses = []
     for rse_name in rses:
         rse = rses[rse_name]
@@ -95,7 +102,7 @@ def import_rses(rses, rse_sync_method='edit', attr_sync_method='edit', protocol_
 
         # Limits
         old_limits = rse_module.get_rse_limits(rse_id=rse_id, session=session)
-        for limit_name in ['MaxBeingDeletedFiles', 'MinFreeSpace']:
+        for limit_name in ['MinFreeSpace']:
             limit = rse.get(limit_name)
             if limit:
                 if limit_name in old_limits:
@@ -104,8 +111,8 @@ def import_rses(rses, rse_sync_method='edit', attr_sync_method='edit', protocol_
 
         # Attributes
         attributes = rse.get('attributes', {})
-        attributes['lfn2pfn_algorithm'] = rse.get('lfn2pfn_algorithm')
-        attributes['verify_checksum'] = rse.get('verify_checksum')
+        attributes[RseAttr.LFN2PFN_ALGORITHM] = rse.get('lfn2pfn_algorithm')
+        attributes[RseAttr.VERIFY_CHECKSUM] = rse.get('verify_checksum')
 
         old_attributes = rse_module.list_rse_attributes(rse_id=rse_id, session=session)
         missing_attributes = [attribute for attribute in old_attributes if attribute not in attributes]
@@ -136,7 +143,7 @@ def import_rses(rses, rse_sync_method='edit', attr_sync_method='edit', protocol_
 
 
 @transactional_session
-def import_distances(distances, vo='def', *, session: "Session"):
+def import_distances(distances, vo: str = 'def', *, session: "Session") -> None:
     for src_rse_name in distances:
         src = rse_module.get_rse_id(rse=src_rse_name, vo=vo, session=session)
         for dest_rse_name in distances[src_rse_name]:
@@ -156,7 +163,7 @@ def import_distances(distances, vo='def', *, session: "Session"):
 
 
 @transactional_session
-def import_identities(identities, account_name, old_identities, old_identity_account, account_email, *, session: "Session"):
+def import_identities(identities: 'Iterable[dict[str, Any]]', account_name: str, old_identities: 'Iterable[tuple]', old_identity_account: tuple[str, str, str], account_email: str, *, session: "Session") -> None:
     for identity in identities:
         identity['type'] = IdentityType[identity['type'].upper()]
 
@@ -185,14 +192,19 @@ def import_identities(identities, account_name, old_identities, old_identity_acc
 
 
 @transactional_session
-def import_accounts(accounts, vo='def', *, session: "Session"):
+def import_accounts(accounts: 'Iterable[dict[str, Any]]', vo: str = 'def', *, session: "Session") -> None:
     vo_filter = {'account': InternalAccount(account='*', vo=vo)}
     old_accounts = {account['account']: account for account in account_module.list_accounts(filter_=vo_filter, session=session)}
     missing_accounts = [account for account in accounts if account['account'] not in old_accounts]
     outdated_accounts = [account for account in accounts if account['account'] in old_accounts]
     to_be_removed_accounts = [old_account for old_account in old_accounts if old_account not in [account['account'] for account in accounts]]
     old_identities = identity_module.list_identities(session=session)
-    old_identity_account = session.query(models.IdentityAccountAssociation.identity, models.IdentityAccountAssociation.identity_type, models.IdentityAccountAssociation.account).all()
+    stmt = select(
+        models.IdentityAccountAssociation.identity,
+        models.IdentityAccountAssociation.identity_type,
+        models.IdentityAccountAssociation.account
+    )
+    old_identity_account = session.execute(stmt).all()
 
     # add missing accounts
     for account_dict in missing_accounts:
@@ -222,7 +234,7 @@ def import_accounts(accounts, vo='def', *, session: "Session"):
 
 
 @transactional_session
-def import_data(data, vo='def', *, session: "Session"):
+def import_data(data: dict[str, Any], vo: str = 'def', *, session: "Session") -> None:
     """
     Import data to add and update records in Rucio.
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,10 +19,9 @@ import os
 import re
 import subprocess
 import urllib.parse as urlparse
-
 from threading import Timer
 
-from rucio.common import exception, config
+from rucio.common import config, exception
 from rucio.common.constraints import STRING_TYPES
 from rucio.common.utils import GLOBALLY_SUPPORTED_CHECKSUMS, PREFERRED_CHECKSUM
 from rucio.rse.protocols import protocol
@@ -52,7 +50,7 @@ class Default(protocol.RSEProtocol):
 
         :returns: Fully qualified PFN.
         """
-        lfns = [lfns] if type(lfns) == dict else lfns
+        lfns = [lfns] if isinstance(lfns, dict) else lfns
 
         pfns = {}
         prefix = self.attributes['prefix']
@@ -83,7 +81,10 @@ class Default(protocol.RSEProtocol):
                 path = lfn['path'] if 'path' in lfn and lfn['path'] else self._get_path(scope=scope, name=name)
                 if self.attributes['scheme'] != 'root' and path.startswith('/'):  # do not modify path if it is root
                     path = path[1:]
-                pfns['%s:%s' % (scope, name)] = ''.join([self.attributes['scheme'], '://', hostname, ':', str(self.attributes['port']), web_service_path, prefix, path])
+                if re.match(r'^\w+://', path):  # This is already a URL
+                    pfns['%s:%s' % (scope, name)] = path
+                else:
+                    pfns['%s:%s' % (scope, name)] = ''.join([self.attributes['scheme'], '://', hostname, ':', str(self.attributes['port']), web_service_path, prefix, path])
 
         return pfns
 
@@ -124,7 +125,7 @@ class Default(protocol.RSEProtocol):
             if not path.startswith(self.attributes['prefix']):
                 raise exception.RSEFileNameNotSupported('Invalid prefix: provided \'%s\', expected \'%s\'' % ('/'.join(path.split('/')[0:len(self.attributes['prefix'].split('/')) - 1]),
                                                                                                               self.attributes['prefix']))  # len(...)-1 due to the leading '/
-            # Spliting path into prefix, path, filename
+            # Splitting path into prefix, path, filename
             prefix = self.attributes['prefix']
             path = path.partition(self.attributes['prefix'])[2]
             name = path.split('/')[-1]
@@ -229,7 +230,7 @@ class Default(protocol.RSEProtocol):
         :param transfer_timeout: Transfer timeout (in seconds)
 
         :raises DestinationNotAccessible: if the destination storage was not accessible.
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'downloading file from {} to {}'.format(path, dest))
@@ -259,7 +260,7 @@ class Default(protocol.RSEProtocol):
         :param transfer_timeout: Transfer timeout (in seconds)
 
         :raises DestinationNotAccessible: if the destination storage was not accessible.
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'uploading file from {} to {}'.format(source, target))
@@ -292,7 +293,7 @@ class Default(protocol.RSEProtocol):
 
         :param path: path to the to be deleted file
 
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'deleting file {}'.format(path))
@@ -316,7 +317,7 @@ class Default(protocol.RSEProtocol):
         :param new_path: path to the new file on the storage
 
         :raises DestinationNotAccessible: if the destination storage was not accessible.
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'renaming file from {} to {}'.format(path, new_path))
@@ -368,7 +369,7 @@ class Default(protocol.RSEProtocol):
 
             :param path: path to file
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
 
             :returns: a dict with two keys, filesize and an element of GLOBALLY_SUPPORTED_CHECKSUMS.
         """
@@ -391,6 +392,9 @@ class Default(protocol.RSEProtocol):
             raise exception.ServiceUnavailable(msg % stat_str)
 
         ret['filesize'] = stats[7]
+
+        if not self.rse.get('verify_checksum', True):
+            return ret
 
         message = "\n"
         try:
@@ -436,14 +440,16 @@ class Default(protocol.RSEProtocol):
         :raises RucioException: if it failed to copy the file.
         """
         ctx = self.__ctx
+        if transfer_timeout:
+            ctx.set_opt_integer("HTTP PLUGIN", "OPERATION_TIMEOUT", int(transfer_timeout))
+            ctx.set_opt_integer("SRM PLUGIN", "OPERATION_TIMEOUT", int(transfer_timeout))
+            ctx.set_opt_integer("GRIDFTP PLUGIN", "OPERATION_TIMEOUT", int(transfer_timeout))
+            watchdog = Timer(int(transfer_timeout) + 60, self.__gfal2_cancel)
         params = ctx.transfer_parameters()
         if src_spacetoken:
             params.src_spacetoken = str(src_spacetoken)
         if dest_spacetoken:
             params.dst_spacetoken = str(dest_spacetoken)
-        if transfer_timeout:
-            params.timeout = int(transfer_timeout)
-            watchdog = Timer(params.timeout + 60, self.__gfal2_cancel)
 
         if not (self.renaming and dest.startswith('https')):
             params.create_parent = True
@@ -453,6 +459,7 @@ class Default(protocol.RSEProtocol):
 
         try:
             if transfer_timeout:
+                params.timeout = int(transfer_timeout)
                 watchdog.start()
             ret = ctx.filecopy(params, str(src), str(dest))
             if transfer_timeout:
@@ -546,7 +553,7 @@ class Default(protocol.RSEProtocol):
 
         :returns: a list with dict containing 'totalsize' and 'unusedsize'
 
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         """
         endpoint_basepath = self.path2pfn(self.attributes['prefix'])
         self.logger(logging.DEBUG, 'getting space usage from {}'.format(endpoint_basepath))

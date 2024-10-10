@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,30 +13,38 @@
 # limitations under the License.
 
 import re
-from typing import TYPE_CHECKING
-
 from json import loads
 from json.decoder import JSONDecodeError
+from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy.orm.exc import NoResultFound
-from rucio.db.sqla import models
-from rucio.db.sqla.session import transactional_session, read_session
-from rucio.db.sqla.constants import DIDType
-from rucio.common.exception import InvalidType, UnsupportedOperation, ConfigNotFound, RucioException
-from rucio.common.types import InternalScope, InternalAccount
+from sqlalchemy import and_, select
+from sqlalchemy.exc import NoResultFound
+
+from rucio.common.config import config_get
+from rucio.common.exception import ConfigNotFound, InvalidType, RucioException, UnsupportedOperation
+from rucio.common.types import InternalAccount, InternalScope
 from rucio.common.utils import extract_scope
-from rucio.core.config import get as config_get
 from rucio.core.did import add_did, attach_dids_to_dids
 from rucio.core.replica import add_replicas
 from rucio.core.rule import add_rule, list_rules, update_rule
 from rucio.core.scope import list_scopes
+from rucio.db.sqla import models
+from rucio.db.sqla.constants import DIDType
+from rucio.db.sqla.session import read_session, transactional_session
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sqlalchemy.orm import Session
 
 
 @read_session
-def _exists(scope, name, *, session: "Session"):
+def _exists(
+    scope: str,
+    name: str,
+    *,
+    session: "Session"
+) -> tuple[bool, Optional[DIDType]]:
     """
     Check if the did exists
 
@@ -46,15 +53,31 @@ def _exists(scope, name, *, session: "Session"):
     :session: The session used
     """
     try:
-        res = session.query(models.DataIdentifier).filter_by(scope=scope, name=name).\
-            with_hint(models.DataIdentifier, "INDEX(DIDS DIDS_PK)", 'oracle').one()
-        return True, res.did_type
+        stmt = select(
+            models.DataIdentifier.did_type
+        ).with_hint(
+            models.DataIdentifier,
+            "INDEX(DIDS DIDS_PK)",
+            'oracle'
+        ).where(
+            and_(models.DataIdentifier.scope == scope,
+                 models.DataIdentifier.name == name)
+        )
+        return True, session.execute(stmt).scalar_one()
     except NoResultFound:
         return False, None
 
 
 @transactional_session
-def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session"):
+def add_files(
+    lfns: "Iterable[dict[str, Any]]",
+    account: str,
+    ignore_availability: bool,
+    parents_metadata: Optional[dict[str, Any]] = None,
+    vo: str = 'def',
+    *,
+    session: "Session"
+) -> None:
     """
     Bulk add files :
     - Create the file and replica.
@@ -64,19 +87,22 @@ def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session
     :param lfns: List of lfn (dictionary {'lfn': <lfn>, 'rse': <rse>, 'bytes': <bytes>, 'adler32': <adler32>, 'guid': <guid>, 'pfn': <pfn>}
     :param issuer: The issuer account.
     :param ignore_availability: A boolean to ignore blocklisted sites.
+    :param parents_metadata: Metadata for selected hierarchy DIDs. (dictionary {'lpn': {key : value}})
     :param vo: The VO to act on
     :param session: The session used
     """
     rule_extension_list = []
     attachments = []
+    if not parents_metadata:
+        parents_metadata = {}
     # The list of scopes is necessary for the extract_scope
     filter_ = {'scope': InternalScope(scope='*', vo=vo)}
     scopes = list_scopes(filter_=filter_, session=session)
     scopes = [scope.external for scope in scopes]
     exist_lfn = []
     try:
-        lifetime_dict: str = config_get(section='dirac', option='lifetime', default='{}', session=session)
-        lifetime_dict = loads(lifetime_dict)
+        config_lifetime: str = config_get(section='dirac', option='lifetime', default='{}', session=session)
+        lifetime_dict: dict = loads(config_lifetime)
     except ConfigNotFound:
         lifetime_dict = {}
     except JSONDecodeError as err:
@@ -104,6 +130,7 @@ def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session
         dsn_name = lpns[0]
         dsn_scope, _ = extract_scope(dsn_name, scopes)
         dsn_scope = InternalScope(dsn_scope, vo=vo)
+        dsn_meta = parents_metadata.get(dsn_name, {})
 
         # Compute lifetime
         lifetime = None
@@ -126,7 +153,7 @@ def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session
                     DIDType.DATASET,
                     account=InternalAccount(account, vo=vo),
                     statuses=None,
-                    meta=None,
+                    meta=dsn_meta,
                     rules=[{'copies': 1, 'rse_expression': 'ANY=true', 'weight': None, 'account': InternalAccount(account, vo=vo), 'lifetime': lifetime, 'grouping': 'NONE'}],
                     lifetime=None,
                     dids=None,
@@ -153,11 +180,12 @@ def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session
         guid = lfn.get('guid', None)
         adler32 = lfn.get('adler32', None)
         pfn = lfn.get('pfn', None)
-        files = {'scope': lfn_scope, 'name': filename, 'bytes': bytes_, 'adler32': adler32}
+        meta = lfn.get('meta', {})
+        files = {'scope': lfn_scope, 'name': filename, 'bytes': bytes_, 'adler32': adler32, 'meta': meta}
         if pfn:
             files['pfn'] = str(pfn)
         if guid:
-            files['meta'] = {'guid': guid}
+            files['meta']['guid'] = guid
         add_replicas(rse_id=rse_id,
                      files=[files],
                      dataset_meta=None,
@@ -181,6 +209,7 @@ def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session
             child_scope, _ = extract_scope(lpn, scopes)
             child_scope = InternalScope(child_scope, vo=vo)
             exists, did_type = _exists(child_scope, lpn)
+            child_meta = parents_metadata.get(lpn, {})
             if exists and did_type == DIDType.DATASET:
                 raise UnsupportedOperation('Cannot create %s as container' % lpn)
             if (lpn not in exist_lfn) and not exists:
@@ -190,7 +219,7 @@ def add_files(lfns, account, ignore_availability, vo='def', *, session: "Session
                         DIDType.CONTAINER,
                         account=InternalAccount(account, vo=vo),
                         statuses=None,
-                        meta=None,
+                        meta=child_meta,
                         rules=None,
                         lifetime=None,
                         dids=None,

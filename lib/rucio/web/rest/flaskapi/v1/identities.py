@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 
-from rucio.api.identity import add_identity, add_account_identity, list_accounts_for_identity
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    ErrorHandlingMethodView
+from rucio.gateway.identity import add_account_identity, add_identity, list_accounts_for_identity
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, response_headers
 
 
 class UserPass(ErrorHandlingMethodView):
@@ -200,7 +198,7 @@ class Accounts(ErrorHandlingMethodView):
     """ Retrieve list of accounts mapped to an identity. """
 
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, identity_key, type):
+    def get(self, identity_key, type_):
         """
         ---
         summary: List
@@ -236,7 +234,7 @@ class Accounts(ErrorHandlingMethodView):
           401:
             description: Not acceptable
         """
-        accounts = list_accounts_for_identity(identity_key, type)
+        accounts = list_accounts_for_identity(identity_key, type_)
         return jsonify(accounts)
 
 

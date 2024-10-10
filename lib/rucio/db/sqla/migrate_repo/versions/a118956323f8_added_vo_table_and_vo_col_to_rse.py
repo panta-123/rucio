@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +17,9 @@
 import datetime
 
 import sqlalchemy as sa
-from sqlalchemy import String
 from alembic import context
-from alembic.op import (add_column, create_primary_key, create_table, create_unique_constraint,
-                        drop_column, drop_constraint, drop_table, bulk_insert)
-
+from alembic.op import add_column, bulk_insert, create_primary_key, create_table, create_unique_constraint, drop_column, drop_constraint, drop_table
+from sqlalchemy import String
 
 # Alembic revision identifiers
 revision = 'a118956323f8'

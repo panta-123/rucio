@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +15,7 @@
 ''' remove unique constraint on requests '''
 
 from alembic import context
-from alembic.op import (create_foreign_key, create_index, drop_index,
-                        drop_constraint, create_unique_constraint)
-
+from alembic.op import create_foreign_key, create_index, create_unique_constraint, drop_constraint, drop_index
 
 # Alembic revision identifiers
 revision = '25821a8a45a3'

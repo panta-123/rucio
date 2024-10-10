@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +16,7 @@
 import sys
 from argparse import ArgumentParser
 
-from . import generate
-from . import compare
+from . import compare, generate
 
 
 def parse_arguments():

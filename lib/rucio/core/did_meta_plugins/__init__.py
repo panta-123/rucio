@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +13,11 @@
 # limitations under the License.
 
 import importlib
+from configparser import NoOptionError, NoSectionError
 from typing import TYPE_CHECKING
 
 from rucio.common import config, exception
 from rucio.db.sqla.session import read_session, transactional_session
-
-from configparser import NoOptionError, NoSectionError
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -63,8 +61,10 @@ for meta_module_path in METADATA_PLUGIN_MODULE_PATHS:
         base_class = meta_module_path.split(".")[-1]
         metadata_plugin_module = getattr(importlib.import_module(base_module), base_class)()
         METADATA_PLUGIN_MODULES.append(metadata_plugin_module)
-    except ImportError:
+    except ModuleNotFoundError:
         raise exception.PolicyPackageNotFound('Module ' + meta_module_path + ' not found')
+    except ImportError:
+        raise exception.ErrorLoadingPolicyPackage('An error occurred while loading module ' + meta_module_path)
 
 # Set restricted character set for metadata in form character: reason
 #
@@ -217,7 +217,7 @@ def list_dids(scope=None, filters=None, did_type='collection', ignore_case=False
     :returns: List of dids satisfying metadata criteria.
     :raises: InvalidMetadata
     """
-    # backwards compatability for filters as single {}.
+    # backwards compatibility for filters as single {}.
     if isinstance(filters, dict):
         filters = [filters]
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,9 +13,11 @@
 # limitations under the License.
 
 from re import match
-from sqlalchemy.exc import IntegrityError
 from traceback import format_exc
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
+
+from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 
 from rucio.common.exception import AccountNotFound, Duplicate, RucioException, VONotFound
 from rucio.core.vo import vo_exists
@@ -26,6 +27,8 @@ from rucio.db.sqla.session import read_session, transactional_session
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+    from rucio.common.types import InternalScope
 
 
 @transactional_session
@@ -40,8 +43,13 @@ def add_scope(scope, account, *, session: "Session"):
     if not vo_exists(vo=scope.vo, session=session):
         raise VONotFound('VO {} not found'.format(scope.vo))
 
-    result = session.query(models.Account).filter_by(account=account, status=AccountStatus.ACTIVE).first()
-    if result is None:
+    stmt = select(
+        models.Account
+    ).where(
+        and_(models.Account.account == account,
+             models.Account.status == AccountStatus.ACTIVE)
+    )
+    if session.execute(stmt).first() is None:
         raise AccountNotFound('Account ID \'%s\' does not exist' % account)
 
     new_scope = models.Scope(scope=scope, account=account, status=ScopeStatus.OPEN)
@@ -79,7 +87,7 @@ def bulk_add_scopes(scopes, account, skipExisting=False, *, session: "Session"):
 
 
 @read_session
-def list_scopes(filter_={}, *, session: "Session"):
+def list_scopes(filter_: Optional[dict[str, Any]] = None, *, session: "Session") -> list["InternalScope"]:
     """
     Lists all scopes.
     :param filter_: Dictionary of attributes by which the input data should be filtered
@@ -87,19 +95,25 @@ def list_scopes(filter_={}, *, session: "Session"):
 
     :returns: A list containing all scopes.
     """
-    scope_list = []
-    query = session.query(models.Scope).filter(models.Scope.status != ScopeStatus.DELETED)
+    filter_ = filter_ or {}
+    stmt = select(
+        models.Scope.scope
+    ).where(
+        models.Scope.status != ScopeStatus.DELETED
+    )
     for filter_type in filter_:
         if filter_type == 'scope':
             if '*' in filter_['scope'].internal:
                 scope_str = filter_['scope'].internal.replace('*', '%')
-                query = query.filter(models.Scope.scope.like(scope_str))
+                stmt = stmt.where(
+                    models.Scope.scope.like(scope_str)
+                )
             else:
-                query = query.filter_by(scope=filter_['scope'])
+                stmt = stmt.where(
+                    models.Scope.scope == filter_['scope']
+                )
 
-    for s in query:
-        scope_list.append(s.scope)
-    return scope_list
+    return list(session.execute(stmt).scalars().all())
 
 
 @read_session
@@ -112,17 +126,22 @@ def get_scopes(account, *, session: "Session"):
     :returns: a list of all scope names for this account.
     """
 
-    result = session.query(models.Account).filter_by(account=account).first()
+    stmt = select(
+        models.Account
+    ).where(
+        models.Account.account == account
+    )
 
-    if result is None:
+    if session.execute(stmt).first() is None:
         raise AccountNotFound('Account ID \'%s\' does not exist' % account)
 
-    scope_list = []
-
-    for s in session.query(models.Scope).filter_by(account=account).filter(models.Scope.status != ScopeStatus.DELETED):
-        scope_list.append(s.scope)
-
-    return scope_list
+    stmt = select(
+        models.Scope.scope
+    ).where(
+        and_(models.Scope.account == account,
+             models.Scope.status != ScopeStatus.DELETED)
+    )
+    return session.execute(stmt).scalars().all()
 
 
 @read_session
@@ -135,7 +154,12 @@ def check_scope(scope_to_check, *, session: "Session"):
     :returns: True or false
     """
 
-    return True if session.query(models.Scope).filter_by(scope=scope_to_check).first() else False
+    stmt = select(
+        models.Scope
+    ).where(
+        models.Scope.scope == scope_to_check
+    )
+    return bool(session.execute(stmt).scalar())
 
 
 @read_session
@@ -148,4 +172,10 @@ def is_scope_owner(scope, account, *, session: "Session"):
 
     :returns: True or false
     """
-    return True if session.query(models.Scope).filter_by(scope=scope, account=account).first() else False
+    stmt = select(
+        models.Scope
+    ).where(
+        and_(models.Scope.scope == scope,
+             models.Scope.account == account)
+    )
+    return bool(session.execute(stmt).scalar())

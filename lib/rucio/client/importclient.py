@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+
 from requests.status_codes import codes
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url, render_json
 
 
@@ -25,7 +25,7 @@ class ImportClient(BaseClient):
 
     IMPORT_BASEURL = 'import'
 
-    def import_data(self, data):
+    def import_data(self, data: dict[str, Any]) -> str:
         """
         Imports data into Rucio.
 

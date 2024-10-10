@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +13,14 @@
 # limitations under the License.
 
 from json import loads
+from typing import Optional
 
 from redis import StrictRedis
+
 from rucio.common.config import config_get, config_get_int
 
 
-class NetworkMetricsCollector(object):
+class NetworkMetricsCollector:
     """
     Collector to get the bandwidth metrics between two sites.
     """
@@ -28,7 +29,11 @@ class NetworkMetricsCollector(object):
         self._r = StrictRedis(host=config_get('c3po-network-metrics', 'redis_host'), port=config_get_int('c3po-network-metrics', 'redis_port'))
         self._prefix = config_get('c3po-network-metrics', 'prefix')
 
-    def getMbps(self, src, type_):
+    def getMbps(
+            self,
+            src: str,
+            type_: str
+    ) -> Optional[dict[str, float]]:
         pattern = "%s#%s:*" % (self._prefix, src)
         keys = self._r.keys(pattern=pattern)
         if len(keys) == 0:
@@ -51,7 +56,11 @@ class NetworkMetricsCollector(object):
 
         return ret
 
-    def getQueuedFiles(self, src, dst):
+    def getQueuedFiles(
+            self,
+            src: str,
+            dst: str
+    ) -> int:
         key = "%s#%s:%s" % (self._prefix, src, dst)
         activities = loads(self._r.get(key)).get('files', {}).get('queued', {}).get('total', {})
 

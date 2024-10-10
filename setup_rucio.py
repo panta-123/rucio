@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,25 +17,25 @@ import os
 import shutil
 import sys
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
-if sys.version_info < (3, 6):
-    print('ERROR: Rucio Server requires at least Python 3.6 to run.')
+if sys.version_info < (3, 9):
+    print('ERROR: Rucio Server requires at least Python 3.9 to run.')
     sys.exit(1)
 
 try:
-    from setuputil import server_requirements_table, match_define_requirements, get_rucio_version
+    from setuputil import get_rucio_version, match_define_requirements, server_requirements_table
 except ImportError:
     sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-    from setuputil import server_requirements_table, match_define_requirements, get_rucio_version
+    from setuputil import get_rucio_version, match_define_requirements, server_requirements_table
 
-install_requires, extras_require = match_define_requirements(server_requirements_table)
+install_requires, extras_require = match_define_requirements('server', server_requirements_table)
 
 name = 'rucio'
 packages = find_packages(where='lib')
 description = "Rucio Package"
 data_files = [
-    ('rucio/', ['requirements.txt']),
+    ('rucio/', ['requirements/requirements.server.txt']),
     ('rucio/etc/', glob.glob('etc/*.template')),
     ('rucio/etc/web', glob.glob('etc/web/*.template')),
     ('rucio/tools/', ['tools/bootstrap.py', 'tools/reset_database.py', 'tools/merge_rucio_configs.py']),
@@ -64,7 +63,7 @@ setup(
     description=description,
     license="Apache License, Version 2.0",
     url="https://rucio.cern.ch/",
-    python_requires=">=3.6, <4",
+    python_requires=">=3.9, <4",
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'License :: OSI Approved :: Apache Software License',
@@ -74,10 +73,8 @@ setup(
         'Natural Language :: English',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
         'Environment :: No Input/Output (Daemon)', ],
     install_requires=install_requires,
     extras_require=extras_require,

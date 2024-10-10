@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,20 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from os import environ
-
+import importlib
 from configparser import NoOptionError, NoSectionError
+from os import environ
+from typing import TYPE_CHECKING, Any
 
 from rucio.common import config, exception
 from rucio.common.utils import check_policy_package_version
 
-import importlib
+if TYPE_CHECKING:
+    from types import ModuleType
 
 # dictionary of schema modules for each VO
-schema_modules = {}
+schema_modules: dict[str, "ModuleType"] = {}
 
 # list of unique SCOPE_NAME_REGEXP values from all schemas
-scope_name_regexps = []
+scope_name_regexps: list[str] = []
 
 try:
     multivo = config.config_get_bool('common', 'multi_vo', check_config_table=False)
@@ -59,14 +60,16 @@ if not multivo:
 
     try:
         module = importlib.import_module(POLICY)
-    except ImportError:
+    except ModuleNotFoundError:
         raise exception.PolicyPackageNotFound('Module ' + POLICY + ' not found')
+    except ImportError:
+        raise exception.ErrorLoadingPolicyPackage('An error occurred while loading module ' + POLICY)
 
     schema_modules["def"] = module
     scope_name_regexps.append(module.SCOPE_NAME_REGEXP)
 
 
-def load_schema_for_vo(vo):
+def load_schema_for_vo(vo: str) -> None:
     GENERIC_FALLBACK = 'generic_multi_vo'
     if config.config_has_section('policy'):
         try:
@@ -89,25 +92,27 @@ def load_schema_for_vo(vo):
 
     try:
         module = importlib.import_module(POLICY)
-    except ImportError:
+    except ModuleNotFoundError:
         raise exception.PolicyPackageNotFound('Module ' + POLICY + ' not found')
+    except ImportError:
+        raise exception.ErrorLoadingPolicyPackage('An error occurred while loading module ' + POLICY)
 
     schema_modules[vo] = module
 
 
-def validate_schema(name, obj, vo='def'):
+def validate_schema(name: str, obj: Any, vo: str = 'def') -> None:
     if vo not in schema_modules:
         load_schema_for_vo(vo)
     schema_modules[vo].validate_schema(name, obj)
 
 
-def get_schema_value(key, vo='def'):
+def get_schema_value(key: str, vo: str = 'def') -> Any:
     if vo not in schema_modules:
         load_schema_for_vo(vo)
     return getattr(schema_modules[vo], key)
 
 
-def get_scope_name_regexps():
+def get_scope_name_regexps() -> list[str]:
     """ returns a list of all unique SCOPE_NAME_REGEXPs from all schemas """
 
     if len(scope_name_regexps) == 0:
@@ -123,7 +128,7 @@ def get_scope_name_regexps():
     return scope_name_regexps
 
 
-def insert_scope_name(urls):
+def insert_scope_name(urls: tuple[str, ...]) -> tuple[str, str]:
     """
     given a tuple of URLs for webpy with '%s' as a placeholder for
     SCOPE_NAME_REGEXP, return a finalised tuple of URLs that will work for all

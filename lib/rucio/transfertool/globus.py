@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,15 +14,17 @@
 
 import logging
 
+from rucio.common.constants import RseAttr
 from rucio.common.utils import chunks
-from rucio.transfertool.transfertool import Transfertool, TransferToolBuilder, TransferStatusReport
 from rucio.db.sqla.constants import RequestState
-from .globus_library import bulk_submit_xfer, submit_xfer, bulk_check_xfers
+from rucio.transfertool.transfertool import TransferStatusReport, Transfertool, TransferToolBuilder
+
+from .globus_library import bulk_check_xfers, bulk_submit_xfer, submit_xfer
 
 
 def bulk_group_transfers(transfer_paths, policy='single', group_bulk=200):
     """
-    Group transfers in bulk based on certain criterias
+    Group transfers in bulk based on certain criteria
 
     :param transfer_paths:  List of (potentially multihop) transfer paths to group. Each path is a list of single-hop transfers.
     :param policy:          Policy to use to group.
@@ -82,7 +83,7 @@ class GlobusTransferTool(Transfertool):
     """
 
     external_name = 'globus'
-    required_rse_attrs = ('globus_endpoint_id', )
+    required_rse_attrs = (RseAttr.GLOBUS_ENDPOINT_ID, )
 
     def __init__(self, external_host, logger=logging.log, group_bulk=200, group_policy='single'):
         """
@@ -154,15 +155,15 @@ class GlobusTransferTool(Transfertool):
         submitjob = [
             {
                 # Some dict elements are not needed by globus transfertool, but are accessed by further common fts/globus code
-                'sources': [s[1] for s in transfer.legacy_sources],
+                'sources': [transfer.source_url(s) for s in transfer.sources],
                 'destinations': [transfer.dest_url],
                 'metadata': {
                     'src_rse': transfer.src.rse.name,
                     'dst_rse': transfer.dst.rse.name,
                     'scope': str(transfer.rws.scope),
                     'name': transfer.rws.name,
-                    'source_globus_endpoint_id': transfer.src.rse.attributes['globus_endpoint_id'],
-                    'dest_globus_endpoint_id': transfer.dst.rse.attributes['globus_endpoint_id'],
+                    'source_globus_endpoint_id': transfer.src.rse.attributes[RseAttr.GLOBUS_ENDPOINT_ID],
+                    'dest_globus_endpoint_id': transfer.dst.rse.attributes[RseAttr.GLOBUS_ENDPOINT_ID],
                     'filesize': transfer.rws.byte_count,
                 },
             }
@@ -191,37 +192,9 @@ class GlobusTransferTool(Transfertool):
         return response
 
     def bulk_update(self, resps, request_ids):
-        """
-        bulk update request_state for globus transfers
-
-        :param resps: dictionary containing task IDs and current status
-        # TODO: do we need request IDs?
-        :param request_ids original list of rucio request IDs
-
-        counter = 0
-        for task_id in resps:
-            requests = get_requests_by_transfer(external_host=None, transfer_id=task_id, session=None)
-            logging.debug('requests: %s' % requests)
-            for request_id in requests:
-                transfer_core.update_transfer_state(external_host=None, transfer_id=request_id, state=resps[task_id][file_state])
-                counter += 1
-
-        return counter
-        """
         pass
 
     def cancel(self):
-        pass
-
-    def query(self, transfer_ids, details=False, timeout=None):
-        """
-        Query the status of a transfer in Globus Online.
-
-        :param transfer_ids: transfer identifiers as list of strings.
-        :param details:      Switch if detailed information should be listed.
-        :param timeout:      Timeout in seconds.
-        :returns:            Transfer status information as a list of dictionaries.
-        """
         pass
 
     def update_priority(self):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,27 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from re import match, compile, error
-from sqlalchemy.exc import IntegrityError
+from re import compile, error, match
 from traceback import format_exc
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from dogpile.cache.api import NO_VALUE
+from sqlalchemy import and_, delete, select
+from sqlalchemy.exc import IntegrityError
 
-from rucio.common.exception import Duplicate, RucioException, InvalidObject
-from rucio.common.cache import make_region_memcached
+from rucio.common.cache import MemcacheRegion
+from rucio.common.exception import Duplicate, InvalidObject, RucioException
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import KeyType
 from rucio.db.sqla.session import read_session, transactional_session
 
 if TYPE_CHECKING:
+    from typing import TypedDict
+
     from sqlalchemy.orm import Session
 
-REGION = make_region_memcached(expiration_time=900)
+    from rucio.common.types import InternalScope
+
+    class NamingConventionDict(TypedDict):
+        scope: InternalScope
+        regexp: str
+
+REGION = MemcacheRegion(expiration_time=900)
 
 
 @transactional_session
-def add_naming_convention(scope, regexp, convention_type, *, session: "Session"):
+def add_naming_convention(
+    scope: "InternalScope",
+    regexp: str,
+    convention_type: KeyType,
+    *,
+    session: "Session"
+) -> None:
     """
     add a naming convention for a given scope
 
@@ -60,7 +74,12 @@ def add_naming_convention(scope, regexp, convention_type, *, session: "Session")
 
 
 @read_session
-def get_naming_convention(scope, convention_type, *, session: "Session"):
+def get_naming_convention(
+    scope: "InternalScope",
+    convention_type: KeyType,
+    *,
+    session: "Session"
+) -> Optional[str]:
     """
     Get the naming convention for a given scope
 
@@ -70,15 +89,22 @@ def get_naming_convention(scope, convention_type, *, session: "Session"):
 
     :returns: the regular expression.
     """
-    query = session.query(models.NamingConvention.regexp).\
-        filter(models.NamingConvention.scope == scope).\
-        filter(models.NamingConvention.convention_type == convention_type)
-    for row in query:
-        return row[0]
+    stmt = select(
+        models.NamingConvention.regexp
+    ).where(
+        and_(models.NamingConvention.scope == scope,
+             models.NamingConvention.convention_type == convention_type)
+    )
+    return session.execute(stmt).scalar()
 
 
 @transactional_session
-def delete_naming_convention(scope, convention_type, *, session: "Session"):
+def delete_naming_convention(
+    scope: "InternalScope",
+    convention_type: KeyType,
+    *,
+    session: "Session"
+) -> int:
     """
     delete a naming convention for a given scope
 
@@ -87,14 +113,19 @@ def delete_naming_convention(scope, convention_type, *, session: "Session"):
     :param convention_type: the did_type on which the regexp should apply.
     :param session: The database session in use.
     """
-    REGION.delete(scope.internal)
-    return session.query(models.NamingConvention) \
-        .filter_by(scope=scope, convention_type=convention_type) \
-        .delete()
+    if scope.internal is not None:
+        REGION.delete(scope.internal)
+    stmt = delete(
+        models.NamingConvention
+    ).where(
+        and_(models.NamingConvention.scope == scope,
+             models.NamingConvention.convention_type == convention_type)
+    )
+    return session.execute(stmt).rowcount
 
 
 @read_session
-def list_naming_conventions(*, session: "Session"):
+def list_naming_conventions(*, session: "Session") -> list["NamingConventionDict"]:
     """
     List all naming conventions.
 
@@ -102,13 +133,21 @@ def list_naming_conventions(*, session: "Session"):
 
     :returns: a list of dictionaries.
     """
-    query = session.query(models.NamingConvention.scope,
-                          models.NamingConvention.regexp)
-    return [row._asdict() for row in query]
+    stmt = select(
+        models.NamingConvention.scope,
+        models.NamingConvention.regexp
+    )
+    return [cast("NamingConventionDict", row._asdict()) for row in session.execute(stmt).all()]
 
 
 @read_session
-def validate_name(scope, name, did_type, *, session: "Session"):
+def validate_name(
+    scope: "InternalScope",
+    name: str,
+    did_type: str,
+    *,
+    session: "Session"
+) -> Optional[dict[str, Any]]:
     """
     Validate a name according to a naming convention.
 
@@ -120,10 +159,11 @@ def validate_name(scope, name, did_type, *, session: "Session"):
 
     :returns: a dictionary with metadata.
     """
-    if scope.external.startswith('user'):
-        return {'project': 'user'}
-    elif scope.external.startswith('group'):
-        return {'project': 'group'}
+    if scope.external is not None:
+        if scope.external.startswith('user'):
+            return {'project': 'user'}
+        elif scope.external.startswith('group'):
+            return {'project': 'group'}
 
     # Check if naming convention can be found in cache region
     regexp = REGION.get(scope.internal)
@@ -131,13 +171,14 @@ def validate_name(scope, name, did_type, *, session: "Session"):
         regexp = get_naming_convention(scope=scope,
                                        convention_type=KeyType.DATASET,
                                        session=session)
-        regexp and REGION.set(scope.internal, regexp)
+        if scope.internal is not None:
+            regexp and REGION.set(scope.internal, regexp)
 
     if not regexp:
         return
 
     # Validate with regexp
-    groups = match(regexp, str(name))
+    groups = match(regexp, str(name))  # type: ignore
     if groups:
         meta = groups.groupdict()
         # Hack to get task_id from version
@@ -150,5 +191,5 @@ def validate_name(scope, name, did_type, *, session: "Session"):
             meta['run_number'] = int(meta['run_number'])
         return meta
 
-    print("Provided name %(name)s doesn't match the naming convention %(regexp)s" % locals())
-    raise InvalidObject("Provided name %(name)s doesn't match the naming convention %(regexp)s" % locals())
+    print(f"Provided name {name} doesn't match the naming convention {regexp}")
+    raise InvalidObject(f"Provided name {name} doesn't match the naming convention {regexp}")

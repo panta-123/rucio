@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,31 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import copy
 import json
+import logging
 import os
 import os.path
-import socket
-
-import logging
-import time
 import random
+import socket
+import time
+from typing import TYPE_CHECKING, Any, Final, Optional, Union, cast
 
-from rucio.client.client import Client
-from rucio.common.config import config_get_int, config_get
-from rucio.common.exception import (RucioException, RSEWriteBlocked, DataIdentifierAlreadyExists, RSEOperationNotSupported,
-                                    DataIdentifierNotFound, NoFilesUploaded, NotAllFilesUploaded, FileReplicaAlreadyExists,
-                                    ResourceTemporaryUnavailable, ServiceUnavailable, InputValidationError, RSEChecksumUnavailable,
-                                    ScopeNotFound)
-from rucio.common.utils import (adler32, detect_client_location, execute, generate_uuid, make_valid_did, md5, send_trace,
-                                retry, GLOBALLY_SUPPORTED_CHECKSUMS)
-from rucio.rse import rsemanager as rsemgr
 from rucio import version
+from rucio.client.client import Client
+from rucio.common.config import config_get, config_get_bool, config_get_int
+from rucio.common.constants import RseAttr
+from rucio.common.exception import (
+    DataIdentifierAlreadyExists,
+    DataIdentifierNotFound,
+    FileReplicaAlreadyExists,
+    InputValidationError,
+    NoFilesUploaded,
+    NotAllFilesUploaded,
+    ResourceTemporaryUnavailable,
+    RSEChecksumUnavailable,
+    RSEOperationNotSupported,
+    RSEWriteBlocked,
+    RucioException,
+    ScopeNotFound,
+    ServiceUnavailable,
+)
+from rucio.common.utils import GLOBALLY_SUPPORTED_CHECKSUMS, adler32, bittorrent_v2_merkle_sha256, detect_client_location, execute, generate_uuid, make_valid_did, md5, retry, send_trace
+from rucio.rse import rsemanager as rsemgr
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
+    from rucio.common.types import AttachDict, DatasetDict, DIDStringDict, FileToUploadDict, FileToUploadWithCollectedAndDatasetInfoDict, FileToUploadWithCollectedInfoDict, LoggerFunction, PathTypeAlias, RSESettingsDict, TraceBaseDict, TraceDict
+    from rucio.rse.protocols.protocol import RSEProtocol
 
 
 class UploadClient:
 
-    def __init__(self, _client=None, logger=None, tracing=True):
+    def __init__(
+            self,
+            _client: Optional[Client] = None,
+            logger: Optional["LoggerFunction"] = None,
+            tracing: bool = True
+    ):
         """
         Initialises the basic settings for an UploadClient object
 
@@ -49,26 +71,33 @@ class UploadClient:
         else:
             self.logger = logger.log
 
-        self.client = _client if _client else Client()
+        self.client: Final[Client] = _client if _client else Client()
         self.client_location = detect_client_location()
         # if token should be used, use only JWT tokens
-        self.auth_token = self.client.auth_token if len(self.client.auth_token.split(".")) == 3 else None
+        self.auth_token: Optional[str] = self.client.auth_token if len(self.client.auth_token.split(".")) == 3 else None
         self.tracing = tracing
         if not self.tracing:
             logger(logging.DEBUG, 'Tracing is turned off.')
-        self.default_file_scope = 'user.' + self.client.account
+        self.default_file_scope: Final[str] = 'user.' + self.client.account
         self.rses = {}
         self.rse_expressions = {}
 
-        self.trace = {}
-        self.trace['hostname'] = socket.getfqdn()
-        self.trace['account'] = self.client.account
-        if self.client.vo != 'def':
-            self.trace['vo'] = self.client.vo
-        self.trace['eventType'] = 'upload'
-        self.trace['eventVersion'] = version.RUCIO_VERSION[0]
+        self.trace: "TraceBaseDict" = {
+            'hostname': socket.getfqdn(),
+            'account': self.client.account,
+            'eventType': 'upload',
+            'eventVersion': version.RUCIO_VERSION[0],
+            'vo': self.client.vo if self.client.vo != 'def' else None
+        }
 
-    def upload(self, items, summary_file_path=None, traces_copy_out=None, ignore_availability=False, activity=None):
+    def upload(
+            self,
+            items: "Iterable[FileToUploadDict]",
+            summary_file_path: Optional[str] = None,
+            traces_copy_out: Optional[list["TraceBaseDict"]] = None,
+            ignore_availability: bool = False,
+            activity: Optional[str] = None
+    ) -> int:
         """
         :param items: List of dictionaries. Each dictionary describing a file to upload. Keys:
             path                  - path of the file that will be uploaded
@@ -100,7 +129,7 @@ class UploadClient:
         :raises NotAllFilesUploaded: if not all files were successfully uploaded
         """
         # helper to get rse from rse_expression:
-        def _pick_random_rse(rse_expression):
+        def _pick_random_rse(rse_expression: str) -> dict[str, Any]:
             rses = [r['rse'] for r in self.client.list_rses(rse_expression)]  # can raise InvalidRSEExpression
             random.shuffle(rses)
             return rses[0]
@@ -186,8 +215,8 @@ class UploadClient:
                 rse_attributes = self.client.list_rse_attributes(rse)
             except:
                 logger(logging.WARNING, 'Attributes of the RSE: %s not available.' % rse)
-            if (self.client_location and 'lan' in rse_settings['domain'] and 'site' in rse_attributes):
-                if self.client_location['site'] == rse_attributes['site']:
+            if (self.client_location and 'lan' in rse_settings['domain'] and RseAttr.SITE in rse_attributes):
+                if self.client_location['site'] == rse_attributes[RseAttr.SITE]:
                     domain = 'lan'
             logger(logging.DEBUG, '{} domain is used for the upload'.format(domain))
 
@@ -269,23 +298,23 @@ class UploadClient:
                                             sign_service=sign_service)
                     logger(logging.DEBUG, 'Upload done.')
                     success = True
-                    file['upload_result'] = {0: True, 1: None, 'success': True, 'pfn': pfn}  # needs to be removed
+                    file['upload_result'] = {0: True, 1: None, 'success': True, 'pfn': pfn}  # TODO: needs to be removed
                 except (ServiceUnavailable, ResourceTemporaryUnavailable, RSEOperationNotSupported, RucioException) as error:
                     logger(logging.WARNING, 'Upload attempt failed')
                     logger(logging.INFO, 'Exception: %s' % str(error), exc_info=True)
                     state_reason = str(error)
 
             if success:
-                num_succeeded += 1
                 trace['transferEnd'] = time.time()
                 trace['clientState'] = 'DONE'
                 file['state'] = 'A'
                 logger(logging.INFO, 'Successfully uploaded file %s' % basename)
-                self._send_trace(trace)
+                self._send_trace(cast("TraceDict", trace))
 
                 if summary_file_path:
                     summary.append(copy.deepcopy(file))
 
+                registration_succeeded = True
                 if not no_register:
                     if register_after_upload:
                         self._register_file(file, registered_dataset_dids, ignore_availability=ignore_availability, activity=activity)
@@ -294,20 +323,26 @@ class UploadClient:
                         try:
                             self.client.update_replicas_states(rse, files=[replica_for_api])
                         except Exception as error:
+                            registration_succeeded = False
                             logger(logging.ERROR, 'Failed to update replica state for file {}'.format(basename))
                             logger(logging.DEBUG, 'Details: {}'.format(str(error)))
 
                 # add file to dataset if needed
                 if dataset_did_str and not no_register:
                     try:
-                        self.client.attach_dids(file['dataset_scope'], file['dataset_name'], [file_did])
+                        self.client.attach_dids(file['dataset_scope'], file['dataset_name'], [file_did])  # type: ignore (`dataset_scope` and `dataset_name` always exist if `dataset_did_str`)
                     except Exception as error:
-                        logger(logging.WARNING, 'Failed to attach file to the dataset')
+                        registration_succeeded = False
+                        logger(logging.ERROR, 'Failed to attach file to the dataset')
                         logger(logging.DEBUG, 'Attaching to dataset {}'.format(str(error)))
+
+                # only report success if the registration operations succeeded as well
+                if registration_succeeded:
+                    num_succeeded += 1
             else:
                 trace['clientState'] = 'FAILED'
                 trace['stateReason'] = state_reason
-                self._send_trace(trace)
+                self._send_trace(cast('TraceDict', trace))
                 logger(logging.ERROR, 'Failed to upload file %s' % basename)
 
         if summary_file_path:
@@ -337,7 +372,23 @@ class UploadClient:
             raise NotAllFilesUploaded()
         return 0
 
-    def _register_file(self, file, registered_dataset_dids, ignore_availability=False, activity=None):
+    def _add_bittorrent_meta(self, file: "Mapping[str, Any]") -> None:
+        pieces_root, pieces_layers, piece_length = bittorrent_v2_merkle_sha256(os.path.join(file['dirname'], file['basename']))
+        bittorrent_meta = {
+            'bittorrent_pieces_root': base64.b64encode(pieces_root).decode(),
+            'bittorrent_pieces_layers': base64.b64encode(pieces_layers).decode(),
+            'bittorrent_piece_length': piece_length,
+        }
+        self.client.set_metadata_bulk(scope=file['did_scope'], name=file['did_name'], meta=bittorrent_meta)
+        self.logger(logging.INFO, f"Added bittorrent metadata to file DID {file['did_scope']}:{file['did_name']}")
+
+    def _register_file(
+            self,
+            file: "Mapping[str, Any]",
+            registered_dataset_dids: set[str],
+            ignore_availability: bool = False,
+            activity: Optional[str] = None
+    ) -> None:
         """
         Registers the given file in Rucio. Creates a dataset if
         needed. Registers the file DID and creates the replication
@@ -381,7 +432,6 @@ class UploadClient:
                 logger(logging.INFO, 'Successfully created dataset %s' % dataset_did_str)
             except DataIdentifierAlreadyExists:
                 logger(logging.INFO, 'Dataset %s already exists - no rule will be created' % dataset_did_str)
-
                 if file.get('lifetime') is not None:
                     raise InputValidationError('Dataset %s exists and lifetime %s given. Prohibited to modify parent dataset lifetime.' % (dataset_did_str,
                                                                                                                                            file.get('lifetime')))
@@ -400,7 +450,6 @@ class UploadClient:
 
             if str(meta['adler32']).lstrip('0') != str(file['adler32']).lstrip('0'):
                 logger(logging.ERROR, 'Local checksum %s does not match remote checksum %s' % (file['adler32'], meta['adler32']))
-
                 raise DataIdentifierAlreadyExists
 
             # add file to rse if it is not registered yet
@@ -411,13 +460,15 @@ class UploadClient:
         except DataIdentifierNotFound:
             logger(logging.DEBUG, 'File DID does not exist')
             self.client.add_replicas(rse=rse, files=[replica_for_api])
+            if config_get_bool('client', 'register_bittorrent_meta', default=False):
+                self._add_bittorrent_meta(file=file)
             logger(logging.INFO, 'Successfully added replica in Rucio catalogue at %s' % rse)
             if not dataset_did_str:
                 # only need to add rules for files if no dataset is given
                 self.client.add_replication_rule([file_did], copies=1, rse_expression=rse, lifetime=file.get('lifetime'), ignore_availability=ignore_availability, activity=activity)
                 logger(logging.INFO, 'Successfully added replication rule at %s' % rse)
 
-    def _get_file_guid(self, file):
+    def _get_file_guid(self, file: "Mapping[str, Any]") -> str:
         """
         Get the guid of a file, trying different strategies
         (This function is meant to be used as class internal only)
@@ -436,14 +487,18 @@ class UploadClient:
             try:
                 guid = output.splitlines()[-1].split()[0].replace('-', '').lower()
             except Exception:
-                raise RucioException('Error extracting GUID from ouput of pool_extractFileIdentifier')
+                raise RucioException('Error extracting GUID from output of pool_extractFileIdentifier')
         elif guid:
             guid = guid.replace('-', '')
         else:
             guid = generate_uuid()
         return guid
 
-    def _collect_file_info(self, filepath, item):
+    def _collect_file_info(
+            self,
+            filepath: "PathTypeAlias",
+            item: "FileToUploadDict"
+    ) -> "FileToUploadWithCollectedInfoDict":
         """
         Collects infos (e.g. size, checksums, etc.) about the file and
         returns them as a dictionary
@@ -455,6 +510,7 @@ class UploadClient:
         :returns: a dictionary containing all collected info and the input options
         """
         new_item = copy.deepcopy(item)
+        new_item = cast("FileToUploadWithCollectedInfoDict", new_item)
         new_item['path'] = filepath
         new_item['dirname'] = os.path.dirname(filepath)
         new_item['basename'] = os.path.basename(filepath)
@@ -471,7 +527,7 @@ class UploadClient:
 
         return new_item
 
-    def _collect_and_validate_file_info(self, items):
+    def _collect_and_validate_file_info(self, items: "Iterable[FileToUploadDict]") -> list["FileToUploadWithCollectedInfoDict"]:
         """
         Checks if there are any inconsistencies within the given input
         options and stores the output of _collect_file_info for every file
@@ -484,7 +540,7 @@ class UploadClient:
         :raises InputValidationError: if an input option has a wrong format
         """
         logger = self.logger
-        files = []
+        files: list["FileToUploadWithCollectedInfoDict"] = []
         for item in items:
             path = item.get('path')
             pfn = item.get('pfn')
@@ -497,8 +553,8 @@ class UploadClient:
                 continue
             if pfn:
                 item['force_scheme'] = pfn.split(':')[0]
-            if item.get('impl'):
-                impl = item.get('impl')
+            impl = item.get('impl')
+            if impl:
                 impl_split = impl.split('.')
                 if len(impl_split) == 1:
                     impl = 'rucio.rse.protocols.' + impl + '.Default'
@@ -515,7 +571,7 @@ class UploadClient:
                 elif not len(fnames):
                     logger(logging.WARNING, 'Skipping %s because it has no files in it. Subdirectories are not supported.' % dname)
             elif os.path.isdir(path) and recursive:
-                files.extend(self._recursive(item))
+                files.extend(cast("list[FileToUploadWithCollectedInfoDict]", self._recursive(item)))
             elif os.path.isfile(path) and not recursive:
                 file = self._collect_file_info(path, item)
                 files.append(file)
@@ -529,7 +585,7 @@ class UploadClient:
 
         return files
 
-    def _convert_file_for_api(self, file):
+    def _convert_file_for_api(self, file: "Mapping[str, Any]") -> dict[str, Any]:
         """
         Creates a new dictionary that contains only the values
         that are needed for the upload with the correct keys
@@ -552,7 +608,20 @@ class UploadClient:
             replica['pfn'] = pfn
         return replica
 
-    def _upload_item(self, rse_settings, rse_attributes, lfn, source_dir=None, domain='wan', impl=None, force_pfn=None, force_scheme=None, transfer_timeout=None, delete_existing=False, sign_service=None):
+    def _upload_item(
+            self,
+            rse_settings: "RSESettingsDict",
+            rse_attributes: dict[str, Any],
+            lfn: dict[str, Union[str, int]],
+            source_dir: Optional[str] = None,
+            domain: str = 'wan',
+            impl: Optional[str] = None,
+            force_pfn: Optional[str] = None,
+            force_scheme: Optional[str] = None,
+            transfer_timeout: Optional[int] = None,
+            delete_existing: bool = False,
+            sign_service: Optional[str] = None
+    ) -> Optional[str]:
         """
             Uploads a file to the connected storage.
 
@@ -600,11 +669,12 @@ class UploadClient:
         # Auth. mostly for object stores
         if sign_service:
             protocol_read = self._create_protocol(rse_settings, 'read', domain=domain, impl=impl)
-            signed_read_pfn = self.client.get_signed_url(rse_settings['rse'], sign_service, 'read', pfn)    # NOQA pylint: disable=undefined-variable
-            pfn = self.client.get_signed_url(rse_settings['rse'], sign_service, 'write', pfn)       # NOQA pylint: disable=undefined-variable
+            if pfn is not None:
+                signed_read_pfn = self.client.get_signed_url(rse_settings['rse'], sign_service, 'read', pfn)
+                pfn = self.client.get_signed_url(rse_settings['rse'], sign_service, 'write', pfn)
 
         # Create a name of tmp file if renaming operation is supported
-        pfn_tmp = '%s.rucio.upload' % pfn if protocol_write.renaming else pfn
+        pfn_tmp = cast(str, '%s.rucio.upload' % pfn if protocol_write.renaming else pfn)
         signed_read_pfn_tmp = '%s.rucio.upload' % signed_read_pfn if protocol_write.renaming else signed_read_pfn
 
         # Either DID exists or not register_after_upload
@@ -652,7 +722,7 @@ class UploadClient:
             raise RSEOperationNotSupported(str(error))
 
         # Is stat after that upload allowed?
-        skip_upload_stat = rse_attributes.get('skip_upload_stat', False)
+        skip_upload_stat = rse_attributes.get(RseAttr.SKIP_UPLOAD_STAT, False)
         self.logger(logging.DEBUG, 'skip_upload_stat=%s', skip_upload_stat)
 
         # Checksum verification, obsolete, see Gabriele changes.
@@ -688,7 +758,11 @@ class UploadClient:
 
         return pfn
 
-    def _retry_protocol_stat(self, protocol, pfn):
+    def _retry_protocol_stat(
+            self,
+            protocol: "RSEProtocol",
+            pfn: str
+    ) -> dict[str, Any]:
         """
         Try to stat file, on fail try again 1s, 2s, 4s, 8s, 16s, 32s later. Fail is all fail
         :param protocol:     The protocol to use to reach this file
@@ -716,9 +790,16 @@ class UploadClient:
                 time.sleep(2**attempt)
         return protocol.stat(pfn)
 
-    def _create_protocol(self, rse_settings, operation, impl=None, force_scheme=None, domain='wan'):
+    def _create_protocol(
+            self,
+            rse_settings: "RSESettingsDict",
+            operation: str,
+            impl: Optional[str] = None,
+            force_scheme: Optional[str] = None,
+            domain: str = 'wan'
+    ) -> "RSEProtocol":
         """
-        Protol construction.
+        Protocol construction.
         :param rse_settings:        rse_settings
         :param operation:           activity, e.g. read, write, delete etc.
         :param force_scheme:        custom scheme
@@ -733,7 +814,7 @@ class UploadClient:
             raise error
         return protocol
 
-    def _send_trace(self, trace):
+    def _send_trace(self, trace: "TraceDict") -> None:
         """
         Checks if sending trace is allowed and send the trace.
 
@@ -742,7 +823,7 @@ class UploadClient:
         if self.tracing:
             send_trace(trace, self.client.trace_host, self.client.user_agent)
 
-    def _recursive(self, item):
+    def _recursive(self, item: "FileToUploadDict") -> list["FileToUploadWithCollectedAndDatasetInfoDict"]:
         """
         If the --recursive flag is set, it replicates the folder structure recursively into collections
         A folder only can have either other folders inside or files, but not both of them
@@ -752,38 +833,42 @@ class UploadClient:
 
         :param item:        dictionary containing all descriptions of the files to upload
         """
-        files = []
-        datasets = []
-        containers = []
-        attach = []
-        scope = item.get('did_scope') if item.get('did_scope') is not None else self.default_file_scope
+        files: list["FileToUploadWithCollectedAndDatasetInfoDict"] = []
+        datasets: list["DatasetDict"] = []
+        containers: list["DIDStringDict"] = []
+        attach: "Iterable[AttachDict]" = []
+        scope = item.get('did_scope')
+        if scope is None:
+            scope = self.default_file_scope
         rse = item.get('rse')
         path = item.get('path')
-        if path[-1] == '/':
-            path = path[0:-1]
-        i = 0
-        path = os.path.abspath(path)
-        for root, dirs, fnames in os.walk(path):
-            if len(dirs) > 0 and len(fnames) > 0 and i == 0:
-                self.logger(logging.ERROR, 'A container can only have either collections or files, not both')
-                raise InputValidationError('Invalid input folder structure')
-            if len(fnames) > 0:
-                datasets.append({'scope': scope, 'name': root.split('/')[-1], 'rse': rse})
-                self.logger(logging.DEBUG, 'Appended dataset with DID %s:%s' % (scope, path))
-                for fname in fnames:
-                    file = self._collect_file_info(os.path.join(root, fname), item)
-                    file['dataset_scope'] = scope
-                    file['dataset_name'] = root.split('/')[-1]
-                    files.append(file)
-                    self.logger(logging.DEBUG, 'Appended file with DID %s:%s' % (scope, fname))
-            elif len(dirs) > 0:
-                containers.append({'scope': scope, 'name': root.split('/')[-1]})
-                self.logger(logging.DEBUG, 'Appended container with DID %s:%s' % (scope, path))
-                attach.extend([{'scope': scope, 'name': root.split('/')[-1], 'rse': rse, 'dids': {'scope': scope, 'name': dir_}} for dir_ in dirs])
-            elif len(dirs) == 0 and len(fnames) == 0:
-                self.logger(logging.WARNING, 'The folder %s is empty, skipping' % root)
-                continue
-            i += 1
+        if path and isinstance(path, str):
+            if path[-1] == '/':
+                path = path[0:-1]
+            i = 0
+            path = os.path.abspath(path)
+            for root, dirs, fnames in os.walk(path):
+                if len(dirs) > 0 and len(fnames) > 0 and i == 0:
+                    self.logger(logging.ERROR, 'A container can only have either collections or files, not both')
+                    raise InputValidationError('Invalid input folder structure')
+                if len(fnames) > 0:
+                    datasets.append({'scope': scope, 'name': root.split('/')[-1], 'rse': rse})
+                    self.logger(logging.DEBUG, 'Appended dataset with DID %s:%s' % (scope, path))
+                    for fname in fnames:
+                        file = self._collect_file_info(os.path.join(root, fname), item)
+                        file = cast("FileToUploadWithCollectedAndDatasetInfoDict", file)
+                        file['dataset_scope'] = scope
+                        file['dataset_name'] = root.split('/')[-1]
+                        files.append(file)
+                        self.logger(logging.DEBUG, 'Appended file with DID %s:%s' % (scope, fname))
+                elif len(dirs) > 0:
+                    containers.append({'scope': scope, 'name': root.split('/')[-1]})
+                    self.logger(logging.DEBUG, 'Appended container with DID %s:%s' % (scope, path))
+                    attach.extend([{'scope': scope, 'name': root.split('/')[-1], 'rse': rse, 'did': {'scope': scope, 'name': dir_}} for dir_ in dirs])
+                elif len(dirs) == 0 and len(fnames) == 0:
+                    self.logger(logging.WARNING, 'The folder %s is empty, skipping' % root)
+                    continue
+                i += 1
         # if everything went ok, replicate the folder structure in Rucio storage
         for dataset in datasets:
             try:
@@ -801,14 +886,18 @@ class UploadClient:
                 self.logger(logging.ERROR, 'It was not possible to create dataset with DID %s:%s' % (container['scope'], container['name']))
         for att in attach:
             try:
-                self.client.attach_dids(scope=att['scope'], name=att['name'], dids=[att['dids']])
+                self.client.attach_dids(scope=att['scope'], name=att['name'], dids=[att['did']])
                 self.logger(logging.INFO, 'DIDs attached to collection %s:%s' % (att['scope'], att['name']))
             except RucioException as error:
                 self.logger(logging.ERROR, error)
                 self.logger(logging.ERROR, 'It was not possible to attach to collection with DID %s:%s' % (att['scope'], att['name']))
         return files
 
-    def preferred_impl(self, rse_settings, domain):
+    def preferred_impl(
+            self,
+            rse_settings: "RSESettingsDict",
+            domain: str
+    ) -> Optional[str]:
         """
             Finds the optimum protocol impl preferred by the client and
             supported by the remote RSE.

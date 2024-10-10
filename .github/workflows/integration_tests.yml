@@ -8,17 +8,17 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: Update pip
         run: python3 -m pip install -U pip setuptools
       - name: Install python requirements for matrix_parser.py
         run: python3 -m pip install -U PyYAML
       - name: Identify branch
         id: branch
-        run: python3 -c 'from os import environ as env; print("::set-output name=branch::" + (env.get("GITHUB_BASE_REF", None) if env.get("GITHUB_BASE_REF", None) else env.get("GITHUB_REF", "master")))'
+        run: python3 tools/github/workflow/set_branch_output_env.py
       - name: Identify Matrix
         id: matrix
-        run: echo "::set-output name=matrix::$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix_integration_tests.yml)"
+        run: echo "matrix=$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix_integration_tests.yml)" >> $GITHUB_OUTPUT
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -32,11 +32,11 @@ jobs:
         cfg: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
       - name: Checkout rucio containers repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           repository: rucio/containers
           fetch-depth: 0
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         name: Checkout rucio source
         with:
           path: dev/rucio
@@ -64,9 +64,9 @@ jobs:
               GIT_REF=$(git describe --tags --abbrev=0)
               IFS=. read major minor micro build <<<"${GIT_REF}"
 
-              RELEASE_FAMILY=$major.$minor
+              RELEASE_FAMILY=$major
               LATEST_RELEASE_IN_RELEASE_FAMILY=$(git for-each-ref --format '%(refname)' refs/tags/$RELEASE_FAMILY.* | sort -k 1.11V | tail -1 | awk -F'/' '{print $3}')
-              LATEST_RUCIO_RELEASE_FAMILY=$(git for-each-ref --format '%(refname)' refs/tags | sort -k 1.11V | tail -1 | awk -F'/' '{print $3}' | awk -F'.' '{print $1 "." $2}')
+              LATEST_RUCIO_RELEASE_FAMILY=$(git for-each-ref --format '%(refname)' refs/tags | sort -k 1.11V | tail -1 | awk -F'/' '{print $3}' | awk -F'.' '{print $1}')
 
               echo "Release line for ${BRANCH} is ${RELEASE_FAMILY}"
               echo "The latest release line for rucio is ${LATEST_RUCIO_RELEASE_FAMILY}"
@@ -92,13 +92,13 @@ jobs:
       - name: Use rucio/containers Dockerfile for integration tests
         shell: bash
         run: |
-          sed -i 's;RUN git clone .*;COPY ./rucio /tmp/rucio;' $GITHUB_WORKSPACE/dev/Dockerfile
+          sed -i 's;RUN git clone .*;COPY ./rucio /tmp/rucio;' $GITHUB_WORKSPACE/dev/alma9.Dockerfile
       - name: Build rucio-dev images
         id: images
         shell: bash
         run: |
           docker login https://ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-          docker-compose -f $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose-storage-externalmetadata.yml pull
+          docker compose -f $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose.yml --profile storage --profile externalmetadata --profile iam pull
           i=0; until [ "$i" -ge 3 ]; do
             IMAGES=$(echo '${{ toJson(matrix.cfg) }}' | $GITHUB_WORKSPACE/dev/rucio/tools/test/build_images.py --output list \
                 --cache-repo ghcr.io/${{ github.repository }} --branch "${{ needs.setup.outputs.branch }}" \
@@ -111,66 +111,68 @@ jobs:
           done
           docker logout https://ghcr.io
           if [[ -z "$IMAGES" ]]; then echo "::error::Building images failed ultimately"; exit 1; fi
-          echo "::set-output name=images::$IMAGES"
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
       - name: Prepare Docker Compose
         shell: bash
         run: |
           docker image ls
           sed -i 's;image: docker.io/rucio/rucio-dev.*;image: ${{ fromJSON(steps.images.outputs.images)[0] }};' \
-              $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose-storage-externalmetadata.yml
+              $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose.yml
       - name: Start containers
-        run: docker-compose -f $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose-storage-externalmetadata.yml up -d
+        run: docker compose -f $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose.yml --profile storage --profile externalmetadata --profile iam up -d
       - name: Initialize tests
         shell: bash
         run: |
           docker exec -t dev_rucio_1 cp etc/rse-accounts.cfg.template etc/rse-accounts.cfg
-          docker exec -t dev_rucio_1 tools/run_tests_docker.sh -ir
+          docker exec -t dev_rucio_1 tools/run_tests.sh -ir
       - name: File Upload/Download Test
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rucio_server.py
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_rucio_server.py
       - name: UploadClient Test
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_upload.py
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_upload.py
       - name: File Upload/Download Test using 'impl' parameter
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_impl_upload_download.py
-      #- name: Test Protocol XrootD
-      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_xrootd.py
-      #- name: Test Protocol SSH (scp)
-      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_ssh.py
-      #- name: Test Protocol Rsync
-      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_rsync.py
-      #- name: Test Protocol Rclone
-      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_rse_protocol_rclone.py
-      #- name: Test Conveyor
-      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_conveyor.py
-      #- name: Execute transfer and export FTS transfer details
-      #  id: tpc
-      #  shell: bash
-      #  run: |
-      #    docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short --export-artifacts-from="test_tpc" test_tpc.py
-      #    FTS_LOG_FILE=$(docker exec -t dev_rucio_1 cat /tmp/test_tpc.artifact)
-      #    echo "::set-output name=fts3log::$FTS_LOG_FILE"
-      #- name: Verify TPC transfers from FTS logs
-      #  shell: bash
-      #  run: |
-      #    FTS_LOG_FILE=${{ steps.tpc.outputs.fts3log }}
-      #    if docker exec -t dev_fts_1 /bin/bash -c "grep -Fq \"3rd pull\" $FTS_LOG_FILE"
-      #    then
-      #      echo "TPC 3rd party pull verified"
-      #    else
-      #      echo "TPC failed"
-      #      exit 1
-      #    fi
-      #- name: Print server error logs
-      #  if: ${{ success() || failure() }}
-      #  shell: bash
-      #  run: |
-      #    docker exec -t dev_rucio_1 cat /var/log/rucio/httpd_error_log
-      #- name: Archive Upload/Download Test
-      #  run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_download.py::test_download_from_archive_on_xrd
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_impl_upload_download.py
+      - name: Test gfal2 implementation on xrootd protocol
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_rse_protocol_gfal2_impl.py
+      - name: Test Protocol XrootD
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_rse_protocol_xrootd.py
+      - name: Test Protocol SSH (scp)
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_rse_protocol_ssh.py
+      - name: Test Protocol Rsync
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_rse_protocol_rsync.py
+      - name: Test Protocol Rclone
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_rse_protocol_rclone.py
+      - name: Test Conveyor
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_conveyor.py
+      - name: Execute transfer and export FTS transfer details
+        id: tpc
+        shell: bash
+        run: |
+          docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short --export-artifacts-from="test_tpc" tests/test_tpc.py
+          FTS_LOG_FILE=$(docker exec -t dev_rucio_1 cat /tmp/test_tpc.artifact)
+          echo "fts3log=$FTS_LOG_FILE" >> $GITHUB_OUTPUT
+      - name: Verify TPC transfers from FTS logs
+        shell: bash
+        run: |
+          FTS_LOG_FILE=${{ steps.tpc.outputs.fts3log }}
+          if docker exec -t dev_fts_1 /bin/bash -c "grep -Fq \"3rd pull\" $FTS_LOG_FILE"
+          then
+            echo "TPC 3rd party pull verified"
+          else
+            echo "TPC failed"
+            exit 1
+          fi
+      - name: Test Token Deletion
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_reaper.py::test_deletion_with_tokens
+      - name: Print server error logs
+        if: ${{ success() || failure() }}
+        shell: bash
+        run: |
+          docker exec -t dev_rucio_1 cat /var/log/rucio/httpd_error_log
+      - name: Archive Upload/Download Test
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_download.py::test_download_from_archive_on_xrd
       - name: Test external metadata plugin (mongo)
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_did_meta_plugins.py::TestDidMetaMongo
-      - name: Test external metadata plugin (elasticsearch)
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_did_meta_plugins.py::TestDidMetaElastic
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_did_meta_plugins.py::TestDidMetaMongo
       - name: Test external metadata plugin (postgres)
-        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short test_did_meta_plugins.py::TestDidMetaExternalPostgresJSON
+        run: docker exec -t dev_rucio_1 tools/pytest.sh -v --tb=short tests/test_did_meta_plugins.py::TestDidMetaExternalPostgresJSON
       - name: Stop containers
-        run: docker-compose -f $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose-storage-externalmetadata.yml down
+        run: docker compose -f $GITHUB_WORKSPACE/dev/rucio/etc/docker/dev/docker-compose.yml --profile storage --profile externalmetadata --profile iam down

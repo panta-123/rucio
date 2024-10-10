@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,9 +35,13 @@ from rucio.daemons.common import run_daemon
 from rucio.db.sqla.constants import LifetimeExceptionsState
 
 if TYPE_CHECKING:
+    from types import FrameType
+    from typing import Optional
+
     from rucio.daemons.common import HeartbeatHandler
 
 GRACEFUL_STOP = threading.Event()
+DAEMON_NAME = 'atropos'
 
 
 def atropos(
@@ -61,8 +64,7 @@ def atropos(
     run_daemon(
         once=once,
         graceful_stop=GRACEFUL_STOP,
-        executable='atropos',
-        logger_prefix='atropos',
+        executable=DAEMON_NAME,
         partition_wait_time=10,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -107,7 +109,7 @@ def run_once(
             lifetime_exceptions[key] = excep['expires_at']
     logger(logging.DEBUG, '%d active exceptions', len(lifetime_exceptions))
 
-    rand = random.Random(worker_number)
+    rand = random.Random(worker_number)   # noqa: S311
 
     try:
         rules = get_rules_beyond_eol(date_check, worker_number, total_workers, session=None)
@@ -208,7 +210,7 @@ def run(
     """
     Starts up the atropos threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise exception.DatabaseException('Database was not updated, daemon won\'t start')
@@ -233,7 +235,7 @@ def run(
         thread_list = [t.join(timeout=3.14) for t in thread_list if t and t.is_alive()]
 
 
-def stop(signum=None, frame=None):
+def stop(signum: "Optional[int]" = None, frame: "Optional[FrameType]" = None) -> None:
     """
     Graceful exit.
     """

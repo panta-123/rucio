@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +15,7 @@
 ''' add index to quarantined replicas '''
 
 from alembic import context
-from alembic.op import (create_index, drop_index)
-
+from alembic.op import create_index, drop_index
 
 # revision identifiers, used by Alembic.
 revision = 'b818052fa670'

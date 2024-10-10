@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,20 +14,23 @@
 
 from typing import TYPE_CHECKING
 
-from rucio.common.config import config_get
-from rucio.core.did import get_metadata
-from rucio.core.lifetime_exception import list_exceptions
 import rucio.core.scope
-from rucio.core.account import has_account_attribute
+from rucio.common.config import config_get
+from rucio.common.constants import RseAttr
+from rucio.common.types import InternalAccount, InternalScope
+from rucio.core.account import has_account_attribute, list_account_attributes
+from rucio.core.did import get_metadata
 from rucio.core.identity import exist_identity_account
+from rucio.core.lifetime_exception import list_exceptions
+from rucio.core.rse import list_rse_attributes
+from rucio.core.rse_expression_parser import parse_expression
 from rucio.core.rule import get_rule
 from rucio.db.sqla.constants import IdentityType
 
-
 if TYPE_CHECKING:
     from typing import Optional
+
     from sqlalchemy.orm import Session
-    from rucio.common.types import InternalAccount
 
 
 def has_permission(issuer: "InternalAccount", action: str, kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
@@ -80,6 +82,7 @@ def has_permission(issuer: "InternalAccount", action: str, kwargs: dict, *, sess
             'attach_dids_to_dids': perm_attach_dids_to_dids,
             'create_did_sample': perm_create_did_sample,
             'set_metadata': perm_set_metadata,
+            'set_metadata_bulk': perm_set_metadata_bulk,
             'set_status': perm_set_status,
             'queue_requests': perm_queue_requests,
             'set_rse_usage': perm_set_rse_usage,
@@ -108,7 +111,7 @@ def has_permission(issuer: "InternalAccount", action: str, kwargs: dict, *, sess
             'list_heartbeats': perm_list_heartbeats,
             'resurrect': perm_resurrect,
             'update_lifetime_exceptions': perm_update_lifetime_exceptions,
-            'get_ssh_challenge_token': perm_get_ssh_challenge_token,
+            'get_auth_token_ssh': perm_get_auth_token_ssh,
             'get_signed_url': perm_get_signed_url,
             'add_bad_pfns': perm_add_bad_pfns,
             'del_account_identity': perm_del_account_identity,
@@ -121,6 +124,18 @@ def has_permission(issuer: "InternalAccount", action: str, kwargs: dict, *, sess
 
 def _is_root(issuer):
     return issuer.external == 'root'
+
+
+def _perm_country(issuer: "InternalAccount", rses: list, roles: list, *, session: "Optional[Session]" = None) -> bool:
+    admin_in_country = []
+    for kv in list_account_attributes(account=issuer, session=session):
+        if kv['key'].startswith('country-') and kv['value'] == 'admin':
+            admin_in_country.append(kv['key'].partition('-')[2])
+    if admin_in_country:
+        for rse in rses:
+            if list_rse_attributes(rse_id=rse['id'], session=session).get(RseAttr.COUNTRY) in admin_in_country:
+                return True
+    return False
 
 
 def perm_default(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
@@ -402,10 +417,14 @@ def perm_add_did(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[
         if not perm_add_rule(issuer, kwargs=kwargs_rule, session=session):
             return False
 
+    scope = kwargs['scope']
+    if isinstance(kwargs['scope'], str):
+        scope = InternalScope(kwargs['scope'])
     return perm_default(issuer, kwargs, session=session)\
         or has_account_attribute(account=issuer, key='did_admin', session=session)\
         or has_account_attribute(account=issuer, key='production_account', session=session)\
-        or rucio.core.scope.is_scope_owner(scope=kwargs['scope'], account=issuer, session=session)
+        or rucio.core.scope.is_scope_owner(scope=scope, account=issuer, session=session)\
+        or (kwargs.get('name', False) and kwargs['name'].startswith('/belle/scout'))
 
 
 def perm_add_dids(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
@@ -483,6 +502,18 @@ def perm_del_rule(issuer: "InternalAccount", kwargs: dict, *, session: "Optional
     :param session: The DB session to use
     :returns: True if account is allowed to call the API call, otherwise False
     """
+    rule = get_rule(rule_id=kwargs['rule_id'], session=session)
+    rses = parse_expression(rule['rse_expression'], filter_={'vo': issuer.vo}, session=session)
+    # Check if user is a country admin
+    if _perm_country(issuer=issuer, rses=rses, roles=['admin', ], session=session):
+        return True
+
+    # DELETERS can delete the rule
+    for rse in rses:
+        rse_attr = list_rse_attributes(rse_id=rse['id'], session=session)
+        if rse_attr.get(RseAttr.RULE_DELETERS):
+            if issuer.external in rse_attr.get(RseAttr.RULE_DELETERS).split(','):
+                return True
     return perm_default(issuer, kwargs, session=session)\
         or has_account_attribute(account=issuer, key='rule_admin', session=session)\
         or get_rule(kwargs['rule_id'], session=session)['account'] == issuer
@@ -499,7 +530,7 @@ def perm_update_rule(issuer: "InternalAccount", kwargs: dict, *, session: "Optio
     """
     return perm_default(issuer, kwargs, session=session)\
         or has_account_attribute(account=issuer, key='rule_admin', session=session)\
-        or (kwargs.get('rule_id') and get_rule(kwargs['rule_id'], session=session)['account'] == issuer)
+        or (kwargs.get('rule_id', False) and get_rule(kwargs['rule_id'], session=session)['account'] == issuer)
 
 
 def perm_approve_rule(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
@@ -566,6 +597,22 @@ def perm_detach_dids(issuer: "InternalAccount", kwargs: dict, *, session: "Optio
     """
     return perm_default(issuer, kwargs, session=session)\
         or has_account_attribute(account=issuer, key='did_admin', session=session)\
+        or rucio.core.scope.is_scope_owner(scope=kwargs['scope'], account=issuer, session=session)
+
+
+def perm_set_metadata_bulk(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
+    """
+    Checks if an account can set a metadata on a data identifier.
+
+    :param issuer: Account identifier which issues the command.
+    :param kwargs: List of arguments for the action.
+    :param session: The DB session to use
+    :returns: True if account is allowed, otherwise False
+    """
+    meta = get_metadata(kwargs['scope'], kwargs['name'], session=session)
+    return perm_default(issuer, kwargs, session=session)\
+        or has_account_attribute(account=issuer, key='did_admin', session=session)\
+        or meta.get('account', '') == issuer\
         or rucio.core.scope.is_scope_owner(scope=kwargs['scope'], account=issuer, session=session)
 
 
@@ -673,6 +720,10 @@ def perm_add_replicas(issuer: "InternalAccount", kwargs: dict, *, session: "Opti
     :param session: The DB session to use
     :returns: True if account is allowed, otherwise False
     """
+    rses = [{'id': kwargs['rse_id']}]
+    if str(kwargs.get('rse', '')).endswith('LOCAL-SE')\
+            and _perm_country(issuer=issuer, rses=rses, roles=['admin', 'user'], session=session):
+        return True
     return str(kwargs.get('rse', '')).endswith('TMP-SE')\
         or perm_default(issuer, kwargs, session=session)
 
@@ -808,6 +859,9 @@ def perm_set_local_account_limit(issuer: "InternalAccount", kwargs: dict, *, ses
     :param session: The DB session to use
     :returns: True if account is allowed, otherwise False
     """
+    rses = [{'id': kwargs['rse_id']}]
+    if _perm_country(issuer=issuer, rses=rses, roles=['admin', ], session=session):
+        return True
     return perm_default(issuer, kwargs, session=session)\
         or (has_account_attribute(account=issuer, key='rse_admin', session=session) and has_account_attribute(account=issuer, key='account_admin', session=session))
 
@@ -960,9 +1014,9 @@ def perm_update_lifetime_exceptions(issuer: "InternalAccount", kwargs: dict, *, 
     return perm_default(issuer, kwargs, session=session)
 
 
-def perm_get_ssh_challenge_token(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
+def perm_get_auth_token_ssh(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
     """
-    Checks if an account can request a challenge token.
+    Checks if an account can request an ssh token.
 
     :param issuer: Account identifier which issues the command.
     :param kwargs: List of arguments for the action.

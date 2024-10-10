@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,7 @@
 ''' Removal of ReplicaState.SOURCE '''
 
 from alembic import context, op
-from alembic.op import (create_check_constraint)
+from alembic.op import create_check_constraint
 
 from rucio.db.sqla.util import try_drop_constraint
 

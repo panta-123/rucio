@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,10 +15,8 @@
 ''' add eol_at in rules '''
 
 import sqlalchemy as sa
-
 from alembic import context
 from alembic.op import add_column, drop_column
-
 
 # Alembic revision identifiers
 revision = '0437a40dbfd1'

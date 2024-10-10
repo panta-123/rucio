@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,10 +15,8 @@
 ''' added purge column to rules '''
 
 import sqlalchemy as sa
-
 from alembic import context
-from alembic.op import add_column, drop_column, create_check_constraint
-
+from alembic.op import add_column, create_check_constraint, drop_column
 
 # Alembic revision identifiers
 revision = 'd6dceb1de2d'

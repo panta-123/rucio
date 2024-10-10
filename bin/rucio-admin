@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,25 +24,37 @@ import signal
 import sys
 import time
 import traceback
-from textwrap import dedent
-from functools import wraps
-
 from configparser import NoOptionError, NoSectionError
+from functools import wraps
+from textwrap import dedent
+
 from tabulate import tabulate
 
 from rucio import version
 from rucio.client import Client
 from rucio.common.config import config_get
-from rucio.common.exception import (AccountNotFound, DataIdentifierAlreadyExists, AccessDenied,
-                                    DataIdentifierNotFound, InvalidObject, ReplicaNotFound,
-                                    RSENotFound, RSEOperationNotSupported, InvalidRSEExpression,
-                                    DuplicateContent, RuleNotFound, CannotAuthenticate,
-                                    Duplicate, ReplicaIsLocked, ConfigNotFound, ScopeNotFound,
-                                    InputValidationError)
+from rucio.common.constants import RseAttr
+from rucio.common.exception import (
+    AccessDenied,
+    AccountNotFound,
+    CannotAuthenticate,
+    ConfigNotFound,
+    DataIdentifierAlreadyExists,
+    DataIdentifierNotFound,
+    Duplicate,
+    DuplicateContent,
+    InputValidationError,
+    InvalidObject,
+    InvalidRSEExpression,
+    ReplicaIsLocked,
+    ReplicaNotFound,
+    RSENotFound,
+    RSEOperationNotSupported,
+    RuleNotFound,
+    ScopeNotFound,
+)
 from rucio.common.extra import import_extras
-from rucio.common.utils import (chunks, construct_surl, sizefmt, get_bytes_value_from_string,
-                                render_json, parse_response, extract_scope, clean_surls,
-                                StoreAndDeprecateWarningAction)
+from rucio.common.utils import StoreAndDeprecateWarningAction, chunks, clean_pfns, construct_non_deterministic_pfn, extract_scope, get_bytes_value_from_string, parse_response, render_json, sizefmt
 from rucio.rse import rsemanager as rsemgr
 
 EXTRA_MODULES = import_extras(['argcomplete'])
@@ -375,7 +386,7 @@ def set_limits(args):
             try:
                 byte_limit = int(limit_input)
             except ValueError:
-                logger.error('The limit could not be set. Either you misspelled infinity or your input could not be converted to integer or you used a wrong pattern. Please use a format like 10GB with B,KB,MB,GB,TB,PB as units (not case sensistive)')
+                logger.error('The limit could not be set. Either you misspelled infinity or your input could not be converted to integer or you used a wrong pattern. Please use a format like 10GB with B,KB,MB,GB,TB,PB as units (not case sensitive)')
                 return FAILURE
 
     client.set_account_limit(account=args.account, rse=args.rse, bytes_=byte_limit, locality=locality)
@@ -1137,21 +1148,21 @@ def declare_bad_file_replicas(args):
             list_bad_pfns = []
             cnt += 1
             previous_pattern = None
-            for surl in clean_surls(chunk):
+            for pfn in clean_pfns(chunk):
                 unknown = True
                 if previous_pattern:
-                    if previous_pattern in surl:
-                        list_bad_pfns.append(surl)
+                    if previous_pattern in pfn:
+                        list_bad_pfns.append(pfn)
                         unknown = False
                         continue
                 for pattern in prot_dict:
-                    if pattern in surl:
+                    if pattern in pfn:
                         previous_pattern = prot_dict[pattern]
-                        list_bad_pfns.append(surl)
+                        list_bad_pfns.append(pfn)
                         unknown = False
                         break
                 if unknown:
-                    print('Cannot find any RSE associated to %s' % surl)
+                    print('Cannot find any RSE associated to %s' % pfn)
             client.add_bad_pfns(pfns=list_bad_pfns, reason=args.reason, state='BAD', expires_at=None)
             ndeclared = len(list_bad_pfns)
             tot_file_declared += ndeclared
@@ -1185,7 +1196,9 @@ def declare_temporary_unavailable_replicas(args):
     else:
         bad_files = args.listbadfiles
 
-    assert args.duration is not None, "Duration should have been set, something went wrong!"
+    if args.duration is None:
+        raise ValueError("Duration should have been set, something went wrong!")
+
     expiration_date = (datetime.datetime.utcnow() + datetime.timedelta(seconds=args.duration)).isoformat()
 
     chunk_size = 10000
@@ -1234,13 +1247,13 @@ def list_pfns(args):
                 if not rse_info['deterministic']:
                     logger.warning('This is a non-deterministic site, so the real PFN might be different from the on suggested')
                     rse_attr = client.list_rse_attributes(rse)
-                    naming_convention = rse_attr.get('naming_convention', None)
+                    naming_convention = rse_attr.get(RseAttr.NAMING_CONVENTION, None)
                     parents = [did for did in client.list_parent_dids(scope, name)]
                     if len(parents) > 1:
                         logger.warning('The file has multiple parents')
                     for did in parents:
                         if did['type'] == 'DATASET':
-                            path = construct_surl(did['name'], scope, name, naming_convention=naming_convention)
+                            path = construct_non_deterministic_pfn(did['name'], scope, name, naming_convention=naming_convention)
                             pfn = ''.join([proto.attributes['scheme'],
                                            '://',
                                            proto.attributes['hostname'],
@@ -1277,7 +1290,7 @@ def import_data(args):
         print('There was problem with decoding your file.')
         print(error)
         return FAILURE
-    except IOError as error:
+    except OSError as error:
         print('There was a problem with reading your file.')
         print(error)
         return FAILURE
@@ -1309,7 +1322,7 @@ def export_data(args):
             print('File successfully written.')
         print('Data successfully exported to %s' % args.file_path)
         return SUCCESS
-    except IOError as error:
+    except OSError as error:
         print('There was a problem with reading your file.')
         print(error)
         return FAILURE
@@ -1341,10 +1354,8 @@ def get_parser():
     """
     oparser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]), add_help=True)
 
-    required_arg = {}
-    if sys.version_info >= (3, 7):
-        # required argument was added in Python 3.7 and restores the Python 2 behavior
-        required_arg = {'required': True}
+    # required argument was added in Python 3.7 and restores the Python 2 behavior
+    required_arg = {'required': True}
 
     subparsers = oparser.add_subparsers(dest='subcommand', **required_arg)
 
@@ -1375,7 +1386,7 @@ def get_parser():
     oparser.add_argument('--oidc-refresh-lifetime', dest='oidc_refresh_lifetime', default=None, help='Max lifetime in hours for this an access token will be refreshed by asynchronous Rucio daemon. '
                          + 'If not specified, refresh will be stopped after 4 days. This option is effective only if --oidc-scope includes offline_access scope for a refresh token to be granted to Rucio.')  # NOQA: W503
     oparser.add_argument('--oidc-issuer', dest='oidc_issuer', default=None,
-                         help='Defines which Identity Provider is goign to be used. The issuer string must correspond '
+                         help='Defines which Identity Provider is going to be used. The issuer string must correspond '
                          + 'to the keys configured in the /etc/idpsecrets.json auth server configuration file.')  # NOQA: W503
 
     # Options for the x509  auth_strategy
@@ -1424,7 +1435,7 @@ def get_parser():
                                                               '"""""""""""""\n'
                                                               '::\n'
                                                               '\n'
-                                                              '    $ rucio-admin account list --type \'user\'\n'
+                                                              '    $ rucio-admin account list --type USER\n'
                                                               '\n')
     list_account_parser.add_argument('--type', dest='account_type', action='store', help='Account Type (USER, GROUP, SERVICE)')
     list_account_parser.add_argument('--id', dest='identity', action='store', help='Identity (e.g. DN)')
@@ -1545,9 +1556,9 @@ def get_parser():
                                                                          '::\n'
                                                                          '\n'
                                                                          '    $ rucio-admin account list-identities jdoe\n'
-                                                                         '    Identity: /C=DE/O=GermanGrid/OU=Desy/CN=Joe Doe, type: X509\n'
+                                                                         '    Identity: CN=Joe Doe,OU=Desy,O=GermanGrid,C=DE, type: X509\n'
                                                                          '    Identity: jdoe@CERN.CH,  type: GSS\n'
-                                                                         '    Identity: /DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707654/CN=Joe Doe, type: X509\n'
+                                                                         '    Identity: CN=Joe Doe,CN=707654,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch, type: X509\n'
                                                                          '\n')
     list_account_identities_parser.set_defaults(which='list_identities')
     list_account_identities_parser.add_argument('account', action='store', help='Account name')
@@ -1665,11 +1676,11 @@ def get_parser():
                                                                '\n'
                                                                'To add an identity of X509 type::\n'
                                                                '\n'
-                                                               '    $ rucio-admin identity add --account jdoe --type X509 --id \'/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707658/CN=Joe Doe\' --email jdoe@cern.ch\n'
-                                                               '    Added new identity to account: /DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707658/CN=Joe Doe-jdoe\n'
+                                                               '    $ rucio-admin identity add --account jdoe --type X509 --id \'CN=Joe Doe,CN=707658,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch\' --email jdoe@cern.ch\n'
+                                                               '    Added new identity to account: CN=Joe Doe,CN=707658,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch\n'
                                                                '    \n'
                                                                '    $ rucio-admin account list-identities jdoe\n'
-                                                               '    Identity: /DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707658/CN=Joe Doe,   type: X509\n'
+                                                               '    Identity: CN=Joe Doe,CN=707658,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch,   type: X509\n'
                                                                '\n'
                                                                'Note: please keep the DN inside quota marks.\n'
                                                                '\n'
@@ -1680,7 +1691,7 @@ def get_parser():
                                                                '    \n'
                                                                '    $ rucio-admin account list-identities jdoe\n'
                                                                '    Identity: jdoe@CERN.CH,    type: GSS\n'
-                                                               '    Identity: /DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707658/CN=Joe Doe,   type: X509\n'
+                                                               '    Identity: CN=Joe Doe,CN=707658,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch,   type: X509\n'
                                                                '\n')
     identity_add_parser.set_defaults(which='identity_add')
     identity_add_parser.add_argument('--account', dest='account', action='store', help='Account name', required=True)
@@ -1697,10 +1708,10 @@ def get_parser():
                                                                   '"""""""""""""\n'
                                                                   '::\n'
                                                                   '\n'
-                                                                  '    $ rucio-admin identity delete --account jdoe --type X509 --id \'/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707658/CN=Joe Doe\'\n'
-                                                                  '    Deleted identity: /DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=jdoe/CN=707658/CN=Joe Doe\n'
+                                                                  '    $ rucio-admin identity delete --account jdoe --type X509 --id \'CN=Joe Doe,CN=707658,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch\'\n'
+                                                                  '    Deleted identity: CN=Joe Doe,CN=707658,CN=jdoe,OU=Users,OU=Organic Units,DC=cern,DC=ch\n'
                                                                   '\n'
-                                                                  'Note: if the identity was accidentaly deleted, use add option.\n'
+                                                                  'Note: if the identity was accidentally deleted, use add option.\n'
                                                                   '\n')
     identity_delete_parser.set_defaults(which='identity_delete')
     identity_delete_parser.add_argument('--account', dest='account', action='store', help='Account name', required=True)
@@ -1948,7 +1959,7 @@ def get_parser():
                                                               '    $ rucio-admin rse add-protocol --hostname jdoes.test.org --scheme gsiftp --prefix \'/atlasdatadisk/rucio/\' --port 8443 JDOE_DATADISK\n'
                                                               '\n'
                                                               'Note: no printed stdout.\n'
-                                                              'Note: examples of optional parametres::\n'
+                                                              'Note: examples of optional parameters::\n'
                                                               '\n'
                                                               '    --space-token DATADISK\n'
                                                               '    --web-service-path \'/srm/managerv2?SFN=\'\n'
@@ -2060,7 +2071,7 @@ def get_parser():
                                                     epilog='Usage example\n'
                                                            '"""""""""""""\n'
                                                            '\n'
-                                                           '  $ rucio-admin rse delete-limit XRD3 MaxBeingDeletedFiles')
+                                                           '  $ rucio-admin rse delete-limit XRD3 MinFreeSpace')
     set_limit_rse_parser.set_defaults(which='delete_limit_rse')
     set_limit_rse_parser.add_argument('rse', action='store', help='RSE name')
     set_limit_rse_parser.add_argument('name', action='store', help='Name of the limit')
@@ -2102,7 +2113,7 @@ def get_parser():
 
     # The config subparser
     config_parser = subparsers.add_parser('config',
-                                          help='Configuration methods. The global configuration of data mangement system can by modified.',
+                                          help='Configuration methods. The global configuration of data management system can by modified.',
                                           formatter_class=argparse.RawDescriptionHelpFormatter,
                                           epilog='''e.g. quotas, daemons, rses''')
     config_subparser = config_parser.add_subparsers(dest='config_subcommand', **required_arg)
@@ -2303,9 +2314,9 @@ def get_parser():
     declare_bad_file_replicas_parser.add_argument('--inputfile', dest='inputfile', nargs='?', action='store', help='File containing list of bad items')
     declare_bad_file_replicas_parser.add_argument('--allow-collection', dest='allow_collection', action='store_true', help='Allow passing a collection DID as bad item')
 
-    declare_bad_file_replicas_parser.add_argument('--lfns', dest='lfns', nargs='?', action='store', help='File cotaining list of LFNs for bad replicas. Requires --rse and --scope')
-    declare_bad_file_replicas_parser.add_argument('--scope', dest='scope', nargs='?', action='store', help='Common scope for bad replicas secified with LFN list, ignored wthout --lfns')
-    declare_bad_file_replicas_parser.add_argument('--rse', dest='rse', nargs='?', action='store', help='Common RSE for bad replicas secified with LFN list, ignored wthout --lfns')
+    declare_bad_file_replicas_parser.add_argument('--lfns', dest='lfns', nargs='?', action='store', help='File containing list of LFNs for bad replicas. Requires --rse and --scope')
+    declare_bad_file_replicas_parser.add_argument('--scope', dest='scope', nargs='?', action='store', help='Common scope for bad replicas specified with LFN list, ignored without --lfns')
+    declare_bad_file_replicas_parser.add_argument('--rse', dest='rse', nargs='?', action='store', help='Common RSE for bad replicas specified with LFN list, ignored without --lfns')
 
     # The declare-temporary-unavailable command
     declare_temporary_unavailable_replicas_parser = rep_subparser.add_parser('declare-temporary-unavailable',

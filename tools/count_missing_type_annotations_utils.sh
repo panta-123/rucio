@@ -15,17 +15,17 @@
 # limitations under the License.
 
 # Script with all tools to count the missing python type annotations in the
-# project. Installes all necessary python packages temporarly if needed. To use
-# it run: `scource count_missing_annotations_utils.sh`.
+# project. Installs all necessary python packages temporarily if needed. To use
+# it run: `source count_missing_annotations_utils.sh`.
 
 set -e
 
 
 ensure_install() {
-    # Checks if a python package is installed via pip. It installes the package,
+    # Checks if a python package is installed via pip. It installs the package,
     # and removes it after the script run automatically.
     #
-    # All debug output is redirected to the stderr stream, to not interfear with
+    # All debug output is redirected to the stderr stream, to not interfere with
     # other output.
     #
     # :param $1: The name of the pip package.
@@ -48,7 +48,7 @@ create_missing_python_type_annotations_report() {
 
     flake8 lib/rucio \
         --ignore=ANN101 \
-        --exclude tools,lib/rucio/tests,lib/rucio/db,lib/rucio/client,lib/rucio/common,lib/rucio/rse,bin \
+        --exclude tools,lib/rucio/db,lib/rucio/client,lib/rucio/common,lib/rucio/rse,bin \
         --output-file $1 \
         --select ANN || true
 }

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,14 +13,16 @@
 # limitations under the License.
 
 from json import dumps, loads
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
+from urllib.parse import quote_plus
 
 from requests.status_codes import codes
-from urllib.parse import quote_plus
-from typing import Dict, List, Any, Optional, Union
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping, Sequence
 
 
 class RuleClient(BaseClient):
@@ -32,7 +33,7 @@ class RuleClient(BaseClient):
 
     def add_replication_rule(
         self,
-        dids: List[str],
+        dids: "Sequence[dict[str, str]]",
         copies: int,
         rse_expression: str,
         priority: int = 3,
@@ -48,10 +49,10 @@ class RuleClient(BaseClient):
         ask_approval: bool = False,
         asynchronous: bool = False,
         locked: bool = False,
-        delay_injection=None,
-        comment=None,
-        weight=None,
-    ):
+        delay_injection: Optional[int] = None,
+        comment: Optional[str] = None,
+        weight: Optional[int] = None,
+    ) -> Any:
         """
         :param dids:                       The data identifier set.
         :param copies:                     The number of replicas.
@@ -92,7 +93,7 @@ class RuleClient(BaseClient):
 
     def delete_replication_rule(
         self, rule_id: str, purge_replicas: Optional[bool] = None
-    ):
+    ) -> Literal[True]:
         """
         Deletes a replication rule and all associated locks.
 
@@ -113,7 +114,7 @@ class RuleClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
         raise exc_cls(exc_msg)
 
-    def get_replication_rule(self, rule_id: str):
+    def get_replication_rule(self, rule_id: str) -> Any:
         """
         Get a replication rule.
 
@@ -129,7 +130,7 @@ class RuleClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def update_replication_rule(self, rule_id: str, options: Dict[str, Any]):
+    def update_replication_rule(self, rule_id: str, options: dict[str, Any]) -> Literal[True]:
         """
         :param rule_id:   The id of the rule to be retrieved.
         :param options:   Options dictionary.
@@ -145,8 +146,11 @@ class RuleClient(BaseClient):
         raise exc_cls(exc_msg)
 
     def reduce_replication_rule(
-        self, rule_id: str, copies: int, exclude_expression=None
-    ):
+        self,
+        rule_id: str,
+        copies: int,
+        exclude_expression: Optional[str] = None
+    ) -> Any:
         """
         :param rule_id:             Rule to be reduced.
         :param copies:              Number of copies of the new rule.
@@ -164,8 +168,11 @@ class RuleClient(BaseClient):
         raise exc_cls(exc_msg)
 
     def move_replication_rule(
-        self, rule_id: str, rse_expression: str, override
-    ):
+        self,
+        rule_id: str,
+        rse_expression: str,
+        override: "Mapping[str, Any]"
+    ) -> Any:
         """
         Move a replication rule to another RSE and, once done, delete the original one.
 
@@ -188,7 +195,7 @@ class RuleClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
         raise exc_cls(exc_msg)
 
-    def approve_replication_rule(self, rule_id: str):
+    def approve_replication_rule(self, rule_id: str) -> Literal[True]:
         """
         :param rule_id:             Rule to be approved.
         :raises:                    RuleNotFound
@@ -203,7 +210,7 @@ class RuleClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
         raise exc_cls(exc_msg)
 
-    def deny_replication_rule(self, rule_id: str, reason: Optional[str] = None):
+    def deny_replication_rule(self, rule_id: str, reason: Optional[str] = None) -> Literal[True]:
         """
         :param rule_id:             Rule to be denied.
         :param reason:              Reason for denying the rule.
@@ -212,7 +219,7 @@ class RuleClient(BaseClient):
 
         path = self.RULE_BASEURL + '/' + rule_id
         url = build_url(choice(self.list_hosts), path=path)
-        options: Dict[str, Union[bool, str]] = {'approve': False}
+        options: dict[str, Union[bool, str]] = {'approve': False}
         if reason:
             options['comment'] = reason
         data = dumps({'options': options})
@@ -224,7 +231,7 @@ class RuleClient(BaseClient):
 
     def list_replication_rule_full_history(
             self, scope: Union[str, bytes], name: Union[str, bytes]
-    ):
+    ) -> "Iterator[dict[str, Any]]":
         """
         List the rule history of a DID.
 
@@ -239,7 +246,7 @@ class RuleClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(r.headers, r.status_code)
         raise exc_cls(exc_msg)
 
-    def examine_replication_rule(self, rule_id: str):
+    def examine_replication_rule(self, rule_id: str) -> Any:
         """
         Examine a replication rule for errors during transfer.
 
@@ -254,7 +261,7 @@ class RuleClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(r.headers, r.status_code)
         raise exc_cls(exc_msg)
 
-    def list_replica_locks(self, rule_id: str):
+    def list_replica_locks(self, rule_id: str) -> Any:
         """
         List details of all replica locks for a rule.
 
@@ -269,7 +276,7 @@ class RuleClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(r.headers, r.status_code)
         raise exc_cls(exc_msg)
 
-    def list_replication_rules(self, filters=None):
+    def list_replication_rules(self, filters: Optional[dict[str, Any]] = None) -> "Iterator[dict[str, Any]]":
         """
         List all replication rules which match a filter
         :param filters: dictionary of attributes by which the rules should be filtered

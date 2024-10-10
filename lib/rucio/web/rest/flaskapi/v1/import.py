@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,10 +14,10 @@
 
 from flask import Flask, request
 
-from rucio.api.importer import import_data
 from rucio.common.utils import parse_response
-from rucio.web.rest.flaskapi.v1.common import response_headers, ErrorHandlingMethodView, json_parameters
+from rucio.gateway.importer import import_data
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, json_parameters, response_headers
 
 
 class Import(ErrorHandlingMethodView):
@@ -81,7 +80,7 @@ class Import(ErrorHandlingMethodView):
                           description: The email of an account.
                           type: string
                         identities:
-                          description: The identiies accociated with an account. Deletes old identites and adds the newly defined ones.
+                          description: The identities associated with an account. Deletes old identities and adds the newly defined ones.
                           type: array
                           items:
                             description: One identity associated with an account.

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,22 +13,46 @@
 # limitations under the License.
 
 from json import dumps
+from typing import Any
 
-from flask import Flask, request, Response
-from typing import Any, Dict
+from flask import Flask, Response, request
 
-from rucio.api.lock import get_replica_locks_for_rule_id
-from rucio.api.rule import add_replication_rule, delete_replication_rule, get_replication_rule, \
-    update_replication_rule, reduce_replication_rule, list_replication_rule_history, \
-    list_replication_rule_full_history, list_replication_rules, examine_replication_rule, move_replication_rule
-from rucio.common.exception import InputValidationError, InsufficientAccountLimit, RuleNotFound, AccessDenied, InvalidRSEExpression, \
-    InvalidReplicationRule, DataIdentifierNotFound, InsufficientTargetRSEs, ReplicationRuleCreationTemporaryFailed, \
-    InvalidRuleWeight, StagingAreaRuleRequiresLifetime, DuplicateRule, InvalidObject, AccountNotFound, \
-    RuleReplaceFailed, ScratchDiskLifetimeConflict, ManualRuleApprovalBlocked, UnsupportedOperation
-from rucio.common.utils import render_json, APIEncoder
-from rucio.web.rest.flaskapi.v1.common import check_accept_header_wrapper_flask, parse_scope_name, try_stream, \
-    response_headers, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
+from rucio.common.exception import (
+    AccessDenied,
+    AccountNotFound,
+    DataIdentifierNotFound,
+    DuplicateRule,
+    InputValidationError,
+    InsufficientAccountLimit,
+    InsufficientTargetRSEs,
+    InvalidObject,
+    InvalidReplicationRule,
+    InvalidRSEExpression,
+    InvalidRuleWeight,
+    ManualRuleApprovalBlocked,
+    ReplicationRuleCreationTemporaryFailed,
+    RuleNotFound,
+    RuleReplaceFailed,
+    ScratchDiskLifetimeConflict,
+    StagingAreaRuleRequiresLifetime,
+    UnsupportedOperation,
+)
+from rucio.common.utils import APIEncoder, render_json
+from rucio.gateway.lock import get_replica_locks_for_rule_id
+from rucio.gateway.rule import (
+    add_replication_rule,
+    delete_replication_rule,
+    examine_replication_rule,
+    get_replication_rule,
+    list_replication_rule_full_history,
+    list_replication_rule_history,
+    list_replication_rules,
+    move_replication_rule,
+    reduce_replication_rule,
+    update_replication_rule,
+)
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, parse_scope_name, response_headers, try_stream
 
 
 class Rule(ErrorHandlingMethodView):
@@ -152,7 +175,7 @@ class Rule(ErrorHandlingMethodView):
             description: No rule found for the given id
        """
         parameters = json_parameters()
-        options: Dict[str, Any] = param_get(parameters, 'options')
+        options: dict[str, Any] = param_get(parameters, 'options')
         try:
             update_replication_rule(rule_id=rule_id, options=options, issuer=request.environ.get('issuer'), vo=request.environ.get('vo'))
         except AccessDenied as error:
@@ -253,7 +276,14 @@ class AllRule(ErrorHandlingMethodView):
                     description: The list of data identifiers.
                     type: array
                     items:
-                      type: string
+                      type: object
+                      properties:
+                        scope:
+                          description: The scope of the data identifier
+                          type: string
+                        name:
+                          description: The name of the data identifier
+                          type: string
                   account:
                     description: The account of the issuer.
                     type: string
@@ -763,16 +793,16 @@ class RuleAnalysis(ErrorHandlingMethodView):
                             description: The name of the lock.
                           rse_id:
                             type: string
-                            description: The rse_id of the transfered lock.
+                            description: The rse_id of the transferred lock.
                           rse:
                             type: object
-                            description: Information about the rse of the transfered lock.
+                            description: Information about the rse of the transferred lock.
                           attempts:
                             type: integer
                             description: The number of attempts.
                           last_error:
                             type: string
-                            description: The last error that occured.
+                            description: The last error that occurred.
                           last_source:
                             type: string
                             description: The last source.

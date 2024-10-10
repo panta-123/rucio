@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,12 +15,10 @@
 ''' switch heartbeats executable '''
 
 import sqlalchemy as sa
-
 from alembic import context
-from alembic.op import create_primary_key, add_column, drop_constraint, drop_column
+from alembic.op import add_column, create_primary_key, drop_column, drop_constraint
 
 from rucio.db.sqla.models import String
-
 
 # Alembic revision identifiers
 revision = '277b5fbb41d3'

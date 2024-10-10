@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,14 +19,14 @@ from typing import TYPE_CHECKING
 import psycopg2
 import psycopg2.extras
 
-from rucio.common import config
-from rucio.common import exception
+from rucio.common import config, exception
 from rucio.common.types import InternalScope
 from rucio.core.did_meta_plugins.did_meta_plugin_interface import DidMetaPlugin
 from rucio.core.did_meta_plugins.filter_engine import FilterEngine
 
 if TYPE_CHECKING:
     from typing import Optional
+
     from sqlalchemy.orm import Session
 
 
@@ -44,7 +43,7 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         if host is None:
             host = config.config_get('metadata', 'postgres_service_host')
         if port is None:
-            port = config.config_get('metadata', 'postgres_service_port')
+            port = config.config_get_int('metadata', 'postgres_service_port')
         if db is None:
             db = config.config_get('metadata', 'postgres_db')
         if user is None:
@@ -209,21 +208,21 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
-        self.set_metadata_bulk(scope=scope, name=name, meta={key: value}, recursive=recursive, session=session)
+        self.set_metadata_bulk(scope=scope, name=name, metadata={key: value}, recursive=recursive, session=session)
 
-    def set_metadata_bulk(self, scope, name, meta, recursive=False, *, session: "Optional[Session]" = None):
+    def set_metadata_bulk(self, scope, name, metadata, recursive=False, *, session: "Optional[Session]" = None):
         """
         Bulk set metadata keys.
 
         :param scope: the scope of did
         :param name: the name of the did
-        :param meta: dictionary of metadata keypairs to be added
+        :param metadata: dictionary of metadata keypairs to be added
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
         # upsert metadata
         statement = "INSERT INTO {} (scope, name, vo, data) ".format(self.table) + \
-                    "VALUES ('{}', '{}', '{}', '{}') ".format(scope.external, name, scope.vo, json.dumps(meta)) + \
+                    "VALUES ('{}', '{}', '{}', '{}') ".format(scope.external, name, scope.vo, json.dumps(metadata)) + \
                     "ON CONFLICT (scope, name) DO UPDATE set data = {}.data || EXCLUDED.data;".format(self.table)
         cur = self.client.cursor()
         cur.execute(statement)
@@ -252,7 +251,7 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         if not ignore_dids:
             ignore_dids = set()
 
-        # backwards compatability for filters as single {}.
+        # backwards compatibility for filters as single {}.
         if isinstance(filters, dict):
             filters = [filters]
 

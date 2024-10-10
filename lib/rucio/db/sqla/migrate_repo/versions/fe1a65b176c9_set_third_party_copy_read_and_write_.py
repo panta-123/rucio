@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,7 @@
 ''' set third_party_copy_read and write fields '''
 
 from alembic import context
-from alembic.op import execute, alter_column  # pylint: disable=no-member
+from alembic.op import alter_column, execute  # pylint: disable=no-member
 
 # Alembic revision identifiers
 revision = 'fe1a65b176c9'

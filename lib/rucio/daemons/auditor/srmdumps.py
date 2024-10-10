@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,41 +12,62 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from rucio.common.config import get_config_dirs
-from rucio.common.dumper import DUMPS_CACHE_DIR
-from rucio.common.dumper import http_download_to_file, gfal_download_to_file, ddmendpoint_url, temp_file
-
 import configparser as ConfigParser
-import html.parser as HTMLParser
 import datetime
 import glob
 import hashlib
+import html.parser as HTMLParser
 import logging
 import operator
 import os
 import re
-import requests
+from typing import IO, TYPE_CHECKING, Any, Optional
 
 import gfal2
+import requests
+
+from rucio.common.config import get_config_dirs
+from rucio.common.constants import RseAttr
+from rucio.common.dumper import DUMPS_CACHE_DIR, HTTPDownloadFailed, ddmendpoint_url, gfal_download_to_file, http_download_to_file, temp_file
+from rucio.core.credential import get_signed_url
+from rucio.core.rse import get_rse_id, list_rse_attributes
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 CHUNK_SIZE = 10485760
 
-__DUMPERCONFIGDIRS = (os.path.join(confdir, 'auditor') for confdir in get_config_dirs())
-__DUMPERCONFIGDIRS = list(filter(os.path.exists, __DUMPERCONFIGDIRS))
+__DUMPERCONFIGDIRS = list(
+    filter(
+        os.path.exists,
+        (
+            os.path.join(confdir, 'auditor') for confdir in get_config_dirs()
+        )
+    )
+)
+
+OBJECTSTORE_NUM_TRIES = 30
 
 
-class Parser(ConfigParser.RawConfigParser, object):
+class Parser(ConfigParser.RawConfigParser):
     '''
     RawConfigParser subclass that doesn't modify the the name of the options
-    and removes any quotes arround the string values.
+    and removes any quotes around the string values.
     '''
     remove_quotes_re = re.compile(r"^'(.+)'$")
     remove_double_quotes_re = re.compile(r'^"(.+)"$')
 
-    def optionxform(self, optionstr):
+    def optionxform(
+            self,
+            optionstr: str
+    ) -> str:
         return optionstr
 
-    def get(self, section, option):
+    def get(
+            self,
+            section: str,
+            option: str
+    ) -> Any:
         value = super(Parser, self).get(section, option)
         if isinstance(value, str):
             value = self.remove_quotes_re.sub(r'\1', value)
@@ -58,18 +78,23 @@ class Parser(ConfigParser.RawConfigParser, object):
         return [(name, self.get(section, name)) for name in self.options(section)]
 
 
-def mkdir(dir_):
+def mkdir(dir_: str) -> None:
     '''
     This functions creates the `dir` directory if it doesn't exist. If `dir`
     already exists this function does nothing.
     '''
     try:
         os.mkdir(dir_)
-    except OSError as e:
-        assert e.errno == 17
+    except OSError as error:
+        if error.errno != 17:
+            raise error
 
 
-def get_newest(base_url, url_pattern, links):
+def get_newest(
+        base_url: str,
+        url_pattern: str,
+        links: "Iterable[str]"
+) -> tuple[str, datetime.datetime]:
     '''
     Returns a tuple with the newest url in the `links` list matching the
     pattern `url_pattern` and a datetime object representing the creation
@@ -104,7 +129,7 @@ def get_newest(base_url, url_pattern, links):
     return max(times, key=operator.itemgetter(1))
 
 
-def gfal_links(base_url):
+def gfal_links(base_url: str) -> list[str]:
     '''
     Returns a list of the urls contained in `base_url`.
     '''
@@ -112,19 +137,22 @@ def gfal_links(base_url):
     return ['/'.join((base_url, f)) for f in ctxt.listdir(str(base_url))]
 
 
-class _LinkCollector(HTMLParser.HTMLParser, object):
+class _LinkCollector(HTMLParser.HTMLParser):
     def __init__(self):
         super(_LinkCollector, self).__init__()
         self.links = []
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(
+            self, tag: str,
+            attrs: "Iterable[tuple[str, str]]"
+    ) -> None:
         if tag == 'a':
             self.links.append(
                 next(value for key, value in attrs if key == 'href')
             )
 
 
-def http_links(base_url):
+def http_links(base_url: str) -> list[str]:
     '''
     Returns a list of the urls contained in `base_url`.
     '''
@@ -169,7 +197,7 @@ protocol_funcs = {
 }
 
 
-def protocol(url):
+def protocol(url: str) -> str:
     '''
     Given the URL `url` returns a string with the protocol part.
     '''
@@ -180,25 +208,26 @@ def protocol(url):
     return proto
 
 
-def get_links(base_url):
+def get_links(base_url: str) -> list[str]:
     '''
     Given the URL `base_url` returns the URLs linked or contained in it.
     '''
     return protocol_funcs[protocol(base_url)]['links'](base_url)
 
 
-def download(url, filename):
+def download(url: str, filename: IO) -> None:
     '''
     Given the URL `url` downloads its contents on `filename`.
     '''
     return protocol_funcs[protocol(url)]['download'](url, filename)
 
 
-def parse_configuration(conf_dirs=__DUMPERCONFIGDIRS):
+def parse_configuration(conf_dirs: Optional[list[str]] = None) -> Parser:
     '''
     Parses the configuration for the endpoints contained in `conf_dir`.
     Returns a ConfParser.RawConfParser subclass instance.
     '''
+    conf_dirs = conf_dirs or __DUMPERCONFIGDIRS
     logger = logging.getLogger('auditor.srmdumps')
     if len(conf_dirs) == 0:
         logger.error('No configuration directory given to load SRM dumps paths')
@@ -213,18 +242,23 @@ def parse_configuration(conf_dirs=__DUMPERCONFIGDIRS):
     return configuration
 
 
-def download_rse_dump(rse, configuration, date='latest', destdir=DUMPS_CACHE_DIR):
+def download_rse_dump(
+        rse: str,
+        configuration: ConfigParser.RawConfigParser,
+        date: Optional[datetime.datetime] = None,
+        destdir: str = DUMPS_CACHE_DIR
+) -> tuple[str, datetime.datetime]:
     '''
     Downloads the dump for the given ddmendpoint. If this endpoint does not
-    follow the standarized method to publish the dumps it should have an
+    follow the standardized method to publish the dumps it should have an
     entry in the `configuration` object describing how to download the dump.
 
     `rse` is the DDMEndpoint name.
 
     `configuration` is a RawConfigParser subclass.
 
-    `date` is a datetime instance with the date of the desired dump or 'latest'
-    to download the lastest available dump.
+    `date` is a datetime instance with the date of the desired dump or None
+    to download the latest available dump.
 
     `destdir` is the directory where the dump will be saved (the final component
     in the path is created if it doesn't exist).
@@ -234,34 +268,71 @@ def download_rse_dump(rse, configuration, date='latest', destdir=DUMPS_CACHE_DIR
     '''
     logger = logging.getLogger('auditor.srmdumps')
     base_url, url_pattern = generate_url(rse, configuration)
-    if date == 'latest':
-        logger.debug('Looking for site dumps in: "%s"', base_url)
-        links = get_links(base_url)
-        url, date = get_newest(base_url, url_pattern, links)
-    else:
-        url = '{0}/{1}'.format(base_url, date.strftime(url_pattern))
 
     if not os.path.isdir(destdir):
         os.mkdir(destdir)
 
-    filename = '{0}_{1}_{2}_{3}'.format(
-        'ddmendpoint',
-        rse,
-        date.strftime('%d-%m-%Y'),
-        hashlib.sha1(url.encode()).hexdigest()
-    )
-    filename = re.sub(r'\W', '-', filename)
-    path = os.path.join(destdir, filename)
+    # check for objectstores, which need to be handled differently
+    rse_id = get_rse_id(rse)
+    rse_attr = list_rse_attributes(rse_id)
+    if RseAttr.IS_OBJECT_STORE in rse_attr and rse_attr[RseAttr.IS_OBJECT_STORE] is not False:
+        tries = 1
+        if date is None:
+            # on objectstores, can't list dump files, so try the last N dates
+            date = datetime.datetime.now()
+            tries = OBJECTSTORE_NUM_TRIES
+        path = ''
+        while tries > 0:
+            url = '{0}/{1}'.format(base_url, date.strftime(url_pattern))
 
-    if not os.path.exists(path):
-        logger.debug('Trying to download: "%s"', url)
-        with temp_file(destdir, final_name=filename) as (f, _):
-            download(url, f)
+            filename = '{0}_{1}_{2}_{3}'.format(
+                'ddmendpoint',
+                rse,
+                date.strftime('%d-%m-%Y'),
+                hashlib.sha1(url.encode()).hexdigest()
+            )
+            filename = re.sub(r'\W', '-', filename)
+            path = os.path.join(destdir, filename)
+            if not os.path.exists(path):
+                logger.debug('Trying to download: "%s"', url)
+                if RseAttr.SIGN_URL in rse_attr:
+                    url = get_signed_url(rse_id, rse_attr[RseAttr.SIGN_URL], 'read', url)
+                try:
+                    with temp_file(destdir, final_name=filename) as (f, _):
+                        download(url, f)
+                    tries = 0
+                except (HTTPDownloadFailed, gfal2.GError):
+                    tries -= 1
+                    date = date - datetime.timedelta(1)
+    else:
+        if date is None:
+            logger.debug('Looking for site dumps in: "%s"', base_url)
+            links = get_links(base_url)
+            url, date = get_newest(base_url, url_pattern, links)
+        else:
+            url = '{0}/{1}'.format(base_url, date.strftime(url_pattern))
+
+        filename = '{0}_{1}_{2}_{3}'.format(
+            'ddmendpoint',
+            rse,
+            date.strftime('%d-%m-%Y'),
+            hashlib.sha1(url.encode()).hexdigest()
+        )
+        filename = re.sub(r'\W', '-', filename)
+        path = os.path.join(destdir, filename)
+
+        if not os.path.exists(path):
+            logger.debug('Trying to download: "%s"', url)
+            with temp_file(destdir, final_name=filename) as (f, _):
+                download(url, f)
 
     return (path, date)
 
 
-def generate_url(rse, config):
+def generate_url(
+        rse: str,
+        config: ConfigParser.RawConfigParser
+) -> tuple[str, str]:
     '''
     :param rse: Name of the endpoint.
     :param config: RawConfigParser instance which may have configuration

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,17 +14,21 @@
 
 import logging
 from operator import itemgetter
+from typing import TYPE_CHECKING, Any
 
 from rucio.common.config import config_get, config_get_int
 from rucio.common.exception import DataIdentifierNotFound
 from rucio.core.did import get_did
 from rucio.core.replica import list_dataset_replicas
-from rucio.core.rse import list_rse_attributes, get_rse_name
+from rucio.core.rse import get_rse_name, list_rse_attributes
 from rucio.core.rse_expression_parser import parse_expression
 from rucio.daemons.c3po.collectors.free_space import FreeSpaceCollector
 from rucio.daemons.c3po.utils.dataset_cache import DatasetCache
 from rucio.daemons.c3po.utils.popularity import get_popularity
 from rucio.db.sqla.constants import ReplicaState
+
+if TYPE_CHECKING:
+    from rucio.common.types import InternalScope
 
 
 class PlacementAlgorithm:
@@ -45,20 +48,20 @@ class PlacementAlgorithm:
 
         self.__setup_penalties()
 
-    def __setup_penalties(self):
+    def __setup_penalties(self) -> None:
         self._penalties = {}
         for rse_id in self._rses:
             self._penalties[rse_id] = 1.0
 
-    def __update_penalties(self):
+    def __update_penalties(self) -> None:
         for rse_id, penalty in self._penalties.items():
             if penalty > 1.0:
                 self._penalties[rse_id] = penalty - 1
 
-    def place(self, did):
+    def place(self, did: tuple['InternalScope', str]) -> dict[str, Any]:
         self.__update_penalties()
-        decision = {'did': '{}:{}'.format(did[0].internal, did[1])}
-        if (not did[0].external.startswith('data')) and (not did[0].external.startswith('mc')):
+        decision: dict[str, Any] = {'did': '{}:{}'.format(did[0].internal, did[1])}
+        if (did[0].external is not None) and (not did[0].external.startswith('data')) and (not did[0].external.startswith('mc')):
             decision['error_reason'] = 'not a data or mc dataset'
             return decision
 

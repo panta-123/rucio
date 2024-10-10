@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,13 +17,11 @@
 import datetime
 
 import sqlalchemy as sa
-
 from alembic import context
-from alembic.op import create_table, create_index, drop_table, drop_index, create_primary_key
+from alembic.op import create_index, create_primary_key, create_table, drop_index, drop_table
 
-from rucio.db.sqla.constants import (DIDType, RuleGrouping, RuleState, RuleNotification)
+from rucio.db.sqla.constants import DIDType, RuleGrouping, RuleNotification, RuleState
 from rucio.db.sqla.types import GUID
-
 
 # Alembic revision identifiers
 revision = '384b96aa0f60'

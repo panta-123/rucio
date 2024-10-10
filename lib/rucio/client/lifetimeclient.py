@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +13,18 @@
 # limitations under the License.
 
 from json import loads
+from typing import TYPE_CHECKING, Any, Optional
+
 from requests.status_codes import codes
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url, render_json
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+    from datetime import datetime
+
+    from rucio.db.sqla.constants import LifetimeExceptionsState
 
 
 class LifetimeClient(BaseClient):
@@ -27,7 +33,11 @@ class LifetimeClient(BaseClient):
 
     LIFETIME_BASEURL = 'lifetime_exceptions'
 
-    def list_exceptions(self, exception_id=None, states=None):
+    def list_exceptions(
+            self,
+            exception_id: Optional[str] = None,
+            states: Optional['Sequence[LifetimeExceptionsState]'] = None
+    ) -> 'Iterator[dict[str, Any]]':
         """
         List exceptions to Lifetime Model.
 
@@ -51,7 +61,14 @@ class LifetimeClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=result.headers, status_code=result.status_code)
             raise exc_cls(exc_msg)
 
-    def add_exception(self, dids, account, pattern, comments, expires_at):
+    def add_exception(
+            self,
+            dids: list[dict[str, Any]],
+            account: str,
+            pattern: str,
+            comments: str,
+            expires_at: 'datetime'
+    ) -> dict[str, Any]:
         """
         Add exceptions to Lifetime Model.
 

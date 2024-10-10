@@ -44,6 +44,7 @@ Individual contributors to the source code
 - Andrew Lister <andrew.lister@stfc.ac.uk>, 2019
 - Aristeidis Fkiaras <aristeidis.fkiaras@cern.ch>, 2019
 - Matt Snyder <msnyder@bnl.gov>, 2019
+- Brandon White <bjwhite@fnal.gov> 2019-2023
 - Benedikt Ziemons <benedikt.ziemons@cern.ch>, 2020
 - Muhammad Aditya Hilmy <mhilmy@hey.com>, 2020
 - Eli Chadwick <eli.chadwick@stfc.ac.uk>, 2020
@@ -64,6 +65,8 @@ Individual contributors to the source code
 - Stefan Piperov <stefan.piperov@cern.ch>, 2021
 - Jensen Zhang <hack@jensen-zhang.site>, 2022
 - Aksel Lunde Aase <aksel.lunde.aase@gmail.com>, 2022
+- Elena Gazzarrini <gazzarrini.elena@gmail.com>, 2022-2023
+- Maximilian Linhoff, <maximilian.linhoff@tu-dortmund.de>, 2024
 
 Organisations employing contributors
 ------------------------------------
@@ -91,3 +94,4 @@ Organisations employing contributors
 - Imperial College London (UK)
 - University of Chicago (USA)
 - Purdue University (USA)
+- TU Dortmund University (Germany)

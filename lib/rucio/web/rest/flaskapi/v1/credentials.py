@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,15 +17,15 @@ from typing import TYPE_CHECKING
 from flask import Flask, request
 from werkzeug.datastructures import Headers
 
-from rucio.api.credential import get_signed_url
 from rucio.common.exception import CannotAuthenticate
-from rucio.web.rest.flaskapi.v1.common import check_accept_header_wrapper_flask, extract_vo, \
-    generate_http_error_flask, ErrorHandlingMethodView, response_headers
-
+from rucio.gateway.credential import get_signed_url
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, extract_vo, generate_http_error_flask, response_headers
+
 if TYPE_CHECKING:
     from typing import Optional
-    from rucio.web.rest.flaskapi.v1.common import HeadersType
+
+    from rucio.web.rest.flaskapi.v1.types import HeadersType
 
 
 class SignURL(ErrorHandlingMethodView):
@@ -61,7 +60,7 @@ class SignURL(ErrorHandlingMethodView):
               Access-Control-Allow-Headers:
                 schema:
                   type: string
-                description: The http access controll request headers.
+                description: The http access control request headers.
               Access-Control-Allow-Methods:
                 schema:
                   type: string
@@ -76,7 +75,7 @@ class SignURL(ErrorHandlingMethodView):
                 schema:
                   type: string
                   enum: ['X-Rucio-Auth-Token']
-                description: The exposed access controll header.
+                description: The exposed access control header.
           404:
             description: Not found
         """
@@ -117,7 +116,7 @@ class SignURL(ErrorHandlingMethodView):
           required: false
         - name: url
           in: query
-          description: The Url of the authentification.
+          description: The Url of the authentication.
           schema:
             type: string
           required: true

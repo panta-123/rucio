@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +16,8 @@ import unittest
 from os import remove
 from os.path import basename
 
-
-from rucio.common.utils import generate_uuid as uuid, execute
+from rucio.common.utils import execute
+from rucio.common.utils import generate_uuid as uuid
 
 
 def file_generator(size=2048, namelen=10):

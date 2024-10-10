@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,14 +17,14 @@ from typing import TYPE_CHECKING
 
 import pymongo
 
-from rucio.common import config
-from rucio.common import exception
+from rucio.common import config, exception
 from rucio.common.types import InternalScope
 from rucio.core.did_meta_plugins.did_meta_plugin_interface import DidMetaPlugin
 from rucio.core.did_meta_plugins.filter_engine import FilterEngine
 
 if TYPE_CHECKING:
     from typing import Optional
+
     from sqlalchemy.orm import Session
 
 IMMUTABLE_KEYS = [
@@ -37,18 +36,36 @@ IMMUTABLE_KEYS = [
 
 
 class MongoDidMeta(DidMetaPlugin):
-    def __init__(self, host=None, port=None, db=None, collection=None):
+    def __init__(
+        self,
+        host: "Optional[str]" = None,
+        port: "Optional[int]" = None,
+        db: "Optional[str]" = None,
+        collection: "Optional[str]" = None,
+        user: "Optional[str]" = None,
+        password: "Optional[str]" = None,
+    ):
         super(MongoDidMeta, self).__init__()
         if host is None:
             host = config.config_get('metadata', 'mongo_service_host')
         if port is None:
-            port = config.config_get('metadata', 'mongo_service_port')
+            port = config.config_get_int('metadata', 'mongo_service_port')
         if db is None:
             db = config.config_get('metadata', 'mongo_db')
         if collection is None:
             collection = config.config_get('metadata', 'mongo_collection')
 
-        self.client = pymongo.MongoClient("mongodb://{}:{}/".format(host, port))
+        if user is None and config.config_has_section("metadata"):
+            user = config.config_get("metadata", "mongo_user", default=None)
+
+        if user is not None:
+            if password is None:
+                password = config.config_get("metadata", "mongo_password")
+            auth = "{user}:{password}@".format(user=user, password=password)
+        else:
+            auth = ""
+
+        self.client = pymongo.MongoClient("mongodb://{auth}{host}:{port}/".format(auth=auth, host=host, port=port))
         self.db = self.client[db]
         self.col = self.db[collection]
 
@@ -77,7 +94,7 @@ class MongoDidMeta(DidMetaPlugin):
                 doc.pop(key)
 
         if not doc:
-            raise exception.DataIdentifierNotFound("No metadata found for did '%(scope)s:%(name)s'" % locals())
+            raise exception.DataIdentifierNotFound(f"No metadata found for did '{scope}:{name}'")
         return doc
 
     def set_metadata(self, scope, name, key, value, recursive=False, *, session: "Optional[Session]" = None):
@@ -91,22 +108,22 @@ class MongoDidMeta(DidMetaPlugin):
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
-        self.set_metadata_bulk(scope=scope, name=name, meta={key: value}, recursive=recursive, session=session)
+        self.set_metadata_bulk(scope=scope, name=name, metadata={key: value}, recursive=recursive, session=session)
 
-    def set_metadata_bulk(self, scope, name, meta, recursive=False, *, session: "Optional[Session]" = None):
+    def set_metadata_bulk(self, scope, name, metadata, recursive=False, *, session: "Optional[Session]" = None):
         """
         Bulk set metadata keys.
 
         :param scope: the scope of did
         :param name: the name of the did
-        :param meta: dictionary of metadata keypairs to be added
+        :param metadata: dictionary of metadata keypairs to be added
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
         # pop immutable keys
         for key in IMMUTABLE_KEYS:
-            if key in meta:
-                meta.pop(key)
+            if key in metadata:
+                metadata.pop(key)
 
         # set first document with did == _id
         self.col.update_one(
@@ -114,7 +131,7 @@ class MongoDidMeta(DidMetaPlugin):
                 "_id": "{}:{}".format(scope.internal, name)
             },
             {
-                '$set': meta,
+                '$set': metadata,
                 '$setOnInsert': {
                     'scope': "{}".format(scope.external),
                     'vo': "{}".format(scope.vo),
@@ -143,7 +160,7 @@ class MongoDidMeta(DidMetaPlugin):
         if not ignore_dids:
             ignore_dids = set()
 
-        # backwards compatability for filters as single {}.
+        # backwards compatibility for filters as single {}.
         if isinstance(filters, dict):
             filters = [filters]
 
@@ -167,7 +184,7 @@ class MongoDidMeta(DidMetaPlugin):
             if limit:
                 query_result = query_result.limit(limit)
             for did in query_result:
-                did_full = did_full = "{}:{}".format(did['scope'], did['name'])
+                did_full = "{}:{}".format(did['scope'], did['name'])
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)
                     yield {
@@ -182,7 +199,7 @@ class MongoDidMeta(DidMetaPlugin):
             if limit:
                 query_result = query_result.limit(limit)
             for did in query_result:
-                did_full = did_full = "{}:{}".format(did['scope'], did['name'])
+                did_full = "{}:{}".format(did['scope'], did['name'])
                 if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
                     ignore_dids.add(did_full)
                     yield did['name']

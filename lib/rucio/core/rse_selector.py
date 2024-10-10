@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,22 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from random import uniform, shuffle
-from typing import TYPE_CHECKING
+from random import shuffle, uniform
+from typing import TYPE_CHECKING, Optional
 
 from rucio.common.exception import InsufficientAccountLimit, InsufficientTargetRSEs, InvalidRuleWeight, RSEOverQuota
-from rucio.core.account import has_account_attribute, get_usage, get_all_rse_usages_per_account
-from rucio.core.account_limit import get_local_account_limit, get_global_account_limits
-from rucio.core.rse import list_rse_attributes, has_rse_attribute, get_rse_limits
+from rucio.core.account import get_all_rse_usages_per_account, get_usage, has_account_attribute
+from rucio.core.account_limit import get_global_account_limits, get_local_account_limit
+from rucio.core.rse import get_rse_limits, has_rse_attribute, list_rse_attributes
 from rucio.core.rse_counter import get_counter as get_rse_counter
 from rucio.core.rse_expression_parser import parse_expression
 from rucio.db.sqla.session import read_session
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
     from sqlalchemy.orm import Session
 
+    from rucio.common.types import InternalAccount
 
-class RSESelector():
+
+class RSESelector:
     """
     Representation of the RSE selector
     """
@@ -129,12 +132,20 @@ class RSESelector():
 
         self.rses = rses_with_enough_quota
         if len(self.rses) < self.copies:
-            raise InsufficientAccountLimit('There is insufficient quota on any of the target RSE\'s to fullfill the operation.')
+            raise InsufficientAccountLimit('There is insufficient quota on any of the target RSE\'s to fulfill the operation.')
 
         # don't consider removing rses based on the total space here - because files already on the RSE are taken into account
         # it is possible to have no space but still be able to fulfil the rule
 
-    def select_rse(self, size, preferred_rse_ids, copies=0, blocklist=[], prioritize_order_over_weight=False, existing_rse_size=None):
+    def select_rse(
+        self,
+        size: int,
+        preferred_rse_ids: "Iterable[str]",
+        copies: int = 0,
+        blocklist: Optional["Sequence[str]"] = None,
+        prioritize_order_over_weight: bool = False,
+        existing_rse_size: Optional[dict[str, int]] = None
+    ) -> list[tuple[str, bool, bool]]:
         """
         Select n RSEs to replicate data to.
 
@@ -148,6 +159,7 @@ class RSESelector():
         :raises:                             InsufficientAccountLimit, InsufficientTargetRSEs
         """
 
+        blocklist = blocklist or []
         result = []
         rses = self.rses
         count = self.copies if copies == 0 else copies
@@ -163,12 +175,12 @@ class RSESelector():
             existing_rse_size = {}
         rses = [rse for rse in rses if rse['space_left'] >= size - existing_rse_size.get(rse['rse_id'], 0)]
         if len(rses) < count:
-            raise RSEOverQuota('There is insufficient space on any of the target RSE\'s to fullfill the operation.')
+            raise RSEOverQuota('There is insufficient space on any of the target RSE\'s to fulfill the operation.')
 
         # Remove rses which do not have enough local quota
         rses = [rse for rse in rses if rse['quota_left'] > size]
         if len(rses) < count:
-            raise InsufficientAccountLimit('There is insufficient quota on any of the target RSE\'s to fullfill the operation.')
+            raise InsufficientAccountLimit('There is insufficient quota on any of the target RSE\'s to fulfill the operation.')
 
         # Remove rses which do not have enough global quota
         rses_with_enough_quota = []
@@ -182,7 +194,7 @@ class RSESelector():
                 rses_with_enough_quota.append(rse)
         rses = rses_with_enough_quota
         if len(rses) < count:
-            raise InsufficientAccountLimit('There is insufficient quota on any of the target RSE\'s to fullfill the operation.')
+            raise InsufficientAccountLimit('There is insufficient quota on any of the target RSE\'s to fulfill the operation.')
 
         for copy in range(count):
             # Remove rses already in the result set
@@ -190,7 +202,7 @@ class RSESelector():
             rses_dict = {}
             for rse in rses:
                 rses_dict[rse['rse_id']] = rse
-            # Prioritize the preffered rses
+            # Prioritize the preferred rses
             preferred_rses = [rses_dict[rse_id] for rse_id in preferred_rse_ids if rse_id in rses_dict]
             if prioritize_order_over_weight and preferred_rses:
                 rse = (preferred_rses[0]['rse_id'], preferred_rses[0]['staging_area'], preferred_rses[0]['availability_write'])
@@ -218,7 +230,7 @@ class RSESelector():
         Update the internal quota value.
 
         :param rse:      RSE tuple to update.
-        :param size:     Size to substract.
+        :param size:     Size to subtract.
         """
 
         for element in self.rses:
@@ -237,7 +249,7 @@ class RSESelector():
         """
 
         shuffle(rses)
-        pick = uniform(0, sum([rse['weight'] for rse in rses]))
+        pick = uniform(0, sum([rse['weight'] for rse in rses]))  # noqa: S311
         weight = 0
         for rse in rses:
             weight += rse['weight']
@@ -246,12 +258,27 @@ class RSESelector():
 
 
 @read_session
-def resolve_rse_expression(rse_expression, account, weight=None, copies=1, ignore_account_limit=False, size=0, preferred_rses=[], blocklist=[], prioritize_order_over_weight=False, existing_rse_size=None, *, session: "Session"):
+def resolve_rse_expression(
+    rse_expression: str,
+    account: "InternalAccount",
+    weight: Optional[int] = None,
+    copies: int = 1,
+    ignore_account_limit: bool = False,
+    size: int = 0,
+    preferred_rses: Optional["Iterable[str]"] = None,
+    blocklist: Optional["Sequence[str]"] = None,
+    prioritize_order_over_weight: bool = False,
+    existing_rse_size: Optional[dict[str, int]] = None,
+    *,
+    session: "Session"
+) -> tuple[list[str], list[str]]:
     """
     Resolve a potentially complex RSE expression into `copies` single-RSE expressions. Uses `parse_expression()`
     to decompose the expression, then `RSESelector.select_rse()` to pick the target RSEs.
     """
 
+    preferred_rses = preferred_rses or []
+    blocklist = blocklist or []
     rses = parse_expression(rse_expression, filter_={'vo': account.vo}, session=session)
 
     rse_to_id = dict((rse_dict['rse'], rse_dict['id']) for rse_dict in rses)

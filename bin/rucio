@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +19,6 @@ import itertools
 import logging
 import math
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -28,28 +26,41 @@ import time
 import traceback
 import unittest
 import uuid
+from configparser import NoOptionError, NoSectionError
 from copy import deepcopy
 from datetime import datetime
 from functools import wraps
+from typing import Optional
 
-from configparser import NoOptionError, NoSectionError
 from tabulate import tabulate
 
 # rucio module has the same name as this executable module, so this rule fails. pylint: disable=no-name-in-module
 from rucio import version
 from rucio.client import Client
-from rucio.common.config import config_get
-from rucio.common.exception import (DataIdentifierAlreadyExists, AccessDenied, DataIdentifierNotFound, InvalidObject,
-                                    RSENotFound, InvalidRSEExpression, InputValidationError, DuplicateContent,
-                                    RuleNotFound, CannotAuthenticate, MissingDependency, UnsupportedOperation,
-                                    RucioException, DuplicateRule, InvalidType, DuplicateCriteriaInDIDFilter,
-                                    DIDFilterSyntaxError)
+from rucio.common.config import config_get, config_get_float
+from rucio.common.constants import ReplicaState
+from rucio.common.exception import (
+    AccessDenied,
+    CannotAuthenticate,
+    DataIdentifierAlreadyExists,
+    DataIdentifierNotFound,
+    DIDFilterSyntaxError,
+    DuplicateContent,
+    DuplicateCriteriaInDIDFilter,
+    DuplicateRule,
+    InputValidationError,
+    InvalidObject,
+    InvalidRSEExpression,
+    InvalidType,
+    MissingDependency,
+    RSENotFound,
+    RucioException,
+    RuleNotFound,
+    UnsupportedOperation,
+)
 from rucio.common.extra import import_extras
 from rucio.common.test_rucio_server import TestRucioServer
-from rucio.common.utils import sizefmt, Color, detect_client_location, chunks, parse_did_filter_from_string, \
-    parse_did_filter_from_string_fe, extract_scope, setup_logger, StoreAndDeprecateWarningAction
-from rucio.common.constants import ReplicaState
-from rucio.rse.protocols.protocol import RSEProtocol
+from rucio.common.utils import Color, StoreAndDeprecateWarningAction, chunks, detect_client_location, extract_scope, parse_did_filter_from_string, parse_did_filter_from_string_fe, setup_logger, sizefmt
 
 EXTRA_MODULES = import_extras(['argcomplete'])
 
@@ -62,6 +73,7 @@ FAILURE = 1
 DEFAULT_SECURE_PORT = 443
 DEFAULT_PORT = 80
 
+logger = logging.log
 gfal2_logger = logging.getLogger("gfal2")
 tablefmt = 'psql'
 
@@ -155,7 +167,7 @@ def exception_handler(function):
                     used_account = '%s (from rucio.cfg)' % config_get('client', 'account')
                 except:
                     pass
-                try:  # are we overriden by the environment?
+                try:  # are we overridden by the environment?
                     used_account = '%s (from RUCIO_ACCOUNT)' % os.environ['RUCIO_ACCOUNT']
                 except:
                     pass
@@ -223,6 +235,8 @@ def get_client(args):
                  'oidc_issuer': args.oidc_issuer,
                  'oidc_username': args.oidc_username,
                  'oidc_password': args.oidc_password}
+    elif auth_type == "x509":
+        creds = {'client_cert': args.certificate, "client_key": args.client_key}
     else:
         creds = None
 
@@ -241,6 +255,19 @@ def get_client(args):
             logger.error('Please verify that your proxy is still valid and renew it if needed.')
         sys.exit(FAILURE)
     return client
+
+
+def __resolve_containers_to_datasets(scope, name, client):
+    """
+    Helper function to resolve a container into its dataset content.
+    """
+    datasets = []
+    for did in client.list_content(scope, name):
+        if did['type'] == 'DATASET':
+            datasets.append({'scope': did['scope'], 'name': did['name']})
+        elif did['type'] == 'CONTAINER':
+            datasets.extend(__resolve_containers_to_datasets(did['scope'], did['name'], client))
+    return datasets
 
 
 @exception_handler
@@ -476,7 +503,7 @@ def attach(args):
         try:
             f = open(dids[0], 'r')
             dids = [did.rstrip() for did in f.readlines()]
-        except IOError:
+        except OSError:
             logger.error("Can't open file '" + dids[0] + "'.")
             return FAILURE
 
@@ -588,62 +615,10 @@ def list_dids_extended(args):
     """
     %(prog)s list-dids-extended scope[:*|:name] [--filter 'key=value' | --recursive]
 
-    List the data identifiers for a given scope.
+    List the data identifiers for a given scope (DEPRECATED).
     """
-    client = get_client(args)
-    filters = {}
-    type_ = 'collection'
-    table = []
-
-    try:
-        scope, name = get_scope(args.did[0], client)
-        if name == '':
-            name = '*'
-    except InvalidObject:
-        scope = args.did[0]
-        name = '*'
-
-    if scope not in client.list_scopes():
-        logger.error('Scope not found')
-        return FAILURE
-
-    if args.recursive and '*' in name:
-        logger.error('Option recursive cannot be used with wildcards')
-        return FAILURE
-    else:
-        if filters:
-            if ('name' in filters) and (name != '*'):
-                logger.error('Must have a wildcard in did name if filtering by name')
-                return FAILURE
-
-    try:
-        filters, type_ = parse_did_filter_from_string_fe(args.filter, name)
-    except InvalidType as error:
-        logger.error(error)
-        return FAILURE
-    except DuplicateCriteriaInDIDFilter as error:
-        logger.error(error)
-        return FAILURE
-    except DIDFilterSyntaxError as error:
-        logger.error(error)
-        return FAILURE
-    except ValueError as error:
-        logger.error(error)
-        return FAILURE
-    except Exception as e:
-        logger.error(e)
-        return FAILURE
-
-    for did in client.list_dids_extended(scope, filters=filters, did_type=type_, long=True, recursive=args.recursive):
-        table.append(['%s:%s' % (did['scope'], did['name']), did['did_type']])
-
-    if args.short:
-        for did, _ in table:
-            print(did)
-    else:
-        print(tabulate(table, tablefmt=tablefmt, headers=['SCOPE:NAME', '[DID TYPE]']))
-
-    return SUCCESS
+    logger.error("This command has been deprecated. Please use list_dids instead.")
+    return FAILURE
 
 
 @exception_handler
@@ -832,7 +807,7 @@ def close(args):
     for did in args.dids:
         scope, name = get_scope(did, client)
         client.set_status(scope=scope, name=name, open=False)
-        print('%(scope)s:%(name)s has been closed.' % locals())
+        print(f'{scope}:{name} has been closed.')
     return SUCCESS
 
 
@@ -847,7 +822,7 @@ def reopen(args):
     for did in args.dids:
         scope, name = get_scope(did, client)
         client.set_status(scope=scope, name=name, open=True)
-        print('%(scope)s:%(name)s has been reopened.' % locals())
+        print(f'{scope}:{name} has been reopened.')
     return SUCCESS
 
 
@@ -903,44 +878,6 @@ def erase(args):
             except RucioException as error:
                 logger.warning('Failed to erase DID: %s' % did)
                 logger.debug('Error: %s' % error)
-    return SUCCESS
-
-
-@exception_handler
-def list_impls(args):
-    """
-    %(prog)s list-impls
-
-    List protocol implementations.
-    """
-
-    PROTOCOL_DIRECTORY = '/opt/rucio/lib/rucio/rse/protocols'
-
-    for filename in os.listdir(PROTOCOL_DIRECTORY):
-        if os.path.isdir(os.path.join(PROTOCOL_DIRECTORY, filename)) or filename in ["__init__.py", "cache.py", "http_cache.py", "dummy.py", "protocol.py"]:
-            continue
-        else:
-            filename = re.sub(r".py", r"", filename)
-            __import__("rucio.rse.protocols", fromlist=[filename])
-
-    impls = []
-
-    def get_subclasses(cls):
-        for subclass in cls.__subclasses__():
-            if (str(subclass)[28:-2]).endswith('Default'):
-                class_name = str(subclass)[28:-10]
-            else:
-                class_name = str(subclass)[28:-2]
-            impls.append([class_name, subclass.__doc__])
-            get_subclasses(subclass)
-
-    get_subclasses(RSEProtocol)
-    impls = sorted(impls)
-    table = []
-    for impl in impls:
-        table.append([impl[0], impl[1]])
-
-    print(tabulate(table, tablefmt=tablefmt, headers=['impl', 'DESCRIPTION']))
     return SUCCESS
 
 
@@ -1109,7 +1046,7 @@ def download(args):
         item_defaults['nrandom'] = args.nrandom
         item_defaults['transfer_speed_timeout'] = args.transfer_speed_timeout \
             if args.transfer_speed_timeout is not None \
-            else config_get('download', 'transfer_speed_timeout', False, 500)
+            else config_get_float('download', 'transfer_speed_timeout', False, 500)
         items = []
         if args.dids:
             for did in args.dids:
@@ -1143,6 +1080,24 @@ def download(args):
             logger.debug(args.dids)
         item_defaults['pfn'] = args.pfn
         item_defaults['did'] = did_str
+        if args.rses is None:
+            logger.warning("No RSE was given, selecting one.")
+            client = get_client(args)
+            replicas = client.list_replicas(
+                [{"scope": did_str.split(':')[0], "name": did_str.split(':')[-1]}],
+                schemes=args.protocol,
+                ignore_availability=False,
+                client_location=detect_client_location(),
+                resolve_archives=not args.no_resolve_archives
+            )
+
+            download_rse = _get_rse_for_pfn(replicas, args.pfn)
+            if download_rse is None:
+                logger.error("Could not find RSE for pfn %s", args.pfn)
+                return FAILURE
+            else:
+                item_defaults['rse'] = download_rse
+
         result = download_client.download_pfns([item_defaults], 1, trace_pattern, deactivate_file_download_exceptions=deactivate_file_download_exceptions)
 
     if not result:
@@ -1184,6 +1139,21 @@ def download(args):
     return SUCCESS
 
 
+def _get_rse_for_pfn(replicas, pfn) -> Optional[str]:
+    # Check each rse in the replica list for the pfn. If no pfn is found, returns None.
+    # If it is found, stop the generator and return the item.
+    for replica in replicas:
+        try:
+            download_rse = next(
+                rse for rse in replica['rses']
+                if pfn in replica['rses'][rse]
+            )
+        except StopIteration:
+            continue
+        else:
+            return download_rse
+
+
 @exception_handler
 def get_metadata(args):
     """
@@ -1217,7 +1187,7 @@ def set_metadata(args):
     client = get_client(args)
     value = args.value
     if args.key == 'lifetime':
-        value = float(args.value)
+        value = None if args.value.lower() == 'none' else float(args.value)
     scope, name = get_scope(args.did, client)
     client.set_metadata(scope=scope, name=name, key=args.key, value=value)
     return SUCCESS
@@ -1233,30 +1203,6 @@ def delete_metadata(args):
     client = get_client(args)
     scope, name = get_scope(args.did, client)
     client.delete_metadata(scope=scope, name=name, key=args.key)
-    return SUCCESS
-
-
-@exception_handler
-def list_dids_by_meta(args):
-    """
-    %(prog)s list-dids-by-meta [options] <field1=value1 field2=value2 ...>
-
-    List dids by metadata key values
-    """
-    client = get_client(args)
-    select = {}
-    for key_value in args.key_values:
-        if len(key_value.split('=')) != 2:
-            logger.error("Usage: rucio list-dids-by-meta key1=value1 key2=value2 ......")
-            return FAILURE
-        else:
-            key, value = key_value.split('=')
-            select[key] = value
-    dids = client.list_dids_by_meta(scope=args.scope, select=select)
-    if not dids:
-        print('No DIDs found.')
-    for did in dids:
-        print('%s:%s' % (did['scope'], did['name']))
     return SUCCESS
 
 
@@ -1436,9 +1382,6 @@ def info_rule(args):
 
     Retrieve information about a rule.
     """
-    if args.estimate_ttc:
-        logger.error('"--estimate-ttc" is deprecated!')
-        return FAILURE
     client = get_client(args)
     if args.examine:
         analysis = client.examine_replication_rule(rule_id=args.rule_id)
@@ -1513,12 +1456,12 @@ def list_rules(args):
         except StopIteration:
             rules = []
             # looking for other rules
-            if meta['did_type'] == u'CONTAINER':
+            if meta['did_type'] == 'CONTAINER':
                 for dsn in client.list_content(scope, name):
                     rules.extend(client.list_did_rules(scope=dsn['scope'], name=dsn['name']))
                 if rules:
                     print('No rules found, listing rules for content')
-            if meta['did_type'] == u'DATASET':
+            if meta['did_type'] == 'DATASET':
                 for container in client.list_parent_dids(scope, name):
                     rules.extend(client.list_did_rules(scope=container['scope'], name=container['name']))
                 if rules:
@@ -1540,6 +1483,7 @@ def list_rules(args):
                   '%s[%d/%d/%d]' % (rule['state'], rule['locks_ok_cnt'], rule['locks_replicating_cnt'], rule['locks_stuck_cnt']),
                   rule['rse_expression'],
                   rule['copies'],
+                  sizefmt(rule['bytes'], args.human) if rule['bytes'] is not None else 'N/A',
                   rule['expires_at'],
                   rule['created_at'],
                   sep=',')
@@ -1552,9 +1496,10 @@ def list_rules(args):
                           '%s[%d/%d/%d]' % (rule['state'], rule['locks_ok_cnt'], rule['locks_replicating_cnt'], rule['locks_stuck_cnt']),
                           rule['rse_expression'],
                           rule['copies'],
+                          sizefmt(rule['bytes'], args.human) if rule['bytes'] is not None else 'N/A',
                           rule['expires_at'],
                           rule['created_at']])
-        print(tabulate(table, tablefmt='simple', headers=['ID', 'ACCOUNT', 'SCOPE:NAME', 'STATE[OK/REPL/STUCK]', 'RSE_EXPRESSION', 'COPIES', 'EXPIRES (UTC)', 'CREATED (UTC)'], disable_numparse=True))
+        print(tabulate(table, tablefmt='simple', headers=['ID', 'ACCOUNT', 'SCOPE:NAME', 'STATE[OK/REPL/STUCK]', 'RSE_EXPRESSION', 'COPIES', 'SIZE', 'EXPIRES (UTC)', 'CREATED (UTC)'], disable_numparse=True))
     return SUCCESS
 
 
@@ -1641,7 +1586,7 @@ def list_rse_attributes(args):
     """
     client = get_client(args)
     attributes = client.list_rse_attributes(rse=args.rse)
-    table = [(k + ':', str(v)) for (k, v) in sorted(attributes.items())]  # columns hav mixed datatypes
+    table = [(k + ':', str(v)) for (k, v) in sorted(attributes.items())]  # columns have mixed datatypes
     print(tabulate(table, tablefmt='plain', disable_numparse=True))  # disabling number parsing
     return SUCCESS
 
@@ -1799,12 +1744,16 @@ def add_lifetime_exception(args):
         logger.error('inputfile is mandatory')
         return FAILURE
     with open(args.inputfile) as infile:
-        dids = list(filter(None, [line.strip() for line in infile]))
+        dids = list(set(line.strip() for line in infile))
 
     dids_list = []
     containers = []
     datasets = []
-    error_types = ['Total DIDs', 'DID not submitted because it is a file', 'DID not submitted because it is a container', 'DID not submitted because it is not part of the lifetime campaign', 'DID successfully submitted']
+    error_types = ['Total DIDs',
+                   'DID not submitted because it is a file',
+                   'DID that are containers and were resolved',
+                   'DID not submitted because it is not part of the lifetime campaign',
+                   'DID successfully submitted including the one from containers resolved']
     for did in dids:
         scope, name = get_scope(did, client)
         dids_list.append({'scope': scope, 'name': name})
@@ -1836,11 +1785,20 @@ def add_lifetime_exception(args):
         logger.warning('%s:%s does not exist' % (scope, name))
 
     if containers:
-        logger.error('One or more DIDs are containers. They must be resolved into a list of datasets to request exception. Full list below')
+        logger.warning('One or more DIDs are containers. They will be resolved into a list of datasets to request exception. Full list below')
         for container in containers:
-            logger.error('%s:%s' % (container['scope'], container['name']))
-        logger.error('Please take action. Submission aborted')
-        return FAILURE
+            logger.info('Resolving %s:%s into datasets :' % (container['scope'], container['name']))
+            list_datasets = __resolve_containers_to_datasets(container['scope'], container['name'], client)
+            for chunk in chunks(list_datasets, chunk_limit):
+                for meta in client.get_metadata_bulk(chunk):
+                    scope, name = meta['scope'], meta['name']
+                    logger.debug('%s:%s' % (scope, name))
+                    if not meta['eol_at']:
+                        logger.warning('%s:%s is not affected by the lifetime model' % (scope, name))
+                        summary[3] += 1
+                    else:
+                        logger.info('%s:%s will be declared' % (scope, name))
+                        datasets.append({'scope': scope, 'name': name})
 
     if not datasets:
         logger.error('Nothing to submit')
@@ -1932,7 +1890,8 @@ def get_parser():
                          + 'to the keys configured in the /etc/idpsecrets.json auth server configuration file.')  # NOQA: W503
 
     # Options for the x509  auth_strategy
-    oparser.add_argument('--certificate', dest='certificate', default=None, help='Client certificate file.')
+    oparser.add_argument('--certificate', dest='certificate', default=None, help='Client certificate file for x509 Authentication.')
+    oparser.add_argument('--client_key', dest='client_key', default=None, help='Client key for x509 Authentication.')
     oparser.add_argument('--ca-certificate', dest='ca_certificate', default=None, help='CA certificate to verify peer against (SSL).')
 
     # Ping command
@@ -1997,13 +1956,14 @@ To list the missing replica of a dataset of a given RSE-expression::
     list_file_replicas_parser.add_argument(dest='dids', nargs='+', action='store', help='List of space separated data identifiers.')
     list_file_replicas_parser.add_argument('--pfns', default=False, action='store_true', help='Show only the PFNs.', required=False)
     list_file_replicas_parser.add_argument('--domain', default=None, action='store', help='Force the networking domain. Available options: wan, lan, all.', required=False)
-    list_file_replicas_parser.add_argument('--link', dest='link', default=None, action='store', help='Symlink PFNs with directory substitution.', required=False)
+    list_file_replicas_parser.add_argument('--link', dest='link', default=None, action='store', help='Symlink PFNs with directory substitution.\
+            For example: rucio list-file-replicas --rse RSE_TEST --link /eos/:/eos/ scope:datasetname', required=False)
     list_file_replicas_parser.add_argument('--missing', dest='missing', default=False, action='store_true', help='To list missing replicas at a RSE-Expression. Must be used with --rses option', required=False)
     list_file_replicas_parser.add_argument('--metalink', dest='metalink', default=False, action='store_true', help='Output available replicas as metalink.', required=False)
     list_file_replicas_parser.add_argument('--no-resolve-archives', dest='no_resolve_archives', default=False, action='store_true', help='Do not resolve archives which may contain the files.', required=False)
     list_file_replicas_parser.add_argument('--sort', dest='sort', default=None, action='store', help='Replica sort algorithm. Available options: geoip (default), random', required=False)
     list_file_replicas_parser.add_argument('--rses', dest='rses', default=None, action='store', help='The RSE filter expression. A comprehensive help about RSE expressions\
-            can be found in ' + Color.BOLD + 'http://rucio.cern.ch/documentation/rse_expressions/' + Color.END)
+            can be found in ' + Color.BOLD + 'https://rucio.cern.ch/documentation/started/concepts/rse_expressions' + Color.END)
 
     # The list-dataset-replicas command
     list_dataset_replicas_parser = subparsers.add_parser('list-dataset-replicas', help='List the dataset replicas.',
@@ -2214,10 +2174,6 @@ You can filter by key/value, e.g.::
     +-------------------------------------------+--------------+''')
 
     list_extended_parser.set_defaults(function=list_dids_extended)
-    list_extended_parser.add_argument('--recursive', dest='recursive', action='store_true', default=False, help='List data identifiers recursively.')
-    list_extended_parser.add_argument('--filter', dest='filter', action='store', help='Single or logically combined filtering expression(s) either in the form <key><operator><value> or <value1><operator1><key><operator2><value2> (compound inequality). Operators must belong to the set of (<=, >=, ==, !=, >, <). The following conventions for combining expressions are used: ";" represents the logical OR operator; "," represents the logical AND operator.')  # noqa: E501
-    list_extended_parser.add_argument('--short', dest='short', action='store_true', help='Just dump the list of DIDs.')
-    list_extended_parser.add_argument(dest='did', nargs=1, action='store', default=None, help='Data IDentifier pattern')
 
     # The list parent-dids command
     list_parent_parser = subparsers.add_parser('list-parent-dids', help='List parent DIDs for a given DID', description='List all parents Data IDentifier that contains the target Data IDentifier.',
@@ -2315,10 +2271,6 @@ You can filter by key/value, e.g.::
     list_content_history_parser.set_defaults(function=list_content_history)
     list_content_history_parser.add_argument(dest='dids', nargs='+', action='store', help='List of space separated data identifiers.')
 
-    # The list-impls command
-    list_impls_parser = subparsers.add_parser('list-impls', help='List all supported protocol implementations.')
-    list_impls_parser.set_defaults(function=list_impls)
-
 # The upload subparser
     upload_parser = subparsers.add_parser('upload', help='Upload method.')
     upload_parser.set_defaults(function=upload)
@@ -2335,7 +2287,7 @@ You can filter by key/value, e.g.::
     upload_parser.add_argument('--protocol', action='store', help='Force the protocol to use')
     upload_parser.add_argument('--pfn', dest='pfn', action='store', help='Specify the exact PFN for the upload.')
     upload_parser.add_argument('--name', dest='name', action='store', help='Specify the exact LFN for the upload.')
-    upload_parser.add_argument('--transfer-timeout', dest='transfer_timeout', type=float, action='store', default=config_get('upload', 'transfer_timeout', False, 360), help='Transfer timeout (in seconds).')
+    upload_parser.add_argument('--transfer-timeout', dest='transfer_timeout', type=float, action='store', default=config_get_float('upload', 'transfer_timeout', False, 360), help='Transfer timeout (in seconds).')
     upload_parser.add_argument(dest='args', action='store', nargs='+', help='files and datasets.')
     upload_parser.add_argument('--recursive', dest='recursive', action='store_true', default=False, help='Convert recursively the folder structure into collections')
 
@@ -2358,7 +2310,7 @@ You can filter by key/value, e.g.::
         selected_parser.add_argument('--no-resolve-archives', action='store_true', default=False, help="If set archives will not be considered for download.")
         selected_parser.add_argument('--ignore-checksum', action='store_true', default=False, help="Don't validate checksum for downloaded files.")
         selected_parser.add_argument('--check-local-with-filesize-only', action='store_true', default=False, help="Don't use checksum verification for already downloaded files, use filesize instead.")
-        selected_parser.add_argument('--transfer-timeout', dest='transfer_timeout', type=float, action='store', default=config_get('download', 'transfer_timeout', False, None), help='Transfer timeout (in seconds). Default: computed dynamically from --transfer-speed-timeout. If set to any value >= 0, --transfer-speed-timeout is ignored.')  # NOQA: E501
+        selected_parser.add_argument('--transfer-timeout', dest='transfer_timeout', type=float, action='store', default=config_get_float('download', 'transfer_timeout', False, None), help='Transfer timeout (in seconds). Default: computed dynamically from --transfer-speed-timeout. If set to any value >= 0, --transfer-speed-timeout is ignored.')  # NOQA: E501
         selected_parser.add_argument('--transfer-speed-timeout', dest='transfer_speed_timeout', type=float, action='store', default=None, help='Minimum allowed average transfer speed (in KBps). Default: 500. Used to dynamically compute the timeout if --transfer-timeout not set. Is not supported for --pfn.')  # NOQA: E501
         selected_parser.add_argument('--aria', action='store_true', default=False, help="Use aria2c utility if possible. (EXPERIMENTAL)")
         selected_parser.add_argument('--trace_appid', '--trace-appid', new_option_string='--trace-appid', dest='trace_appid', action=StoreAndDeprecateWarningAction, default=os.environ.get('RUCIO_TRACE_APPID', None), help=argparse.SUPPRESS)
@@ -2446,7 +2398,6 @@ You can filter by key/value, e.g.::
     info_rule_parser.set_defaults(function=info_rule)
     info_rule_parser.add_argument(dest='rule_id', action='store', help='The rule ID')
     info_rule_parser.add_argument('--examine', dest='examine', action='store_true', help='Detailed analysis of transfer errors')
-    info_rule_parser.add_argument('--estimate-ttc', dest='estimate_ttc', action='store_true', help='Deprecated, specifying this will cause the program to fail.')
 
     # The list_rules command
     list_rules_parser = subparsers.add_parser('list-rules', help='List replication rules.', formatter_class=argparse.RawDescriptionHelpFormatter, epilog='''Usage example
@@ -2514,13 +2465,13 @@ You can filter by account::
     list_rses_parser = subparsers.add_parser('list-rses', help='Show the list of all the registered Rucio Storage Elements (RSEs).')
     list_rses_parser.set_defaults(function=list_rses)
     list_rses_parser.add_argument('--rses', dest='rses', action='store', help='The RSE filter expression. A comprehensive help about RSE expressions \
-can be found in ' + Color.BOLD + 'http://rucio.cern.ch/documentation/rse_expressions/' + Color.END)
+can be found in ' + Color.BOLD + 'https://rucio.cern.ch/documentation/started/concepts/rse_expressions' + Color.END)
 
     # The list-suspicious-replicas command
     list_suspicious_replicas_parser = subparsers.add_parser('list-suspicious-replicas', help='Show the list of all replicas marked "suspicious".')
     list_suspicious_replicas_parser.set_defaults(function=list_suspicious_replicas)
     list_suspicious_replicas_parser.add_argument('--expression', dest='rse_expression', action='store', help='The RSE filter expression. A comprehensive help about RSE expressions \
-can be found in ' + Color.BOLD + 'http://rucio.cern.ch/documentation/rse_expressions/' + Color.END)
+can be found in ' + Color.BOLD + 'https://rucio.cern.ch/documentation/started/concepts/rse_expressions' + Color.END)
     list_suspicious_replicas_parser.add_argument('--younger_than', '--younger-than', new_option_string='--younger-than', dest='younger_than', action=StoreAndDeprecateWarningAction, help='List files that have been marked suspicious since the date "younger_than", e.g. 2021-11-29T00:00:00.')  # NOQA: E501
     list_suspicious_replicas_parser.add_argument('--nattempts', dest='nattempts', action='store', help='Minimum number of failed attempts to access a suspicious file.')
 

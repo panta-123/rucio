@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,25 +13,64 @@
 # limitations under the License.
 
 import ast
-
 from json import dumps
 
 from flask import Flask, Response, request
 
-from rucio.api.did import add_did, add_dids, list_content, list_content_history, list_dids, list_dids_extended, \
-    list_files, scope_list, get_did, set_metadata, get_metadata, get_metadata_bulk, set_status, attach_dids, \
-    detach_dids, attach_dids_to_dids, get_dataset_by_guid, list_parent_dids, create_did_sample, list_new_dids, \
-    resurrect, get_users_following_did, remove_did_from_followed, add_did_to_followed, delete_metadata, \
-    set_metadata_bulk, set_dids_metadata_bulk
-from rucio.api.rule import list_replication_rules, list_associated_replication_rules_for_file
-from rucio.common.exception import ScopeNotFound, DataIdentifierNotFound, DataIdentifierAlreadyExists, \
-    DuplicateContent, AccessDenied, KeyNotFound, Duplicate, InvalidValueForKey, UnsupportedStatus, \
-    UnsupportedOperation, RSENotFound, RuleNotFound, InvalidMetadata, InvalidPath, FileAlreadyExists, InvalidObject, FileConsistencyMismatch
-from rucio.common.utils import render_json, APIEncoder
+from rucio.common.exception import (
+    AccessDenied,
+    DatabaseException,
+    DataIdentifierAlreadyExists,
+    DataIdentifierNotFound,
+    Duplicate,
+    DuplicateContent,
+    FileAlreadyExists,
+    FileConsistencyMismatch,
+    InvalidMetadata,
+    InvalidObject,
+    InvalidPath,
+    InvalidValueForKey,
+    KeyNotFound,
+    RSENotFound,
+    RuleNotFound,
+    ScopeNotFound,
+    UnsupportedOperation,
+    UnsupportedStatus,
+)
+from rucio.common.utils import APIEncoder, parse_response, render_json
 from rucio.db.sqla.constants import DIDType
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    parse_scope_name, try_stream, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, json_list, param_get, json_parse
+from rucio.gateway.did import (
+    add_did,
+    add_did_to_followed,
+    add_dids,
+    attach_dids,
+    attach_dids_to_dids,
+    bulk_list_files,
+    create_did_sample,
+    delete_metadata,
+    detach_dids,
+    get_dataset_by_guid,
+    get_did,
+    get_metadata,
+    get_metadata_bulk,
+    get_users_following_did,
+    list_content,
+    list_content_history,
+    list_dids,
+    list_files,
+    list_new_dids,
+    list_parent_dids,
+    remove_did_from_followed,
+    resurrect,
+    scope_list,
+    set_dids_metadata_bulk,
+    set_metadata,
+    set_metadata_bulk,
+    set_status,
+)
+from rucio.gateway.rule import list_associated_replication_rules_for_file, list_replication_rules
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_list, json_parameters, json_parse, param_get, parse_scope_name, response_headers, try_stream
 
 
 class Scope(ErrorHandlingMethodView):
@@ -70,7 +108,7 @@ class Scope(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: Line seperated dictionary of dids.
+                  description: Line separated dictionary of dids.
                   type: array
                   items:
                     type: object
@@ -221,7 +259,7 @@ class Search(ErrorHandlingMethodView):
         if filters is not None:
             filters = ast.literal_eval(filters)
         else:
-            # backwards compatability for created*, length* and name filters passed through as request args
+            # backwards compatibility for created*, length* and name filters passed through as request args
             filters = {}
             for arg, value in request.args.copy().items():
                 if arg not in ['type', 'limit', 'long', 'recursive']:
@@ -235,132 +273,6 @@ class Search(ErrorHandlingMethodView):
         try:
             def generate(vo):
                 for did in list_dids(scope=scope, filters=filters, did_type=did_type, limit=limit, long=long, recursive=recursive, vo=vo):
-                    yield dumps(did) + '\n'
-            return try_stream(generate(vo=request.environ.get('vo')))
-        except UnsupportedOperation as error:
-            return generate_http_error_flask(409, error)
-        except KeyNotFound as error:
-            return generate_http_error_flask(404, error)
-
-
-class SearchExtended(ErrorHandlingMethodView):
-
-    @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self, scope):
-        """
-        ---
-        summary: List Data identifier with plugin metadata
-        description: List all data identifiers in a scope which match a given metadata. Extended Version to included meteadata from various plugins.
-        tags:
-          - Data Identifiers
-        parameters:
-        - name: scope
-          in: path
-          description: The scope of the data identifiers.
-          schema:
-            type: string
-          style: simple
-        - name: type
-          in: query
-          description: The did type to search for.
-          schema:
-            type: string
-            enum: ['all', 'collection', 'container', 'dataset', 'file']
-            default: 'collection'
-        - name: limit
-          in: query
-          description: The maximum number od dids returned.
-          schema:
-            type: integer
-        - name: long
-          in: query
-          description: Provides a longer output, otherwise just prints names.
-          schema:
-            type: boolean
-            default: false
-        - name: recursive
-          in: query
-          description: Recursively list chilred.
-          schema:
-            type: boolean
-        - name: created_before
-          in: query
-          description: Date string in RFC-1123 format where the creation date was earlier.
-          schema:
-            type: string
-        - name: created_after
-          in: query
-          description: Date string in RFC-1123 format where the creation date was later.
-          schema:
-            type: string
-        - name: length
-          in: query
-          description:  Exact number of attached DIDs.
-          schema:
-            type: integer
-        - name: length.gt
-          in: query
-          description: Number of attached DIDs greater than.
-          schema:
-            type: integer
-        - name: length.lt
-          in: query
-          description: Number of attached DIDs less than.
-          schema:
-            type: integer
-        - name: length.gte
-          in: query
-          description: Number of attached DIDs greater than or equal to
-          schema:
-            type: integer
-        - name: length.lte
-          in: query
-          description: Number of attached DIDs less than or equal to.
-          schema:
-            type: integer
-        - name: name
-          in: query
-          description: Name or pattern of a did.
-          schema:
-            type: string
-        responses:
-          200:
-            description: OK
-            content:
-              application/x-json-stream:
-                schema:
-                  description: Line separated name of DIDs or dictionaries of DIDs for long option.
-                  type: array
-                  items:
-                    type: object
-                    description: the name of a DID or a dictionarie of a DID for long option.
-          401:
-            description: Invalid Auth Token
-          404:
-            description: Invalid key in filter.
-          406:
-            description: Not acceptable
-          409:
-            description: Wrong did type
-        """
-        filters = request.args.get('filters', default=None)
-        if filters is not None:
-            filters = ast.literal_eval(filters)
-        else:
-            # backwards compatability for created*, length* and name filters passed through as request args
-            filters = {}
-            for arg, value in request.args.copy().items():
-                if arg not in ['type', 'limit', 'long', 'recursive']:
-                    filters[arg] = value
-            filters = [filters]
-
-        did_type = request.args.get('type', default=None)
-        limit = request.args.get('limit', default=None)
-        long = request.args.get('long', type=['True', '1'].__contains__, default=False)
-        recursive = request.args.get('recursive', type='True'.__eq__, default=False)
-        try:
-            def generate(vo):
-                for did in list_dids_extended(scope=scope, filters=filters, did_type=did_type, limit=limit, long=long, recursive=recursive, vo=vo):
                     yield dumps(did) + '\n'
             return try_stream(generate(vo=request.environ.get('vo')))
         except UnsupportedOperation as error:
@@ -541,10 +453,11 @@ class Attachments(ErrorHandlingMethodView):
         if isinstance(parameters, list):
             attachments = parameters
             ignore_duplicate = False
-        else:
-            assert isinstance(parameters, dict)
+        elif isinstance(parameters, dict):
             attachments = param_get(parameters, 'attachments')
             ignore_duplicate = param_get(parameters, 'ignore_duplicate', default=False)
+        else:
+            return generate_http_error_flask(406, exc="Invalid attachment format.")
 
         try:
             attach_dids_to_dids(attachments=attachments, ignore_duplicate=ignore_duplicate, issuer=request.environ.get('issuer'), vo=request.environ.get('vo'))
@@ -782,6 +695,15 @@ class DIDs(ErrorHandlingMethodView):
             return generate_http_error_flask(409, error)
         except AccessDenied as error:
             return generate_http_error_flask(401, error)
+        except DatabaseException as error:
+            if 'DELETED_DIDS_PK violated' in str(error):
+                return generate_http_error_flask(
+                    status_code=406,
+                    exc=error.__class__.__name__,
+                    exc_msg=str('A deleted DID {} with scope {} is reused'.format(name, scope))
+                )
+            else:
+                return generate_http_error_flask(406, error)
 
         return 'Created', 201
 
@@ -860,7 +782,7 @@ class Attachment(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: The contents of a did. Items are line seperated.
+                  description: The contents of a did. Items are line separated.
                   type: array
                   items:
                     type: object
@@ -1073,7 +995,7 @@ class AttachmentHistory(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: The dids with their information and history. Elements are seperated by new line characters.
+                  description: The dids with their information and history. Elements are separated by new line characters.
                   type: array
                   items:
                     type: object
@@ -1181,7 +1103,7 @@ class Files(ErrorHandlingMethodView):
                             description: The adler32 checksum.
                             type: string
                           lumiblocknr:
-                            description: The lumi block nr. Only availabe if `long` is defined in the query.
+                            description: The lumi block nr. Only available if `long` is defined in the query.
                             type: integer
                     - description: All replica information.
                       type: array
@@ -1227,6 +1149,86 @@ class Files(ErrorHandlingMethodView):
             return generate_http_error_flask(400, error)
         except DataIdentifierNotFound as error:
             return generate_http_error_flask(404, error)
+
+
+class BulkFiles(ErrorHandlingMethodView):
+
+    @check_accept_header_wrapper_flask(['application/x-json-stream'])
+    def post(self):
+        """
+        ---
+        summary: List files bulk
+        description: List files in multiple dids
+        tags:
+          - Data Identifiers
+        requestBody:
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  description: One did to list files.
+                  type: object
+                  required:
+                    - scope
+                    - name
+                  properties:
+                    scope:
+                      description: The did scope.
+                      type: string
+                    name:
+                      description: The did name.
+                      type: string
+        responses:
+          201:
+            description: OK
+            content:
+              application/x-json-stream:
+                schema:
+                  description: All collections file content.
+                  type: array
+                  items:
+                    description: Collections file content.
+                    type: object
+                    properties:
+                      parent_scope:
+                        description: The scope of the parent did.
+                        type: string
+                      parent_name:
+                        description: The name of the parent did.
+                        type: string
+                      scope:
+                        description: The scope of the did.
+                        type: string
+                      name:
+                        description: The name of the did.
+                        type: string
+                      bytes:
+                        description: The size of the did in bytes.
+                        type: integer
+                      guid:
+                        description: The guid of the did.
+                        type: string
+                      events:
+                        description: The number of events of the did.
+                        type: integer
+                      adler32:
+                        description: The adler32 checksum.
+                        type: string
+          401:
+            description: Invalid Auth Token
+        """
+        parameters = json_parameters(parse_response)
+        dids = param_get(parameters, 'dids', default=[])
+        try:
+            def generate(vo):
+                for did in bulk_list_files(dids=dids, vo=vo):
+                    yield render_json(**did) + '\n'
+
+            return try_stream(generate(vo=request.environ.get('vo')))
+        except AccessDenied as error:
+            return generate_http_error_flask(401, error)
+        return 'Created', 201
 
 
 class Parents(ErrorHandlingMethodView):
@@ -1317,7 +1319,7 @@ class Meta(ErrorHandlingMethodView):
             content:
               application/json:
                 schema:
-                  description: A data identifer with all attributes.
+                  description: A data identifier with all attributes.
                   type: object
           401:
             description: Invalid Auth Token
@@ -1361,7 +1363,7 @@ class Meta(ErrorHandlingMethodView):
                 - meta
                 properties:
                   meta:
-                    description: The metadata to add. A dictionary containg the metadata name as key and the value as value.
+                    description: The metadata to add. A dictionary containing the metadata name as key and the value as value.
                     type: object
                   recursive:
                     description: Flag if the metadata should be applied recirsively to children.
@@ -1508,7 +1510,7 @@ class SingleMeta(ErrorHandlingMethodView):
           406:
             description: Not acceptable
           409:
-            description: Matadata already exists
+            description: Metadata already exists
           400:
             description: Invalid key or value
         """
@@ -1644,6 +1646,7 @@ class Rules(ErrorHandlingMethodView):
             scope, name = parse_scope_name(scope_name, request.environ.get('vo'))
 
             def generate(vo):
+                get_did(scope=scope, name=name, vo=vo)
                 for rule in list_replication_rules({'scope': scope, 'name': name}, vo=vo):
                     yield dumps(rule, cls=APIEncoder) + '\n'
 
@@ -1651,6 +1654,8 @@ class Rules(ErrorHandlingMethodView):
         except ValueError as error:
             return generate_http_error_flask(400, error)
         except RuleNotFound as error:
+            return generate_http_error_flask(404, error)
+        except DataIdentifierNotFound as error:
             return generate_http_error_flask(404, error)
 
 
@@ -1695,7 +1700,7 @@ class BulkMeta(ErrorHandlingMethodView):
             content:
               application/json:
                 schema:
-                  description: A list of metadata identifiers for the dids. Seperated by new lines.
+                  description: A list of metadata identifiers for the dids. Separated by new lines.
                   type: array
                   items:
                     description: The metadata for one did.
@@ -1731,7 +1736,7 @@ class AssociatedRules(ErrorHandlingMethodView):
     def get(self, scope_name):
         """
         ---
-        summary: Get accociated rules
+        summary: Get associated rules
         description: Gets all associated rules for a file.
         tags:
           - Data Identifiers
@@ -1748,7 +1753,7 @@ class AssociatedRules(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: All associated rules for a file. Items are seperated by new line character.
+                  description: All associated rules for a file. Items are separated by new line character.
                   type: array
                   items:
                     description: A replication rule associated with the file. Has more fields than listed here.
@@ -1819,7 +1824,7 @@ class GUIDLookup(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: A list of all datasets associated with the guid. Items are seperated by new line character.
+                  description: A list of all datasets associated with the guid. Items are separated by new line character.
                   type: array
                   items:
                     description: A dataset associated with a guid.
@@ -1848,7 +1853,7 @@ class GUIDLookup(ErrorHandlingMethodView):
             return generate_http_error_flask(404, error)
 
 
-class Sample(ErrorHandlingMethodView):
+class SampleLegacy(ErrorHandlingMethodView):
 
     def post(self, input_scope, input_name, output_scope, output_name, nbfiles):
         """
@@ -1925,6 +1930,81 @@ class Sample(ErrorHandlingMethodView):
         return 'Created', 201
 
 
+class Sample(ErrorHandlingMethodView):
+
+    def post(self):
+        """
+        ---
+        summary: Create sample
+        description: Creates a sample from an input collection.
+        tags:
+          - Data Identifiers
+        requestBody:
+          description: Parameters (source and destination) for the files in the sample to be created
+          content:
+            'application/json':
+              schema:
+                type: object
+                required:
+                - input_scope
+                - input_name
+                - output_scope
+                - output_name
+                - nbfiles
+                properties:
+                  input_scope:
+                    description: The input scope.
+                    type: string
+                  input_name:
+                    description: The input name.
+                    type: string
+                  output_scope:
+                    description: The output scope.
+                    type: string
+                  output_name:
+                    description: The output name.
+                    type: string
+                  nbfiles:
+                    description: The number of files to register in the output dataset.
+                    type: string
+        responses:
+          201:
+            description: OK
+            content:
+              application/json:
+                schema:
+                  type: string
+                  enum: ["Created"]
+          401:
+            description: Invalid Auth Token
+          404:
+            description: Not found
+          406:
+            description: Not acceptable
+          409:
+            description: Duplication
+        """
+        parameters = json_parameters()
+        try:
+            create_did_sample(
+                input_scope=parameters['input_scope'],
+                input_name=parameters['input_name'],
+                output_scope=parameters['output_scope'],
+                output_name=parameters['output_name'],
+                issuer=request.environ.get('issuer'),
+                nbfiles=parameters['nbfiles'],
+                vo=request.environ.get('vo'),
+            )
+        except DataIdentifierNotFound as error:
+            return generate_http_error_flask(404, error)
+        except (DuplicateContent, DataIdentifierAlreadyExists, UnsupportedOperation) as error:
+            return generate_http_error_flask(409, error)
+        except AccessDenied as error:
+            return generate_http_error_flask(401, error)
+
+        return 'Created', 201
+
+
 class NewDIDs(ErrorHandlingMethodView):
 
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
@@ -1948,7 +2028,7 @@ class NewDIDs(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: A list of the recent dids. Items are seperated by new line characters.
+                  description: A list of the recent dids. Items are separated by new line characters.
                   type: array
                   items:
                     description: A did.
@@ -2198,10 +2278,8 @@ def blueprint():
     bp.add_url_rule('/<guid>/guid', view_func=guid_lookup_view, methods=['get', ])
     search_view = Search.as_view('search')
     bp.add_url_rule('/<scope>/dids/search', view_func=search_view, methods=['get', ])
-    search_extended_view = SearchExtended.as_view('search_extended')
-    bp.add_url_rule('/<scope>/dids/search_extended', view_func=search_extended_view, methods=['get', ])
     dids_view = DIDs.as_view('dids')
-    bp.add_url_rule('/<path:scope_name>/status', view_func=dids_view, methods=['put', ])
+    bp.add_url_rule('/<path:scope_name>/status', view_func=dids_view, methods=['put', 'get'])
     files_view = Files.as_view('files')
     bp.add_url_rule('/<path:scope_name>/files', view_func=files_view, methods=['get', ])
     attachment_history_view = AttachmentHistory.as_view('attachment_history')
@@ -2225,8 +2303,10 @@ def blueprint():
     bp.add_url_rule('/<path:scope_name>', view_func=dids_view, methods=['get', 'post'])
     bulkdids_view = BulkDIDS.as_view('bulkdids')
     bp.add_url_rule('', view_func=bulkdids_view, methods=['post', ])
-    sample_view = Sample.as_view('sample')
-    bp.add_url_rule('/<input_scope>/<input_name>/<output_scope>/<output_name>/<nbfiles>/sample', view_func=sample_view, methods=['post', ])
+    sample_view_legacy = SampleLegacy.as_view('sample')
+    bp.add_url_rule('/<input_scope>/<input_name>/<output_scope>/<output_name>/<nbfiles>/sample', view_func=sample_view_legacy, methods=['post', ])
+    sample_view = Sample.as_view('sample_new')
+    bp.add_url_rule('/sample', view_func=sample_view, methods=['post', ])
     attachements_view = Attachments.as_view('attachments')
     bp.add_url_rule('/attachments', view_func=attachements_view, methods=['post', ])
     new_dids_view = NewDIDs.as_view('new_dids')
@@ -2235,6 +2315,8 @@ def blueprint():
     bp.add_url_rule('/resurrect', view_func=resurrect_view, methods=['post', ])
     bulkmeta_view = BulkMeta.as_view('bulkmeta')
     bp.add_url_rule('/bulkmeta', view_func=bulkmeta_view, methods=['post', ])
+    files_view = BulkFiles.as_view('bulkfiles')
+    bp.add_url_rule('/bulkfiles', view_func=files_view, methods=['post', ])
 
     bp.after_request(response_headers)
     return bp

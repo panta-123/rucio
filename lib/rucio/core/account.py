@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,28 +16,37 @@ from datetime import datetime
 from enum import Enum
 from re import match
 from traceback import format_exc
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import and_
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import exc
 
 import rucio.core.account_counter
 import rucio.core.rse
-
 from rucio.common import exception
 from rucio.common.config import config_get_bool
 from rucio.core.vo import vo_exists
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountStatus, AccountType
-from rucio.db.sqla.session import read_session, transactional_session, stream_session
+from rucio.db.sqla.session import read_session, stream_session, transactional_session
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
     from sqlalchemy.orm import Session
+
+    from rucio.common.types import AccountAttributesDict, AccountDict, AccountUsageModelDict, IdentityDict, InternalAccount, UsageDict
 
 
 @transactional_session
-def add_account(account, type_, email, *, session: "Session"):
+def add_account(
+    account: "InternalAccount",
+    type_: AccountType,
+    email: str,
+    *,
+    session: "Session"
+) -> None:
     """ Add an account with the given account name and type.
 
     :param account: the name of the new account.
@@ -64,22 +72,33 @@ def add_account(account, type_, email, *, session: "Session"):
 
 
 @read_session
-def account_exists(account, *, session: "Session"):
-    """ Checks to see if account exists. This procedure does not check it's status.
+def account_exists(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> bool:
+    """ Checks to see if account exists and is active.
 
     :param account: Name of the account.
     :param session: the database session in use.
 
     :returns: True if found, otherwise false.
     """
-
-    query = session.query(models.Account).filter_by(account=account, status=AccountStatus.ACTIVE)
-
-    return True if query.first() else False
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account,
+        models.Account.status == AccountStatus.ACTIVE
+    )
+    return session.execute(query).scalar() is not None
 
 
 @read_session
-def get_account(account, *, session: "Session"):
+def get_account(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> models.Account:
     """ Returns an account for the given account name.
 
     :param account: the name of the account.
@@ -87,33 +106,51 @@ def get_account(account, *, session: "Session"):
 
     :returns: a dict with all information for the account.
     """
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account
+    )
 
-    query = session.query(models.Account).filter_by(account=account)
-
-    result = query.first()
+    result = session.execute(query).scalar()
     if result is None:
         raise exception.AccountNotFound('Account with ID \'%s\' cannot be found' % account)
     return result
 
 
 @transactional_session
-def del_account(account, *, session: "Session"):
+def del_account(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> None:
     """ Disable an account with the given account name.
 
     :param account: the account name.
     :param session: the database session in use.
     """
-    query = session.query(models.Account).filter_by(account=account).filter_by(status=AccountStatus.ACTIVE)
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account,
+        models.Account.status == AccountStatus.ACTIVE
+    )
     try:
-        account = query.one()
+        query_result = session.execute(query).scalar_one()
     except exc.NoResultFound:
         raise exception.AccountNotFound('Account with ID \'%s\' cannot be found' % account)
 
-    account.update({'status': AccountStatus.DELETED, 'deleted_at': datetime.utcnow()})
+    query_result.update({'status': AccountStatus.DELETED, 'deleted_at': datetime.utcnow()})
 
 
 @transactional_session
-def update_account(account, key, value, *, session: "Session"):
+def update_account(
+    account: "InternalAccount",
+    key: str,
+    value: Any,
+    *,
+    session: "Session"
+) -> None:
     """ Update a property of an account.
 
     :param account: Name of the account.
@@ -121,24 +158,32 @@ def update_account(account, key, value, *, session: "Session"):
     :param value: Property value.
     :param session: the database session in use.
     """
-    query = session.query(models.Account).filter_by(account=account)
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account
+    )
     try:
-        account = query.one()
+        query_result = session.execute(query).scalar_one()
     except exc.NoResultFound:
         raise exception.AccountNotFound('Account with ID \'%s\' cannot be found' % account)
     if key == 'status':
         if isinstance(value, str):
             value = AccountStatus[value]
         if value == AccountStatus.SUSPENDED:
-            query.update({'status': value, 'suspended_at': datetime.utcnow()})
+            query_result.update({'status': value, 'suspended_at': datetime.utcnow()})
         elif value == AccountStatus.ACTIVE:
-            query.update({'status': value, 'suspended_at': None})
+            query_result.update({'status': value, 'suspended_at': None})
     else:
-        query.update({key: value})
+        query_result.update({key: value})
 
 
 @stream_session
-def list_accounts(filter_=None, *, session: "Session"):
+def list_accounts(
+    filter_: Optional["Mapping[str, Any]"] = None,
+    *,
+    session: "Session"
+) -> "Iterator[AccountDict]":
     """ Returns a list of all account names.
 
     :param filter_: Dictionary of attributes by which the input data should be filtered
@@ -148,62 +193,102 @@ def list_accounts(filter_=None, *, session: "Session"):
     """
     if filter_ is None:
         filter_ = {}
-    query = session.query(models.Account.account, models.Account.account_type,
-                          models.Account.email).filter_by(status=AccountStatus.ACTIVE)
+    query = select(
+        models.Account.account,
+        models.Account.account_type,
+        models.Account.email
+    ).where(
+        models.Account.status == AccountStatus.ACTIVE
+    )
     for filter_type in filter_:
         if filter_type == 'account_type':
             if isinstance(filter_['account_type'], str):
-                query = query.filter_by(account_type=AccountType[filter_['account_type']])
+                query = query.where(
+                    models.Account.account_type == AccountType[filter_['account_type']]
+                )
             elif isinstance(filter_['account_type'], Enum):
-                query = query.filter_by(account_type=filter_['account_type'])
+                query = query.where(
+                    models.Account.account_type == filter_['account_type']
+                )
 
         elif filter_type == 'identity':
-            query = query.join(models.IdentityAccountAssociation, models.Account.account == models.IdentityAccountAssociation.account).\
-                filter(models.IdentityAccountAssociation.identity == filter_['identity'])
+            query = query.join(
+                models.IdentityAccountAssociation,
+                models.Account.account == models.IdentityAccountAssociation.account
+            ).where(
+                models.IdentityAccountAssociation.identity == filter_['identity']
+            )
 
         elif filter_type == 'account':
             if '*' in filter_['account'].internal:
                 account_str = filter_['account'].internal.replace('*', '%')
-                query = query.filter(models.Account.account.like(account_str))
+                query = query.where(
+                    models.Account.account.like(account_str)
+                )
             else:
-                query = query.filter_by(account=filter_['account'])
+                query = query.where(
+                    models.Account.account == filter_['account']
+                )
         else:
-            query = query.join(models.AccountAttrAssociation, models.Account.account == models.AccountAttrAssociation.account).\
-                filter(models.AccountAttrAssociation.key == filter_type).\
-                filter(models.AccountAttrAssociation.value == filter_[filter_type])
+            query = query.join(
+                models.AccountAttrAssociation,
+                models.Account.account == models.AccountAttrAssociation.account
+            ).where(
+                models.AccountAttrAssociation.key == filter_type,
+                models.AccountAttrAssociation.value == filter_[filter_type]
+            )
+    query = query.order_by(models.Account.account)
 
-    for account, account_type, email in query.order_by(models.Account.account).yield_per(25):
+    for account, account_type, email in session.execute(query).yield_per(25):
         yield {'account': account, 'type': account_type, 'email': email}
 
 
 @read_session
-def list_identities(account, *, session: "Session"):
+def list_identities(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> list["IdentityDict"]:
     """
     List all identities on an account.
 
     :param account: The account name.
     :param session: the database session in use.
     """
-    identity_list = list()
-
-    query = session.query(models.Account).filter_by(account=account).filter_by(status=AccountStatus.ACTIVE)
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account,
+        models.Account.status == AccountStatus.ACTIVE
+    )
     try:
-        query.one()
+        session.execute(query).scalar_one()
     except exc.NoResultFound:
         raise exception.AccountNotFound('Account with ID \'%s\' cannot be found' % account)
 
-    query = session.query(models.IdentityAccountAssociation, models.Identity)\
-                   .join(models.Identity, and_(models.Identity.identity == models.IdentityAccountAssociation.identity,
-                                               models.Identity.identity_type == models.IdentityAccountAssociation.identity_type))\
-                   .filter(models.IdentityAccountAssociation.account == account)
-    for identity in query:
-        identity_list.append({'type': identity[0].identity_type, 'identity': identity[0].identity, 'email': identity[1].email})
+    query = select(
+        models.IdentityAccountAssociation.identity_type.label('type'),
+        models.IdentityAccountAssociation.identity,
+        models.Identity.email
+    ).join(
+        models.Identity,
+        and_(
+            models.Identity.identity == models.IdentityAccountAssociation.identity,
+            models.Identity.identity_type == models.IdentityAccountAssociation.identity_type
+        )
+    ).where(
+        models.IdentityAccountAssociation.account == account
+    )
 
-    return identity_list
+    return [row._asdict() for row in session.execute(query)]  # type: ignore (pending SQLA2.1: https://github.com/rucio/rucio/discussions/6615)
 
 
 @read_session
-def list_account_attributes(account, *, session: "Session"):
+def list_account_attributes(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> list["AccountAttributesDict"]:
     """
     Get all attributes defined for an account.
 
@@ -212,22 +297,33 @@ def list_account_attributes(account, *, session: "Session"):
 
     :returns: a list of all key, value pairs for this account.
     """
-    attr_list = []
-    query = session.query(models.Account).filter_by(account=account).filter_by(status=AccountStatus.ACTIVE)
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account,
+        models.Account.status == AccountStatus.ACTIVE
+    )
     try:
-        query.one()
+        session.execute(query).scalar_one()
     except exc.NoResultFound:
         raise exception.AccountNotFound("Account ID '{0}' does not exist".format(account))
 
-    query = session.query(models.AccountAttrAssociation).filter_by(account=account)
-    for attr in query:
-        attr_list.append({'key': attr.key, 'value': attr.value})
-
-    return attr_list
+    query = select(
+        models.AccountAttrAssociation.key,
+        models.AccountAttrAssociation.value
+    ).where(
+        models.AccountAttrAssociation.account == account
+    )
+    return [row._asdict() for row in session.execute(query)]  # type: ignore (pending SQLA2.1: https://github.com/rucio/rucio/discussions/6615)
 
 
 @read_session
-def has_account_attribute(account, key, *, session: "Session"):
+def has_account_attribute(
+    account: "InternalAccount",
+    key: str,
+    *,
+    session: "Session"
+) -> bool:
     """
     Indicates whether the named key is present for the account.
 
@@ -237,13 +333,23 @@ def has_account_attribute(account, key, *, session: "Session"):
 
     :returns: True or False
     """
-    if session.query(models.AccountAttrAssociation.value).filter_by(account=account, key=key).first():
-        return True
-    return False
+    query = select(
+        models.AccountAttrAssociation.value
+    ).where(
+        models.AccountAttrAssociation.account == account,
+        models.AccountAttrAssociation.key == key
+    )
+    return session.execute(query).scalar() is not None
 
 
 @transactional_session
-def add_account_attribute(account, key, value, *, session: "Session"):
+def add_account_attribute(
+    account: "InternalAccount",
+    key: str,
+    value: Any,
+    *,
+    session: "Session"
+) -> None:
     """
     Add an attribute for the given account name.
 
@@ -252,11 +358,14 @@ def add_account_attribute(account, key, value, *, session: "Session"):
     :param account: the account to add the attribute to.
     :param session: The database session in use.
     """
-
-    query = session.query(models.Account).filter_by(account=account, status=AccountStatus.ACTIVE)
-
+    query = select(
+        models.Account
+    ).where(
+        models.Account.account == account,
+        models.Account.status == AccountStatus.ACTIVE
+    )
     try:
-        query.one()
+        session.execute(query).scalar_one()
     except exc.NoResultFound:
         raise exception.AccountNotFound("Account ID '{0}' does not exist".format(account))
 
@@ -276,7 +385,12 @@ def add_account_attribute(account, key, value, *, session: "Session"):
 
 
 @transactional_session
-def del_account_attribute(account, key, *, session: "Session"):
+def del_account_attribute(
+    account: "InternalAccount",
+    key: str,
+    *,
+    session: "Session"
+) -> None:
     """
     Add an attribute for the given account name.
 
@@ -284,14 +398,25 @@ def del_account_attribute(account, key, *, session: "Session"):
     :param key: the key for the new attribute.
     :param session: The database session in use.
     """
-    aid = session.query(models.AccountAttrAssociation).filter_by(key=key, account=account).first()
+    query = select(
+        models.AccountAttrAssociation
+    ).where(
+        models.AccountAttrAssociation.account == account,
+        models.AccountAttrAssociation.key == key
+    )
+    aid = session.execute(query).scalar()
     if aid is None:
         raise exception.AccountNotFound('Attribute ({0}) does not exist for the account {1}!'.format(key, account))
     aid.delete(session=session)
 
 
 @read_session
-def get_usage(rse_id, account, *, session: "Session"):
+def get_usage(
+    rse_id: str,
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> "UsageDict":
     """
     Returns current values of the specified counter, or raises CounterNotFound if the counter does not exist.
 
@@ -300,16 +425,26 @@ def get_usage(rse_id, account, *, session: "Session"):
     :param session:          The database session in use.
     :returns:                A dictionary {'bytes', 'files', 'updated_at'}
     """
-
+    query = select(
+        models.AccountUsage.bytes,
+        models.AccountUsage.files,
+        models.AccountUsage.updated_at
+    ).where(
+        models.AccountUsage.rse_id == rse_id,
+        models.AccountUsage.account == account
+    )
     try:
-        counter = session.query(models.AccountUsage).filter_by(rse_id=rse_id, account=account).one()
-        return {'bytes': counter.bytes, 'files': counter.files, 'updated_at': counter.updated_at}
+        return session.execute(query).one()._asdict()  # type: ignore (pending SQLA2.1: https://github.com/rucio/rucio/discussions/6615)
     except exc.NoResultFound:
         return {'bytes': 0, 'files': 0, 'updated_at': None}
 
 
 @read_session
-def get_all_rse_usages_per_account(account, *, session: "Session"):
+def get_all_rse_usages_per_account(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> list["AccountUsageModelDict"]:
     """
     Returns current values of the specified counter, or raises CounterNotFound if the counter does not exist.
 
@@ -318,15 +453,24 @@ def get_all_rse_usages_per_account(account, *, session: "Session"):
     :param session:          The database session in use.
     :returns:                List of dicts with :py:class:`models.AccountUsage` items
     """
-
+    query = select(
+        models.AccountUsage
+    ).where(
+        models.AccountUsage.account == account
+    )
     try:
-        return [result.to_dict() for result in session.query(models.AccountUsage).filter_by(account=account).all()]
+        return [result.to_dict() for result in session.execute(query).scalars()]  # type: ignore (pending SQLA2.1: https://github.com/rucio/rucio/discussions/6615)
     except exc.NoResultFound:
         return []
 
 
 @read_session
-def get_usage_history(rse_id, account, *, session: "Session"):
+def get_usage_history(
+    rse_id: str,
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> list["UsageDict"]:
     """
     Returns historical values of the specified counter, or raises CounterNotFound if the counter does not exist.
 
@@ -335,13 +479,18 @@ def get_usage_history(rse_id, account, *, session: "Session"):
     :param session:          The database session in use.
     :returns:                A dictionary {'bytes', 'files', 'updated_at'}
     """
-
-    result = []
-    AccountUsageHistory = models.AccountUsageHistory
+    query = select(
+        models.AccountUsageHistory.bytes,
+        models.AccountUsageHistory.files,
+        models.AccountUsageHistory.updated_at
+    ).where(
+        models.AccountUsageHistory.rse_id == rse_id,
+        models.AccountUsageHistory.account == account
+    ).order_by(
+        models.AccountUsageHistory.updated_at
+    )
     try:
-        query = session.query(AccountUsageHistory).filter_by(rse_id=rse_id, account=account).order_by(AccountUsageHistory.updated_at)
-        for row in query.all():
-            result.append({'bytes': row.bytes, 'files': row.files, 'updated_at': row.updated_at})
+        return [row._asdict() for row in session.execute(query)]  # type: ignore (pending SQLA2.1: https://github.com/rucio/rucio/discussions/6615)
     except exc.NoResultFound:
         raise exception.CounterNotFound('No usage can be found for account %s on RSE %s' % (account, rucio.core.rse.get_rse_name(rse_id=rse_id, session=session)))
-    return result
+    return []

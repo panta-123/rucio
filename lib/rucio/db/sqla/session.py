@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,33 +13,41 @@
 # limitations under the License.
 
 import copy
+import logging
 import os
 import sys
-
+from datetime import datetime, timedelta
 from functools import update_wrapper
-from inspect import isgeneratorfunction, getfullargspec
-from threading import Lock
-from typing import TYPE_CHECKING
+from inspect import getfullargspec, isgeneratorfunction
 from os.path import basename
+from threading import Lock
+from time import sleep
+from typing import TYPE_CHECKING, Any, Union
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.exc import DatabaseError, DisconnectionError, OperationalError, TimeoutError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session, Session
-from sqlalchemy.pool import QueuePool, SingletonThreadPool, NullPool
+from sqlalchemy import MetaData, create_engine, event, text
+from sqlalchemy.exc import DatabaseError, DisconnectionError, OperationalError, SQLAlchemyError, TimeoutError
+from sqlalchemy.orm import DeclarativeBase, Session, scoped_session, sessionmaker
+from sqlalchemy.pool import NullPool, Pool, QueuePool, SingletonThreadPool
 
 from rucio.common.config import config_get
-from rucio.common.exception import RucioException, DatabaseException, InputValidationError
-from rucio.common.utils import retrying
+from rucio.common.exception import DatabaseException, InputValidationError, RucioException
 from rucio.common.extra import import_extras
+from rucio.common.utils import retrying
 
 EXTRA_MODULES = import_extras(['MySQLdb', 'pymysql'])
 
 if TYPE_CHECKING:
-    from typing import Callable, Optional, ParamSpec, TypeVar
+    from collections.abc import Callable
+    from typing import Optional, ParamSpec, TypeVar
+
+    from pymysql import Connection as MySQLConnection
+    from sqlalchemy.engine.base import Engine
+
+    from rucio.common.types import LoggerFunction
 
     P = ParamSpec('P')
     R = TypeVar('R')
+    CallableTypeVar = TypeVar('CallableTypeVar', bound='Callable[..., Any]')
 
 
 try:
@@ -58,16 +65,17 @@ try:
 except:
     pass
 
-BASE = declarative_base()
 DEFAULT_SCHEMA_NAME = config_get(DATABASE_SECTION, 'schema',
                                  raise_exception=False, default=None, check_config_table=False)
-if DEFAULT_SCHEMA_NAME:
-    BASE.metadata.schema = DEFAULT_SCHEMA_NAME
-
+_METADATA = MetaData(schema=DEFAULT_SCHEMA_NAME)
 _MAKER, _ENGINE, _LOCK = None, None, Lock()
 
 
-def _fk_pragma_on_connect(dbapi_con, con_record):
+class BASE(DeclarativeBase):
+    metadata = _METADATA
+
+
+def _fk_pragma_on_connect(dbapi_con, con_record) -> None:
     # Hack for previous versions of sqlite3
     try:
         dbapi_con.execute('pragma foreign_keys=ON')
@@ -75,7 +83,11 @@ def _fk_pragma_on_connect(dbapi_con, con_record):
         pass
 
 
-def mysql_ping_listener(dbapi_conn, connection_rec, connection_proxy):
+def mysql_ping_listener(
+        dbapi_conn: "MySQLConnection",
+        connection_rec,
+        connection_proxy
+) -> None:
     """
     Ensures that MySQL connections checked out of the
     pool are alive.
@@ -98,7 +110,9 @@ def mysql_ping_listener(dbapi_conn, connection_rec, connection_proxy):
             raise
 
 
-def mysql_convert_decimal_to_float(pymysql=False):
+def mysql_convert_decimal_to_float(
+        pymysql: bool = False
+) -> dict[Union[type[object], int], 'Callable[..., Any]']:
     """
     The default datatype returned by mysql-python for numerics is decimal.Decimal.
     This type cannot be serialised to JSON, therefore we need to autoconvert to floats.
@@ -108,7 +122,7 @@ def mysql_convert_decimal_to_float(pymysql=False):
     :return converter: Converter object
     """
 
-    def pymysql_converter():
+    def pymysql_converter() -> dict[Union[type[object], int], 'Callable[..., Any]']:
         from pymysql.constants import FIELD_TYPE
         from pymysql.converters import conversions as conv
         converter = conv.copy()
@@ -135,7 +149,7 @@ def mysql_convert_decimal_to_float(pymysql=False):
     return converter
 
 
-def psql_convert_decimal_to_float(dbapi_conn, connection_rec):
+def psql_convert_decimal_to_float(dbapi_conn, connection_rec) -> None:
     """
     The default datatype returned by psycopg2 for numerics is decimal.Decimal.
     This type cannot be serialised to JSON, therefore we need to autoconvert to floats.
@@ -155,8 +169,8 @@ def psql_convert_decimal_to_float(dbapi_conn, connection_rec):
     psycopg2.extensions.register_type(DEC2FLOAT)
 
 
-def my_on_connect(dbapi_con, connection_record):
-    """ Adds information to track performance and ressource by module.
+def my_on_connect(dbapi_con, connection_record) -> None:
+    """ Adds information to track performance and resource by module.
         Info are recorded in the V$SESSION and V$SQLAREA views.
     """
     caller = basename(sys.argv[0])
@@ -166,7 +180,7 @@ def my_on_connect(dbapi_con, connection_record):
     dbapi_con.action = caller
 
 
-def _get_engine_poolclass(poolclass):
+def _get_engine_poolclass(poolclass: str) -> Pool:
     """Resolve the correct SQLAlchemy Pool type to use from the
     poolclass config option.
 
@@ -189,7 +203,7 @@ def _get_engine_poolclass(poolclass):
     return SQLA_CONFIG_POOLCLASS_MAPPING[poolclass]
 
 
-def get_engine():
+def get_engine() -> 'Engine':
     """ Creates a engine to a specific database.
         :returns: engine
     """
@@ -220,11 +234,14 @@ def get_engine():
             event.listen(_ENGINE, 'connect', _fk_pragma_on_connect)
         elif 'oracle' in sql_connection:
             event.listen(_ENGINE, 'connect', my_on_connect)
-    assert _ENGINE
+    if not _ENGINE:
+        raise RuntimeError("Could not form database engine.")
     return _ENGINE
 
 
-def get_dump_engine(echo=False):
+def get_dump_engine(
+        echo: bool = False
+) -> 'Engine':
     """ Creates a dump engine to a specific database.
         :returns: engine """
 
@@ -250,20 +267,21 @@ def get_dump_engine(echo=False):
     return engine
 
 
-def get_maker():
+def get_maker() -> sessionmaker:
     """
         Return a SQLAlchemy sessionmaker.
         May assign __MAKER if not already assigned.
     """
     global _MAKER, _ENGINE
-    assert _ENGINE
+    if not _ENGINE:
+        raise RuntimeError("Could not form database engine.")
     if not _MAKER:
         # turn on sqlAlchemy 2.0 with future=True.
         _MAKER = sessionmaker(bind=_ENGINE, autocommit=False, autoflush=True, expire_on_commit=True, future=True)
     return _MAKER
 
 
-def get_session():
+def get_session() -> scoped_session:
     """ Creates a session to a specific database, assumes that schema already in place.
         :returns: session
     """
@@ -275,12 +293,39 @@ def get_session():
             get_maker()
         finally:
             _LOCK.release()
-    assert _MAKER
+    if not _MAKER:
+        raise RuntimeError("Session factory is not defined.")
     session = scoped_session(_MAKER)
     return session
 
 
-def retry_if_db_connection_error(exception):
+def wait_for_database(
+        timeout: int = 60,
+        interval: int = 2,
+        *,
+        logger: "LoggerFunction" = logging.log
+) -> None:
+    """ Wait for the database for a specific amount of time """
+
+    end_time = datetime.utcnow() + timedelta(seconds=timeout)
+    while True:
+        try:
+            session = get_session()
+            if session.bind.dialect.name == 'oracle':
+                session.execute(text('select 1 from dual'))
+            else:
+                session.execute(text('select 1'))
+            session.close()
+            break
+        except SQLAlchemyError as e:
+            logger(logging.WARNING, 'Still waiting for database: %s', e)
+            if datetime.utcnow() >= end_time:
+                raise
+
+        sleep(interval)
+
+
+def retry_if_db_connection_error(exception: Exception) -> bool:
     """Return True if error in connecting to db."""
     if isinstance(exception, (OperationalError, DatabaseException)):
         conn_err_codes = ('2002', '2003', '2006',  # MySQL
@@ -296,11 +341,14 @@ def retry_if_db_connection_error(exception):
     return False
 
 
-def _update_session_wrapper(wrapper, wrapped):
+def _update_session_wrapper(
+        wrapper: "CallableTypeVar",
+        wrapped: 'Callable'
+) -> "CallableTypeVar":
     """
     In addition to the work done by functools.update_wrapper, this function also preservers
     the signature of the initial function. With the exception that the 'session' parameter
-    is overriden to have a default value of 'None'.
+    is overridden to have a default value of 'None'.
 
     wrapper is the function to be updated
     wrapped is the original function
@@ -349,17 +397,17 @@ def read_session(function: "Callable[P, R]"):
         if not session:
             session_scoped = get_session()
             session = session_scoped()
-            session.begin()
+            session.begin()  # type: ignore
             try:
                 return function(*args, session=session, **kwargs)
             except TimeoutError as error:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise DatabaseException(str(error))
             except DatabaseError as error:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise DatabaseException(str(error))
             except:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise
             finally:
                 session_scoped.remove()
@@ -390,18 +438,18 @@ def stream_session(function: "Callable[P, R]"):
         if not session:
             session_scoped = get_session()
             session = session_scoped()
-            session.begin()
+            session.begin()  # type: ignore
             try:
                 for row in function(*args, session=session, **kwargs):
                     yield row
             except TimeoutError as error:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise DatabaseException(str(error))
             except DatabaseError as error:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise DatabaseException(str(error))
             except:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise
             finally:
                 session_scoped.remove()
@@ -414,29 +462,33 @@ def stream_session(function: "Callable[P, R]"):
     return _update_session_wrapper(new_funct, function)
 
 
-def transactional_session(function: "Callable[P, R]"):
+def transactional_session(function: "Callable[P, R]") -> 'Callable':
     '''
     decorator that set the session variable to use inside a function.
     With that decorator it's possible to use the session variable like if a global variable session is declared.
 
     session is a sqlalchemy session, and you can get one calling get_session().
     '''
-    def new_funct(*args: "P.args", session: "Optional[Session]" = None, **kwargs):  # pylint:disable=missing-kwoa
+    def new_funct(
+            *args: "P.args",
+            session: "Optional[Session]" = None,
+            **kwargs
+    ) -> "R":  # pylint:disable=missing-kwoa
         if not session:
             session_scoped = get_session()
             session = session_scoped()
-            session.begin()
+            session.begin()  # type: ignore
             try:
                 result = function(*args, session=session, **kwargs)
-                session.commit()  # pylint: disable=maybe-no-member
+                session.commit()  # type: ignore
             except TimeoutError as error:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise DatabaseException(str(error))
             except DatabaseError as error:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise DatabaseException(str(error))
             except:
-                session.rollback()  # pylint: disable=maybe-no-member
+                session.rollback()  # type: ignore
                 raise
             finally:
                 session_scoped.remove()  # pylint: disable=maybe-no-member

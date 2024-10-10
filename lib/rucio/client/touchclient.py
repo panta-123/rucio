@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,10 +13,11 @@
 # limitations under the License.
 
 from json import dumps
+from typing import Optional
+
 from requests import post
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.exception import RucioException, UnsupportedDIDType
 
 
@@ -31,7 +31,12 @@ class TouchClient(BaseClient):
     DIDS_BASEURL = 'dids'
     TRACES_BASEURL = 'traces'
 
-    def touch(self, scope, name, rse=None):
+    def touch(
+            self,
+            scope: str,
+            name: str,
+            rse: Optional[str] = None
+    ) -> None:
         """
         Sends a touch trace for a given file or dataset.
 

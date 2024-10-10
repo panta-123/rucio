@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,12 +15,10 @@
 ''' added source history table '''
 
 import sqlalchemy as sa
-
-from alembic.op import create_table, add_column, drop_column, drop_table
 from alembic import context
+from alembic.op import add_column, create_table, drop_column, drop_table
 
 from rucio.db.sqla.types import GUID
-
 
 # Alembic revision identifiers
 revision = '575767d9f89'

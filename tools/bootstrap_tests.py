@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,26 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os.path
 import os
+import os.path
 import sys
-import requests
 import time
 from json import dumps
+
+import requests
 
 base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(base_path)
 os.chdir(base_path)
 
 
-from rucio.api.vo import add_vo  # noqa: E402
 from rucio.client import Client  # noqa: E402
 from rucio.common.config import config_get, config_get_bool  # noqa: E402
-from rucio.common.exception import Duplicate, RucioException, DuplicateContent  # noqa: E402
+from rucio.common.exception import Duplicate, DuplicateContent, RucioException  # noqa: E402
+from rucio.common.types import InternalAccount  # noqa: E402
 from rucio.common.utils import extract_scope  # noqa: E402
 from rucio.core.account import add_account_attribute  # noqa: E402
 from rucio.core.vo import map_vo  # noqa: E402
-from rucio.common.types import InternalAccount  # noqa: E402
+from rucio.gateway.vo import add_vo  # noqa: E402
 from rucio.tests.common_server import reset_config_table  # noqa: E402
 
 
@@ -97,7 +97,7 @@ if __name__ == '__main__':
         try:
             add_vo(new_vo=vo['vo'], issuer='super_root', description='A VO to test multi-vo features', email='N/A', vo='def')
         except Duplicate:
-            print('VO {} already added'.format(vo['vo']) % locals())
+            print(f'VO {vo["vo"]} already added')
     else:
         vo = {}
 
@@ -118,7 +118,7 @@ if __name__ == '__main__':
     try:
         client.add_account('jdoe', 'SERVICE', 'jdoe@email.com')
     except Duplicate:
-        print('Account jdoe already added' % locals())
+        print('Account jdoe already added')
 
     try:
         add_account_attribute(account=InternalAccount('root', **vo), key='admin', value=True)  # bypass client as schema validation fails at API level
@@ -129,24 +129,24 @@ if __name__ == '__main__':
         client.add_account('panda', 'SERVICE', 'panda@email.com')
         add_account_attribute(account=InternalAccount('panda', **vo), key='admin', value=True)
     except Duplicate:
-        print('Account panda already added' % locals())
+        print('Account panda already added')
 
     try:
         client.add_scope('jdoe', 'mock')
     except Duplicate:
-        print('Scope mock already added' % locals())
+        print('Scope mock already added')
 
     try:
         client.add_scope('root', 'archive')
     except Duplicate:
-        print('Scope archive already added' % locals())
+        print('Scope archive already added')
 
     # add your accounts here, if you test against CERN authed nodes
-    additional_test_accounts = [('/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=mlassnig/CN=663551/CN=Mario Lassnig', 'x509', 'mario.lassnig@cern.ch'),
-                                ('/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=barisits/CN=692443/CN=Martin Barisits', 'x509', 'martin.barisits@cern.ch'),
-                                ('/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=tbeerman/CN=722011/CN=Thomas Beermann', 'x509', 'thomas.beermann@cern.ch'),
-                                ('/DC=ch/DC=cern/OU=Organic Units/OU=Users/CN=ruciobuildbot/CN=692443/CN=Robot: Rucio build bot', 'x509', 'rucio.build.bot@cern.ch'),
-                                ('/CN=docker client', 'x509', 'dummy@cern.ch'),
+    additional_test_accounts = [('CN=Mario Lassnig,CN=663551,CN=mlassnig,OU=Users,OU=Organic Units,DC=cern,DC=ch', 'x509', 'mario.lassnig@cern.ch'),
+                                ('CN=Martin Barisits,CN=692443,CN=barisits,OU=Users,OU=Organic Units,DC=cern,DC=ch', 'x509', 'martin.barisits@cern.ch'),
+                                ('CN=Thomas Beermann,CN=722011,CN=tbeerman,OU=Users,OU=Organic Units,DC=cern,DC=ch', 'x509', 'thomas.beermann@cern.ch'),
+                                ('CN=Robot: Rucio build bot,CN=692443,CN=ruciobuildbot,OU=Users,OU=Organic Units,DC=cern,DC=ch', 'x509', 'rucio.build.bot@cern.ch'),
+                                ('CN=docker client', 'x509', 'dummy@cern.ch'),
                                 ('mlassnig@CERN.CH', 'GSS', 'mario.lassnig@cern.ch')]
 
     for account in additional_test_accounts:

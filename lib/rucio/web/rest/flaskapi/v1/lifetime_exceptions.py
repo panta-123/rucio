@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,13 +16,11 @@ from json import dumps
 
 from flask import Flask, Response, request
 
-from rucio.api.lifetime_exception import list_exceptions, add_exception, update_exception
-from rucio.common.exception import LifetimeExceptionNotFound, UnsupportedOperation, InvalidObject, AccessDenied, \
-    LifetimeExceptionDuplicate
+from rucio.common.exception import AccessDenied, InvalidObject, LifetimeExceptionDuplicate, LifetimeExceptionNotFound, UnsupportedOperation
 from rucio.common.utils import APIEncoder
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    try_stream, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
+from rucio.gateway.lifetime_exception import add_exception, list_exceptions, update_exception
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, response_headers, try_stream
 
 
 class LifetimeException(ErrorHandlingMethodView):
@@ -63,10 +60,10 @@ class LifetimeException(ErrorHandlingMethodView):
                         type: string
                         enum: ['F', 'D', 'C', 'A', 'X', 'Y', 'Z']
                       account:
-                        description: The account accociated with the lifetime exception.
+                        description: The account associated with the lifetime exception.
                         type: string
                       pattern:
-                        description: The patter of the lifetime exception.
+                        description: The pattern of the lifetime exception.
                         type: string
                       comments:
                         description: The comments of the lifetime exception.
@@ -211,7 +208,7 @@ class LifetimeExceptionId(ErrorHandlingMethodView):
                         description: The account associated with the lifetime exception.
                         type: string
                       pattern:
-                        description: The patter of the lifetime exception.
+                        description: The pattern of the lifetime exception.
                         type: string
                       comments:
                         description: The comments of the lifetime exception.

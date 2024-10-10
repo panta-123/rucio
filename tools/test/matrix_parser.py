@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,18 +17,17 @@ import functools
 import itertools
 import json
 import sys
-import typing
 
 import yaml
 
 mapping = {'dists': 'DIST', 'python': 'PYTHON', 'suites': 'SUITE', 'image_identifier': 'IMAGE_IDENTIFIER', 'services': 'SERVICES'}
 
 
-def extract_mapped_list(inp: typing.Dict):
+def extract_mapped_list(inp: dict):
     return {mapping.get(key, key): [val] if not isinstance(val, list) else val for key, val in inp.items()}
 
 
-def readobj(key: str, val: typing.Dict, denylist: typing.List, allowlist: typing.List):
+def readobj(key: str, val: dict, denylist: list, allowlist: list):
     if not isinstance(val, dict):
         return str(val)
     if "id" not in val:
@@ -58,7 +56,7 @@ def readobj(key: str, val: typing.Dict, denylist: typing.List, allowlist: typing
         return itemid, val
 
 
-def parse_matrix(fhandle) -> "typing.List":
+def parse_matrix(fhandle) -> list:
     input_conf = dict(yaml.safe_load(fhandle))
     denylist = []
     allowlist = []
@@ -70,15 +68,15 @@ def parse_matrix(fhandle) -> "typing.List":
     newproduct_dicts = list()
     for pdo in product_dicts:
         extraval_dict = {key: val for key, val in pdo.items() if isinstance(val, tuple)}
-        statics = {key: val for key, val in pdo.items() if key not in extraval_dict}
+        statistics = {key: val for key, val in pdo.items() if key not in extraval_dict}
         if len(extraval_dict) == 0:
-            newproduct_dicts.append(statics)
+            newproduct_dicts.append(statistics)
         else:
             for extrakey, extraval in extraval_dict.items():
                 normval, extra = extraval
                 extra = extract_mapped_list(extra)
                 for values in itertools.product(*extra.values()):
-                    newproduct_dicts.append({**statics, extrakey: normval, **dict(zip(extra.keys(), values))})
+                    newproduct_dicts.append({**statistics, extrakey: normval, **dict(zip(extra.keys(), values))})
     product_dicts = newproduct_dicts
 
     # apply allowlist

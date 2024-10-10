@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,13 +13,18 @@
 # limitations under the License.
 
 from json import dumps, loads
-
-from requests.status_codes import codes
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 from urllib.parse import quote
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from requests.status_codes import codes
+
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
+    from rucio.common.constants import RSE_SUPPORTED_PROTOCOL_DOMAINS_LITERAL, RSE_SUPPORTED_PROTOCOL_OPERATIONS_LITERAL, SUPPORTED_PROTOCOLS_LITERAL
 
 
 class RSEClient(BaseClient):
@@ -28,7 +32,7 @@ class RSEClient(BaseClient):
 
     RSE_BASEURL = 'rses'
 
-    def get_rse(self, rse):
+    def get_rse(self, rse: str) -> dict[str, Any]:
         """
         Returns details about the referred RSE.
 
@@ -43,13 +47,13 @@ class RSEClient(BaseClient):
 
         r = self._send_request(url, type_='GET')
         if r.status_code == codes.ok:
-            rse = loads(r.text)
-            return rse
+            rse_dict = loads(r.text)
+            return rse_dict
         else:
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def add_rse(self, rse, **kwargs):
+    def add_rse(self, rse: str, **kwargs) -> Literal[True]:
         """
         Sends the request to create a new RSE.
 
@@ -80,12 +84,12 @@ class RSEClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
         raise exc_cls(exc_msg)
 
-    def update_rse(self, rse, parameters):
+    def update_rse(self, rse: str, parameters: dict[str, Any]) -> Literal[True]:
         """
         Update RSE properties like availability or name.
 
         :param rse: the name of the new rse.
-        :param  parameters: A dictionnary with property (name, read, write, delete as keys).
+        :param  parameters: A dictionary with property (name, read, write, delete as keys).
         """
         path = 'rses/' + rse
         url = build_url(choice(self.list_hosts), path=path)
@@ -95,7 +99,7 @@ class RSEClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
         raise exc_cls(exc_msg)
 
-    def delete_rse(self, rse):
+    def delete_rse(self, rse: str) -> Literal[True]:
         """
         Sends the request to delete a rse.
 
@@ -111,7 +115,7 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def list_rses(self, rse_expression=None):
+    def list_rses(self, rse_expression: Optional[str] = None) -> "Iterator[dict[str, Any]]":
         """
         Sends the request to list all rucio locations(RSEs).
 
@@ -131,7 +135,12 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def add_rse_attribute(self, rse, key, value):
+    def add_rse_attribute(
+            self,
+            rse: str,
+            key: str,
+            value: Any
+    ) -> Literal[True]:
         """
         Sends the request to add a RSE attribute.
 
@@ -153,7 +162,7 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def delete_rse_attribute(self, rse, key):
+    def delete_rse_attribute(self, rse: str, key: str) -> Literal[True]:
         """
         Sends the request to delete a RSE attribute.
 
@@ -172,7 +181,7 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def list_rse_attributes(self, rse):
+    def list_rse_attributes(self, rse: str) -> dict[str, Any]:
         """
         Sends the request to get RSE attributes.
 
@@ -190,7 +199,7 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def add_protocol(self, rse, params):
+    def add_protocol(self, rse: str, params: dict[str, Any]) -> Literal[True]:
         """
         Sends the request to create a new protocol for the given RSE.
 
@@ -225,9 +234,16 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def get_protocols(self, rse, protocol_domain='ALL', operation=None, default=False, scheme=None):
+    def get_protocols(
+            self,
+            rse: str,
+            protocol_domain: "RSE_SUPPORTED_PROTOCOL_DOMAINS_LITERAL" = 'ALL',
+            operation: Optional["RSE_SUPPORTED_PROTOCOL_OPERATIONS_LITERAL"] = None,
+            default: bool = False,
+            scheme: Optional['SUPPORTED_PROTOCOLS_LITERAL'] = None
+    ) -> Any:
         """
-        Returns protocol information. Parameter comibantions are:
+        Returns protocol information. Parameter combinations are:
         (operation OR default) XOR protocol.
 
         :param rse: the RSE name.
@@ -237,7 +253,7 @@ class RSEClient(BaseClient):
         :param default: Indicates if only the default operations should be returned.
         :param scheme: The identifier of the requested protocol.
 
-        :returns: A list with details about each matching protocol.
+        :returns: A dict with details about each matching protocol.
 
         :raises RSENotFound: if the RSE doesn't exist.
         :raises RSEProtocolNotSupported: if no matching protocol entry could be found.
@@ -266,7 +282,14 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def lfns2pfns(self, rse, lfns, protocol_domain='ALL', operation=None, scheme=None):
+    def lfns2pfns(
+            self,
+            rse: str,
+            lfns: 'Iterable[str]',
+            protocol_domain: 'RSE_SUPPORTED_PROTOCOL_DOMAINS_LITERAL' = 'ALL',
+            operation: Optional['RSE_SUPPORTED_PROTOCOL_OPERATIONS_LITERAL'] = None,
+            scheme: Optional['SUPPORTED_PROTOCOLS_LITERAL'] = None
+    ) -> dict[str, str]:
         """
         Returns PFNs that should be used at a RSE, corresponding to requested LFNs.
         The PFNs are generated for the RSE *regardless* of whether a replica exists for the LFN.
@@ -305,7 +328,13 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def delete_protocols(self, rse, scheme, hostname=None, port=None):
+    def delete_protocols(
+            self,
+            rse: str,
+            scheme: 'SUPPORTED_PROTOCOLS_LITERAL',
+            hostname: Optional[str] = None,
+            port: Optional[int] = None
+    ) -> Literal[True]:
         """
         Deletes matching protocols from RSE. Protocols using the same identifier can be
         distinguished by hostname and port.
@@ -336,14 +365,20 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def update_protocols(self, rse, scheme, data, hostname=None, port=None):
+    def update_protocols(
+            self,
+            rse: str,
+            scheme: 'SUPPORTED_PROTOCOLS_LITERAL',
+            data: dict[str, Any],
+            hostname: Optional[str] = None,
+            port: Optional[int] = None):
         """
         Updates matching protocols from RSE. Protocol using the same identifier can be
         distinguished by hostname and port.
 
         :param rse: the RSE name.
         :param scheme: identifier of the protocol.
-        :param data: A dict providing the new values of the protocol attibutes.
+        :param data: A dict providing the new values of the protocol attributes.
                      Keys must match column names in database.
         :param hostname: hostname of the protocol.
         :param port: port of the protocol.
@@ -370,7 +405,14 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def swap_protocols(self, rse, domain, operation, scheme_a, scheme_b):
+    def swap_protocols(
+            self,
+            rse: str,
+            domain: 'RSE_SUPPORTED_PROTOCOL_DOMAINS_LITERAL',
+            operation: 'RSE_SUPPORTED_PROTOCOL_OPERATIONS_LITERAL',
+            scheme_a: 'SUPPORTED_PROTOCOLS_LITERAL',
+            scheme_b: 'SUPPORTED_PROTOCOLS_LITERAL'
+    ) -> bool:
         """
         Swaps the priorities of the provided operation.
 
@@ -387,22 +429,21 @@ class RSEClient(BaseClient):
         :raises KeyNotFound: if invalid data was provided for update.
         :raises AccessDenied: if not authorized.
         """
-        protocol_a = protocol_b = None
+
         protocols = self.get_protocols(rse, domain, operation, False, scheme_a)['protocols']
-        for p in protocols:
-            if p['scheme'] == scheme_a:
-                protocol_a = p
-            if p['scheme'] == scheme_b:
-                protocol_b = p
-        if (protocol_a or protocol_b) is None:
+        protocol_a = next((p for p in protocols if p['scheme'] == scheme_a), None)
+        protocol_b = next((p for p in protocols if p['scheme'] == scheme_b), None)
+
+        if protocol_a is None or protocol_b is None:
             return False
+
         priority_a = protocol_a['domains'][domain][operation]
         priority_b = protocol_b['domains'][domain][operation]
         self.update_protocols(rse, protocol_a['scheme'], {'domains': {domain: {operation: priority_b}}}, protocol_a['hostname'], protocol_a['port'])
         self.update_protocols(rse, protocol_b['scheme'], {'domains': {domain: {operation: priority_a}}}, protocol_b['hostname'], protocol_b['port'])
         return True
 
-    def add_qos_policy(self, rse, qos_policy):
+    def add_qos_policy(self, rse: str, qos_policy: str) -> Literal[True]:
         """
         Add a QoS policy from an RSE.
 
@@ -424,7 +465,7 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def delete_qos_policy(self, rse, qos_policy):
+    def delete_qos_policy(self, rse: str, qos_policy: str) -> Literal[True]:
         """
         Delete a QoS policy from an RSE.
 
@@ -445,7 +486,7 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def list_qos_policies(self, rse):
+    def list_qos_policies(self, rse: str) -> list[str]:
         """
         List all QoS policies of an RSE.
 
@@ -465,7 +506,14 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def set_rse_usage(self, rse, source, used, free, files=None):
+    def set_rse_usage(
+            self,
+            rse: str,
+            source: str,
+            used: int,
+            free: int,
+            files: Optional[int] = None
+    ) -> Literal[True]:
         """
         Set RSE usage information.
 
@@ -475,7 +523,7 @@ class RSEClient(BaseClient):
         :param free: the free in bytes.
         :param files: the number of files
 
-        :returns: True if successful, otherwise false.
+        :returns: True if successful
         """
         path = [self.RSE_BASEURL, rse, 'usage']
         path = '/'.join(path)
@@ -488,7 +536,11 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def get_rse_usage(self, rse, filters=None):
+    def get_rse_usage(
+            self,
+            rse: str,
+            filters: Optional[dict[str, Any]] = None
+    ) -> "Iterator[dict[str, Any]]":
         """
         Get RSE usage information.
 
@@ -507,14 +559,18 @@ class RSEClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def list_rse_usage_history(self, rse, filters=None):
+    def list_rse_usage_history(
+            self,
+            rse: str,
+            filters: Optional[dict[str, Any]] = None
+    ) -> "Iterator[dict[str, Any]]":
         """
         List RSE usage history information.
 
         :param rse: The RSE name.
         :param filters: dictionary of attributes by which the results should be filtered.
 
-        :returns:  list of dictionnaries.
+        :returns:  list of dictionaries.
         """
         path = [self.RSE_BASEURL, rse, 'usage', 'history']
         path = '/'.join(path)
@@ -528,7 +584,12 @@ class RSEClient(BaseClient):
                                                    data=r.content)
             raise exc_cls(exc_msg)
 
-    def set_rse_limits(self, rse, name, value):
+    def set_rse_limits(
+            self,
+            rse: str,
+            name: str,
+            value: int
+    ) -> Literal[True]:
         """
         Set RSE limit information.
 
@@ -536,7 +597,7 @@ class RSEClient(BaseClient):
         :param name: The name of the limit.
         :param value: The feature value.
 
-        :returns: True if successful, otherwise false.
+        :returns: True if successful
         """
         path = [self.RSE_BASEURL, rse, 'limits']
         path = '/'.join(path)
@@ -549,13 +610,16 @@ class RSEClient(BaseClient):
                                                data=r.content)
         raise exc_cls(exc_msg)
 
-    def get_rse_limits(self, rse):
+    def get_rse_limits(
+            self,
+            rse: str
+    ) -> "Iterator[dict[str, Union[str, int]]]":
         """
         Get RSE limits.
 
         :param rse: The RSE name.
 
-        :returns: True if successful, otherwise false.
+        :returns: An iterator of RSE limits as dicts with 'name' and 'value' as keys.
         """
         path = [self.RSE_BASEURL, rse, 'limits']
         path = '/'.join(path)
@@ -568,14 +632,14 @@ class RSEClient(BaseClient):
                                                data=r.content)
         raise exc_cls(exc_msg)
 
-    def delete_rse_limits(self, rse, name):
+    def delete_rse_limits(self, rse: str, name: str) -> Literal[True]:
         """
         Delete RSE limit information.
 
         :param rse: The RSE name.
         :param name: The name of the limit.
 
-        :returns: True if successful, otherwise false.
+        :returns: True if successful
         """
         path = [self.RSE_BASEURL, rse, 'limits']
         path = '/'.join(path)
@@ -587,15 +651,20 @@ class RSEClient(BaseClient):
                                                status_code=r.status_code,
                                                data=r.content)
 
-        return exc_cls(exc_msg)
+        raise exc_cls(exc_msg)
 
-    def add_distance(self, source, destination, parameters):
+    def add_distance(
+            self,
+            source: str,
+            destination: str,
+            parameters: dict[str, int]
+    ) -> Literal[True]:
         """
         Add a src-dest distance.
 
         :param source: The source.
         :param destination: The destination.
-        :param parameters: A dictionnary with property.
+        :param parameters: A dictionary with property.
         """
         path = [self.RSE_BASEURL, source, 'distances', destination]
         path = '/'.join(path)
@@ -608,13 +677,18 @@ class RSEClient(BaseClient):
                                                data=r.content)
         raise exc_cls(exc_msg)
 
-    def update_distance(self, source, destination, parameters):
+    def update_distance(
+            self,
+            source: str,
+            destination: str,
+            parameters: dict[str, int]
+    ) -> Literal[True]:
         """
         Update distances with the given RSE ids.
 
         :param source: The source.
         :param destination: The destination.
-        :param parameters: A dictionnary with property.
+        :param parameters: A dictionary with property.
         """
         path = [self.RSE_BASEURL, source, 'distances', destination]
         path = '/'.join(path)
@@ -627,7 +701,11 @@ class RSEClient(BaseClient):
                                                data=r.content)
         raise exc_cls(exc_msg)
 
-    def get_distance(self, source, destination):
+    def get_distance(
+            self,
+            source: str,
+            destination: str
+    ) -> list[dict[str, Union[str, int]]]:
         """
         Get distances between rses.
 
@@ -645,7 +723,11 @@ class RSEClient(BaseClient):
         exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
         raise exc_cls(exc_msg)
 
-    def delete_distance(self, source, destination):
+    def delete_distance(
+            self,
+            source: str,
+            destination: str
+    ) -> Literal[True]:
         """
         Delete distances with the given RSE ids.
 

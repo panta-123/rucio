@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import operator
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
-import operator
 
-from sqlalchemy import update, inspect
-from sqlalchemy.exc import CompileError, InvalidRequestError
-from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy import inspect, update
+from sqlalchemy.exc import CompileError, InvalidRequestError, NoResultFound
 from sqlalchemy.sql import func
 from sqlalchemy.sql.expression import true
 
@@ -29,10 +27,11 @@ from rucio.core.did_meta_plugins.did_meta_plugin_interface import DidMetaPlugin
 from rucio.core.did_meta_plugins.filter_engine import FilterEngine
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import DIDType
-from rucio.db.sqla.session import stream_session, read_session, transactional_session
+from rucio.db.sqla.session import read_session, stream_session, transactional_session
 
 if TYPE_CHECKING:
     from typing import Optional
+
     from sqlalchemy.orm import Session
 
 
@@ -56,12 +55,9 @@ class DidColumnMeta(DidMetaPlugin):
         try:
             row = session.query(models.DataIdentifier).filter_by(scope=scope, name=name).\
                 with_hint(models.DataIdentifier, "INDEX(DIDS DIDS_PK)", 'oracle').one()
-            d = {}
-            for column in row.__table__.columns:
-                d[column.name] = getattr(row, column.name)
-            return d
+            return row.to_dict()
         except NoResultFound:
-            raise exception.DataIdentifierNotFound("Data identifier '%(scope)s:%(name)s' not found" % locals())
+            raise exception.DataIdentifierNotFound(f"Data identifier '{scope}:{name}' not found")
 
     @transactional_session
     def set_metadata(self, scope, name, key, value, recursive=False, *, session: "Session"):
@@ -75,7 +71,16 @@ class DidColumnMeta(DidMetaPlugin):
 
         remainder = {}
         for key, value in metadata.items():
-            if key == 'lifetime':
+            if key == 'eol_at' and isinstance(value, str):
+                try:
+                    eol_at = datetime.strptime(value, '%Y-%M-%d')
+                    rowcount = did_query.update({'eol_at': eol_at}, synchronize_session='fetch')
+                except TypeError as error:
+                    raise exception.InvalidValueForKey(error)
+                if not rowcount:
+                    # check for did presence
+                    raise exception.UnsupportedOperation('%s for %s:%s cannot be updated' % (key, scope, name))
+            elif key == 'lifetime':
                 try:
                     expired_at = None
                     if value is not None:
@@ -192,7 +197,7 @@ class DidColumnMeta(DidMetaPlugin):
             'file': [DIDType.FILE]
         }
 
-        # backwards compatability for filters as single {}.
+        # backwards compatibility for filters as single {}.
         if isinstance(filters, dict):
             filters = [filters]
 
@@ -214,7 +219,7 @@ class DidColumnMeta(DidMetaPlugin):
 
         # instantiate fe and create sqla query
         fe = FilterEngine(filters, model_class=models.DataIdentifier)
-        query = fe.create_sqla_query(
+        stmt = fe.create_sqla_query(
             additional_model_attributes=[
                 models.DataIdentifier.scope,
                 models.DataIdentifier.name,
@@ -227,16 +232,22 @@ class DidColumnMeta(DidMetaPlugin):
             ],
             session=session
         )
-        query.with_hint(models.DataIdentifier, 'NO_EXPAND', 'oracle')
+        stmt = stmt.with_hint(
+            models.DataIdentifier,
+            'NO_EXPAND',
+            'oracle'
+        )
 
         if limit:
-            query = query.limit(limit)
+            stmt = stmt.limit(
+                limit
+            )
         if recursive:
             from rucio.core.did import list_content
 
             # Get attached DIDs and save in list because query has to be finished before starting a new one in the recursion
             collections_content = []
-            for did in query.yield_per(100):
+            for did in session.execute(stmt).yield_per(100):
                 if (did.did_type == DIDType.CONTAINER or did.did_type == DIDType.DATASET):
                     collections_content += [d for d in list_content(scope=did.scope, name=did.name)]
 
@@ -248,7 +259,7 @@ class DidColumnMeta(DidMetaPlugin):
                                              long=long, ignore_dids=ignore_dids, session=session):
                     yield result
 
-        for did in query.yield_per(5):                  # don't unpack this as it makes it dependent on query return order!
+        for did in session.execute(stmt).yield_per(5):                  # don't unpack this as it makes it dependent on query return order!
             if long:
                 did_full = "{}:{}".format(did.scope, did.name)
                 if did_full not in ignore_dids:         # concatenating results of OR clauses may contain duplicate DIDs if query result sets not mutually exclusive.
@@ -256,7 +267,7 @@ class DidColumnMeta(DidMetaPlugin):
                     yield {
                         'scope': did.scope,
                         'name': did.name,
-                        'did_type': str(did.did_type),
+                        'did_type': did.did_type.name,
                         'bytes': did.bytes,
                         'length': did.length
                     }

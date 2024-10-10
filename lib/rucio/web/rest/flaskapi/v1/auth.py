@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,36 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import base64
+import json
 import logging
 import time
-import json
 from typing import TYPE_CHECKING
-
-from flask import Flask, Blueprint, request, Response, redirect, render_template
 from urllib.parse import urlparse
+
+from flask import Blueprint, Flask, Response, redirect, render_template, request
 from werkzeug.datastructures import Headers
 
-from rucio.api.authentication import get_auth_token_user_pass, get_auth_token_gss, get_auth_token_x509, \
-    get_auth_token_ssh, get_ssh_challenge_token, validate_auth_token, get_auth_oidc, redirect_auth_oidc, \
-    get_token_oidc, refresh_cli_auth_token, get_auth_token_saml
 from rucio.common.config import config_get
-from rucio.common.exception import AccessDenied, IdentityError, IdentityNotFound, CannotAuthenticate, CannotAuthorize
+from rucio.common.exception import AccessDenied, CannotAuthenticate, CannotAuthorize, IdentityError, IdentityNotFound
 from rucio.common.extra import import_extras
 from rucio.common.utils import date_to_str
 from rucio.core.authentication import strip_x509_proxy_attributes
-from rucio.api.identity import list_accounts_for_identity, get_default_account, verify_identity
-from rucio.web.rest.flaskapi.v1.common import check_accept_header_wrapper_flask, error_headers, \
-    extract_vo, generate_http_error_flask, ErrorHandlingMethodView
+from rucio.gateway.authentication import (
+    get_auth_oidc,
+    get_auth_token_gss,
+    get_auth_token_saml,
+    get_auth_token_ssh,
+    get_auth_token_user_pass,
+    get_auth_token_x509,
+    get_ssh_challenge_token,
+    get_token_oidc,
+    redirect_auth_oidc,
+    refresh_cli_auth_token,
+    validate_auth_token,
+)
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, error_headers, extract_vo, generate_http_error_flask, get_account_from_verified_identity
 
 if TYPE_CHECKING:
-    from typing import Optional
-    from rucio.web.rest.flaskapi.v1.common import HeadersType
+
+    from flask.typing import ResponseReturnValue
 
 EXTRA_MODULES = import_extras(['onelogin'])
 
 if EXTRA_MODULES['onelogin']:
     from onelogin.saml2.auth import OneLogin_Saml2_Auth  # pylint: disable=import-error
+
     from rucio.web.ui.flask.common.utils import prepare_saml_request
 
 
@@ -51,16 +58,16 @@ class UserPass(ErrorHandlingMethodView):
     Authenticate a Rucio account temporarily via username and password.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
-        headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token, X-Rucio-Auth-Account, X-Rucio-Auth-Accounts'
+        headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token, X-Rucio-Auth-Token-Expires, X-Rucio-Auth-Account, X-Rucio-Auth-Accounts'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: UserPass Allow cross-site scripting
@@ -96,7 +103,7 @@ class UserPass(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: UserPass
@@ -185,41 +192,42 @@ class UserPass(ErrorHandlingMethodView):
         password = request.headers.get('X-Rucio-Password', default=None)
         appid = request.headers.get('X-Rucio-AppID', default='unknown')
         ip = request.headers.get('X-Forwarded-For', default=request.remote_addr)
-
         if not username or not password:
             return generate_http_error_flask(401, CannotAuthenticate.__name__, 'Cannot authenticate without passing all required arguments', headers=headers)
 
-        try:
-            verify_identity(identity_key=username, id_type='USERPASS', password=password)
-        except IdentityNotFound:
-            return generate_http_error_flask(401, IdentityNotFound.__name__, 'Cannot authenticate. Username/Password pair does not exist.', headers=headers)
-        except IdentityError:
-            return generate_http_error_flask(401, IdentityError.__name__, 'Cannot authenticate. The identity does not exist.', headers=headers)
-
+        accounts: list[str] = []
         if not account:
-            accounts = list_accounts_for_identity(identity_key=username, id_type='USERPASS')
-            if len(accounts) == 0 or accounts is None:
-                return generate_http_error_flask(401, CannotAuthenticate.__name__, 'Cannot authenticate with provided username or password. Identity is not mapped to any accounts.', headers=headers)
-            if len(accounts) > 1:
-                try:
-                    account = get_default_account(identity_key=username, id_type='USERPASS')
-                except IdentityError:
-                    headers['X-Rucio-Auth-Accounts'] = ','.join(accounts)
-                    return json.dumps(accounts), 206, headers
-            else:
-                account = accounts[0]
-        account_name = account.external if type(account) is not str else account
+            try:
+                accounts = get_account_from_verified_identity(identity_key=username, id_type='USERPASS', password=password)
+            except IdentityNotFound:
+                return generate_http_error_flask(401, IdentityNotFound.__name__, 'Cannot authenticate. Username/Password pair does not exist.', headers=headers)
+            except IdentityError:
+                return generate_http_error_flask(401, IdentityError.__name__, 'Cannot authenticate. The identity does not exist.', headers=headers)
+        else:
+            accounts = [account]
+
+        if len(accounts) > 1:
+            account_names: list[str] = []
+            for account in accounts:
+                if isinstance(account, str):
+                    account_names.append(account)
+                else:
+                    account_names.append(account.external)
+            headers['X-Rucio-Auth-Accounts'] = ','.join(accounts)
+            return json.dumps(account_names), 206, headers
+
+        account = accounts[0]
+        account_name = account if isinstance(account, str) else account.external
         try:
             result = get_auth_token_user_pass(account_name, username, password, appid, ip, vo=vo)
+            if not result:
+                return generate_http_error_flask(401, CannotAuthenticate.__name__, f'Cannot authenticate to account {account} with given credentials', headers=headers)
+            headers['X-Rucio-Auth-Account'] = account_name
+            headers['X-Rucio-Auth-Token'] = result['token']
+            headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])  # type: ignore (value could be None)
+            return '', 200, headers
         except AccessDenied:
             return generate_http_error_flask(401, CannotAuthenticate.__name__, f'Cannot authenticate to account {account} with given credentials', headers=headers)
-
-        if not result:
-            return generate_http_error_flask(401, CannotAuthenticate.__name__, f'Cannot authenticate to account {account} with given credentials', headers=headers)
-        headers['X-Rucio-Auth-Account'] = account_name
-        headers['X-Rucio-Auth-Token'] = result['token']
-        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])
-        return '', 200, headers
 
 
 class OIDC(ErrorHandlingMethodView):
@@ -228,15 +236,15 @@ class OIDC(ErrorHandlingMethodView):
     nonce, Rucio OIDC Client ID with the correct issuers authentication endpoint).
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: OIDC Allow cross-site scripting
@@ -268,7 +276,7 @@ class OIDC(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: OIDC
@@ -375,15 +383,15 @@ class RedirectOIDC(ErrorHandlingMethodView):
     an Identity Provider (XDC IAM as of June 2019).
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))
-        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))
+        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))  # type: ignore (value could be None)
+        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))  # type: ignore (value could be None)
         headers.set('Access-Control-Allow-Methods', '*')
         headers.set('Access-Control-Allow-Credentials', 'true')
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: RedirectOIDC Allow cross-site scripting
@@ -414,7 +422,7 @@ class RedirectOIDC(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream', 'text/html'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: RedirectOIDC
@@ -490,15 +498,15 @@ class CodeOIDC(ErrorHandlingMethodView):
     operation is confirmed waiting for the Rucio client to get the token automatically.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))
-        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))
+        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))  # type: ignore (value could be None)
+        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))  # type: ignore (value could be None)
         headers.set('Access-Control-Allow-Methods', '*')
         headers.set('Access-Control-Allow-Credentials', 'true')
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: CodeOIDC Allow cross-site scripting
@@ -529,7 +537,7 @@ class CodeOIDC(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream', 'text/html'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: CodeOIDC
@@ -587,15 +595,15 @@ class TokenOIDC(ErrorHandlingMethodView):
     received from an Identity Provider.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))
-        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))
+        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))  # type: ignore (value could be None)
+        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))  # type: ignore (value could be None)
         headers.set('Access-Control-Allow-Methods', '*')
         headers.set('Access-Control-Allow-Credentials', 'true')
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: TokenOIDC Allow cross-site scripting
@@ -626,7 +634,7 @@ class TokenOIDC(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: TokenOIDC
@@ -672,7 +680,7 @@ class TokenOIDC(ErrorHandlingMethodView):
             return generate_http_error_flask(401, CannotAuthorize.__name__, 'Cannot authorize token request.', headers=headers)
         if 'token' in result and 'webhome' not in result:
             headers.set('X-Rucio-Auth-Token', result['token']['token'])
-            headers.set('X-Rucio-Auth-Token-Expires', date_to_str(result['token']['expires_at']))
+            headers.set('X-Rucio-Auth-Token-Expires', date_to_str(result['token']['expires_at']))  # type: ignore (value could be None)
             return '', 200, headers
         elif 'webhome' in result:
             webhome = result['webhome']
@@ -701,16 +709,16 @@ class RefreshOIDC(ErrorHandlingMethodView):
     is a result of a previous refresh happening in the last 10 min, the same token will be returned.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))
-        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))
+        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))  # type: ignore (value could be None)
+        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))  # type: ignore (value could be None)
         headers.set('Access-Control-Allow-Methods', '*')
         headers.set('Access-Control-Allow-Credentials', 'true')
         headers.set('Access-Control-Expose-Headers', 'X-Rucio-Auth-Token')
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: RefreshOIDC Allow cross-site scripting
@@ -745,7 +753,7 @@ class RefreshOIDC(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: RefreshOIDC
@@ -810,16 +818,16 @@ class GSS(ErrorHandlingMethodView):
     Authenticate a Rucio account temporarily via a GSS token.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
         headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: GSS Allow cross-site scripting
@@ -854,7 +862,7 @@ class GSS(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: GSS
@@ -928,7 +936,7 @@ class GSS(ErrorHandlingMethodView):
             )
 
         headers['X-Rucio-Auth-Token'] = result['token']
-        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])
+        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])  # type: ignore (value could be None)
         return '', 200, headers
 
 
@@ -937,16 +945,16 @@ class x509(ErrorHandlingMethodView):
     Authenticate a Rucio account temporarily via an x509 certificate.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
-        headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token'
+        headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token, X-Rucio-Auth-Token-Expires, X-Rucio-Auth-Account, X-Rucio-Auth-Accounts'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: x509 Allow cross-site scripting
@@ -981,7 +989,7 @@ class x509(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: x509
@@ -1002,6 +1010,11 @@ class x509(ErrorHandlingMethodView):
           in: header
           schema:
             type: string
+        - name: X-Rucio-Allow-Return-Multiple-Accounts
+          in: header
+          schema:
+            type: boolean
+          description: If set to true, a HTTP 206 response will be returned if the identity is associated with multiple accounts.
         responses:
           200:
             description: OK
@@ -1014,11 +1027,21 @@ class x509(ErrorHandlingMethodView):
                 description: The time when the token expires
                 schema:
                   type: string
+              X-Rucio-Auth-Account:
+                description: The rucio account corresponding to the provided identity
+                schema:
+                  type: string
+          206:
+            description: Partial content containing X-Rucio-Auth-Accounts header
+            headers:
+              X-Rucio-Auth-Accounts:
+                schema:
+                  type: string
+                description: The rucio accounts corresponding to the provided identity as a csv string
           401:
             description: Cannot authenticate
         """
         headers = self.get_headers()
-
         headers['Content-Type'] = 'application/octet-stream'
         headers['Cache-Control'] = 'no-cache, no-store, max-age=0, must-revalidate'
         headers.add('Cache-Control', 'post-check=0, pre-check=0')
@@ -1032,21 +1055,45 @@ class x509(ErrorHandlingMethodView):
         dn = strip_x509_proxy_attributes(dn)
         appid = request.headers.get('X-Rucio-AppID', default='unknown')
         ip = request.headers.get('X-Forwarded-For', default=request.remote_addr)
+        return_multiple_accounts = request.headers.get('X-Rucio-Allow-Return-Multiple-Accounts', default=None)
 
+        accounts: list[str] = []
+        if not account:
+            try:
+                accounts = get_account_from_verified_identity(identity_key=dn, id_type='X509')
+            except IdentityError as e:
+                return generate_http_error_flask(401, IdentityError.__name__, str(e), headers=headers)
+        else:
+            accounts = [account]
+
+        if len(accounts) > 1:
+            if return_multiple_accounts is None or return_multiple_accounts.lower() != 'true':
+                return generate_http_error_flask(401, CannotAuthenticate.__name__, 'Multiple accounts associated with the provided identity', headers=headers)
+            account_names: list[str] = []
+            for account in accounts:
+                if isinstance(account, str):
+                    account_names.append(account)
+                else:
+                    account_names.append(account.external)
+            headers['X-Rucio-Auth-Accounts'] = ','.join(accounts)
+            return json.dumps(account_names), 206, headers
+        account = accounts[0]
+        account_name = account if isinstance(account, str) else account.external
+        result = None
         try:
-            result = get_auth_token_x509(account, dn, appid, ip, vo=vo)
+            result = get_auth_token_x509(account_name, dn, appid, ip, vo=vo)
         except AccessDenied:
             return generate_http_error_flask(
                 status_code=401,
                 exc=CannotAuthenticate.__name__,
-                exc_msg=f'Cannot authenticate to account {account} with given credentials',
+                exc_msg=f'Cannot authenticate to account {account_name} with given credentials',
                 headers=headers
             )
-        except IdentityError:
+        except IdentityError as e:
             return generate_http_error_flask(
                 status_code=401,
                 exc=CannotAuthenticate.__name__,
-                exc_msg=f'No default account set for {dn}',
+                exc_msg=str(e),
                 headers=headers
             )
 
@@ -1057,9 +1104,9 @@ class x509(ErrorHandlingMethodView):
                 exc_msg=f'Cannot authenticate to account {account} with given credentials',
                 headers=headers
             )
-
         headers['X-Rucio-Auth-Token'] = result['token']
-        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])
+        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])  # type: ignore (value could be None)
+        headers['X-Rucio-Auth-Account'] = account
         return '', 200, headers
 
 
@@ -1068,16 +1115,16 @@ class SSH(ErrorHandlingMethodView):
     Authenticate a Rucio account temporarily via SSH key exchange.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
         headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: SSH Allow cross-site scripting
@@ -1112,7 +1159,7 @@ class SSH(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: SSH
@@ -1166,18 +1213,6 @@ class SSH(ErrorHandlingMethodView):
         appid = request.headers.get('X-Rucio-AppID', default='unknown')
         ip = request.headers.get('X-Forwarded-For', default=request.remote_addr)
 
-        # decode the signature which must come in base64 encoded
-        try:
-            signature += '=' * ((4 - len(signature) % 4) % 4)  # adding required padding
-            signature = base64.b64decode(signature)
-        except TypeError:
-            return generate_http_error_flask(
-                status_code=401,
-                exc=CannotAuthenticate.__name__,
-                exc_msg=f'Cannot authenticate to account {account} with malformed signature',
-                headers=headers
-            )
-
         try:
             result = get_auth_token_ssh(account, signature, appid, ip, vo=vo)
         except AccessDenied:
@@ -1197,7 +1232,7 @@ class SSH(ErrorHandlingMethodView):
             )
 
         headers['X-Rucio-Auth-Token'] = result['token']
-        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])
+        headers['X-Rucio-Auth-Token-Expires'] = date_to_str(result['expires_at'])  # type: ignore (value could be None)
         return '', 200, headers
 
 
@@ -1206,16 +1241,16 @@ class SSHChallengeToken(ErrorHandlingMethodView):
     Request a challenge token for SSH authentication
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
         headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: SSHChallengeToken Allow cross-site scripting
@@ -1250,7 +1285,7 @@ class SSHChallengeToken(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: SSHChallengeToken
@@ -1309,7 +1344,7 @@ class SSHChallengeToken(ErrorHandlingMethodView):
             )
 
         headers['X-Rucio-SSH-Challenge-Token'] = result['token']
-        headers['X-Rucio-SSH-Challenge-Token-Expires'] = date_to_str(result['expires_at'])
+        headers['X-Rucio-SSH-Challenge-Token-Expires'] = date_to_str(result['expires_at'])  # type: ignore (value could be None)
         return '', 200, headers
 
 
@@ -1318,16 +1353,16 @@ class SAML(ErrorHandlingMethodView):
     Authenticate a Rucio account temporarily via CERN SSO.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))
-        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))
+        headers.set('Access-Control-Allow-Origin', request.environ.get('HTTP_ORIGIN'))  # type: ignore (value could be None)
+        headers.set('Access-Control-Allow-Headers', request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS'))  # type: ignore (value could be None)
         headers.set('Access-Control-Allow-Methods', '*')
         headers.set('Access-Control-Allow-Credentials', 'true')
         headers.set('Access-Control-Expose-Headers', 'X-Rucio-Auth-Token')
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: SAML Allow cross-site scripting
@@ -1362,7 +1397,7 @@ class SAML(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: SAML
@@ -1438,7 +1473,7 @@ class SAML(ErrorHandlingMethodView):
                 )
 
             headers.set('X-Rucio-Auth-Token', result['token'])
-            headers.set('X-Rucio-Auth-Token-Expires', date_to_str(result['expires_at']))
+            headers.set('X-Rucio-Auth-Token-Expires', date_to_str(result['expires_at']))  # type: ignore (value could be None)
             return '', 200, headers
 
         # Path to the SAML config folder
@@ -1450,7 +1485,7 @@ class SAML(ErrorHandlingMethodView):
         headers.set('X-Rucio-SAML-Auth-URL', auth.login())
         return '', 200, headers
 
-    def post(self):
+    def post(self) -> 'ResponseReturnValue':
         """
         ---
         summary: Post a SAML request
@@ -1485,16 +1520,16 @@ class Validate(ErrorHandlingMethodView):
     Validate a Rucio Auth Token.
     """
 
-    def get_headers(self) -> "Optional[HeadersType]":
+    def get_headers(self) -> Headers:
         headers = Headers()
-        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')
-        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+        headers['Access-Control-Allow-Origin'] = request.environ.get('HTTP_ORIGIN')  # type: ignore (value could be None)
+        headers['Access-Control-Allow-Headers'] = request.environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')  # type: ignore (value could be None)
         headers['Access-Control-Allow-Methods'] = '*'
         headers['Access-Control-Allow-Credentials'] = 'true'
         headers['Access-Control-Expose-Headers'] = 'X-Rucio-Auth-Token'
         return headers
 
-    def options(self):
+    def options(self) -> 'ResponseReturnValue':
         """
         ---
         summary: Validate Allow cross-site scripting
@@ -1529,7 +1564,7 @@ class Validate(ErrorHandlingMethodView):
         return '', 200, self.get_headers()
 
     @check_accept_header_wrapper_flask(['application/octet-stream'])
-    def get(self):
+    def get(self) -> 'ResponseReturnValue':
         """
         ---
         summary: Validate
@@ -1570,7 +1605,7 @@ class Validate(ErrorHandlingMethodView):
         return str(result), 200, headers
 
 
-def blueprint():
+def blueprint() -> Blueprint:
     bp = Blueprint('auth', __name__, url_prefix='/auth')
 
     user_pass_view = UserPass.as_view('user_pass')
@@ -1579,6 +1614,7 @@ def blueprint():
     bp.add_url_rule('/gss', view_func=gss_view, methods=['get', 'options'])
     x509_view = x509.as_view('x509')
     bp.add_url_rule('/x509', view_func=x509_view, methods=['get', 'options'])
+    bp.add_url_rule('/x509/webui', view_func=x509_view, methods=['get', 'options'])
     bp.add_url_rule('/x509_proxy', view_func=x509_view, methods=['get', 'options'])
     ssh_view = SSH.as_view('ssh')
     bp.add_url_rule('/ssh', view_func=ssh_view, methods=['get', 'options'])
@@ -1602,7 +1638,7 @@ def blueprint():
     return bp
 
 
-def make_doc():
+def make_doc() -> Flask:
     """ Only used for sphinx documentation """
     doc_app = Flask(__name__)
     doc_app.register_blueprint(blueprint())

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,6 @@
 ''' true is true '''
 
 from alembic import context, op
-
 
 # Alembic revision identifiers
 revision = '9eb936a81eb1'

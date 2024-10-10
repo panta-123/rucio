@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +13,12 @@
 # limitations under the License.
 
 from json import loads
-
-from requests.status_codes import codes
+from typing import Any
 from urllib.parse import quote_plus
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from requests.status_codes import codes
+
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url
 
 
@@ -28,7 +27,7 @@ class FileClient(BaseClient):
 
     BASEURL = 'files'
 
-    def list_file_replicas(self, scope, lfn):
+    def list_file_replicas(self, scope: str, lfn: str) -> list[dict[str, Any]]:
         """
         List file replicas.
 

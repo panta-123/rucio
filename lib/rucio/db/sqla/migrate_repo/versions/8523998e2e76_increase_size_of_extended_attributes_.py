@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,10 +15,8 @@
 ''' increase size of extended_attributes column '''
 
 import sqlalchemy as sa
-
 from alembic import context
 from alembic.op import alter_column
-
 
 # Alembic revision identifiers
 revision = '8523998e2e76'

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,12 +14,11 @@
 
 from flask import Flask, request
 
-from rucio.api.vo import add_vo, list_vos, recover_vo_root_identity, update_vo
-from rucio.common.exception import AccessDenied, AccountNotFound, Duplicate, VONotFound, UnsupportedOperation
+from rucio.common.exception import AccessDenied, AccountNotFound, Duplicate, UnsupportedOperation, VONotFound
 from rucio.common.utils import render_json
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    try_stream, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
+from rucio.gateway.vo import add_vo, list_vos, recover_vo_root_identity, update_vo
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, response_headers, try_stream
 
 
 class VOs(ErrorHandlingMethodView):

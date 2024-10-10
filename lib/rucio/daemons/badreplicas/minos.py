@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,34 +18,39 @@ import math
 import re
 import threading
 from datetime import datetime
-from typing import TYPE_CHECKING
-from typing import Tuple, Dict, Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy.exc import DatabaseError
 
 import rucio.db.sqla.util
 from rucio.common.config import config_get_int
-from rucio.common.exception import UnsupportedOperation, DataIdentifierNotFound, ReplicaNotFound, DatabaseException
+from rucio.common.exception import DatabaseException, DataIdentifierNotFound, ReplicaNotFound, UnsupportedOperation
 from rucio.common.logging import setup_logging
 from rucio.common.utils import chunks
 from rucio.core.did import get_metadata
-from rucio.core.replica import (get_bad_pfns, get_pfn_to_rse, declare_bad_file_replicas,
-                                get_did_from_pfns, update_replicas_states, bulk_add_bad_replicas,
-                                bulk_delete_bad_pfns, get_replicas_state)
+from rucio.core.replica import bulk_add_bad_replicas, bulk_delete_bad_pfns, declare_bad_file_replicas, get_bad_pfns, get_did_from_pfns, get_pfn_to_rse, get_replicas_state, update_replicas_states
 from rucio.core.rse import get_rse_name
 from rucio.daemons.common import run_daemon
-from rucio.db.sqla.constants import BadFilesStatus, BadPFNStatus, ReplicaState
+from rucio.db.sqla.constants import MYSQL_LOCK_WAIT_TIMEOUT_EXCEEDED, ORACLE_DEADLOCK_DETECTED_REGEX, ORACLE_RESOURCE_BUSY_REGEX, BadFilesStatus, BadPFNStatus, ReplicaState
 from rucio.db.sqla.session import get_session
 
-
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+    from types import FrameType
+
+    from rucio.common.types import InternalAccount, LoggerFunction
     from rucio.daemons.common import HeartbeatHandler
-    from rucio.common.types import InternalAccount
 
 graceful_stop = threading.Event()
+DAEMON_NAME = 'minos'
 
 
-def __classify_bad_pfns(pfns: list) -> Tuple[Dict, Dict]:
+def __classify_bad_pfns(
+        pfns: "Iterable[Mapping[str, Any]]"
+) -> tuple[
+    dict[tuple["InternalAccount", str, str], list[str]],
+    dict[tuple["InternalAccount", str, datetime], list[str]]
+]:
     """
     Function that takes a list of PFNs and classify them in 2 dictionaries : bad_replicas and temporary_unvailables
     :param pfns: List of PFNs
@@ -74,7 +78,11 @@ def __classify_bad_pfns(pfns: list) -> Tuple[Dict, Dict]:
     return bad_replicas, temporary_unvailables
 
 
-def __clean_unknown_replicas(pfns: list, vo: str, logger: "Callable") -> dict:
+def __clean_unknown_replicas(
+        pfns: "Iterable[str]",
+        vo: str,
+        logger: "LoggerFunction"
+) -> dict[str, dict[str, list[str]]]:
     """
     Identify from the list of PFNs the one that are unknown and remove them from the bad_pfns table
     :param pfns: List of PFNs
@@ -108,10 +116,16 @@ def __clean_unknown_replicas(pfns: list, vo: str, logger: "Callable") -> dict:
     return dict_rse
 
 
-def __update_temporary_unavailable(chunk: list, reason: str, expires_at: datetime, account: "InternalAccount", logger: "Callable") -> None:
+def __update_temporary_unavailable(
+        chunk: "Iterable[dict[str, Any]]",
+        reason: str,
+        expires_at: datetime,
+        account: "InternalAccount",
+        logger: "LoggerFunction"
+) -> None:
     """
     Update temporary unavailable replicas one by one
-    :param chunk: List of unvailable replicas to update
+    :param chunk: List of unavailable replicas to update
     :param reason: Reason of the temporary unavailable replica
     :param expires_at: Expiration date of the temporary unavailability
     :param account: Account who declared the replica
@@ -162,8 +176,7 @@ def minos(bulk: int = 1000, once: bool = False, sleep_time: int = 60) -> None:
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable='minos',
-        logger_prefix='minos',
+        executable=DAEMON_NAME,
         partition_wait_time=10,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -207,7 +220,7 @@ def run_once(heartbeat_handler: "HeartbeatHandler", bulk: int, **_kwargs) -> boo
                         bulk_delete_bad_pfns(pfns=chunk, session=session)
                         session.commit()  # pylint: disable=no-member
         except (DatabaseException, DatabaseError) as error:
-            if re.match('.*ORA-00054.*', error.args[0]) or re.match('.*ORA-00060.*', error.args[0]) or 'ERROR 1205 (HY000)' in error.args[0]:
+            if re.match(ORACLE_RESOURCE_BUSY_REGEX, error.args[0]) or re.match(ORACLE_DEADLOCK_DETECTED_REGEX, error.args[0]) or MYSQL_LOCK_WAIT_TIMEOUT_EXCEEDED in error.args[0]:
                 logger(logging.WARNING, 'Lock detected when handling request - skipping: %s', str(error))
             else:
                 logger(logging.ERROR, 'Exception', exc_info=True)
@@ -260,7 +273,7 @@ def run_once(heartbeat_handler: "HeartbeatHandler", bulk: int, **_kwargs) -> boo
                     __update_temporary_unavailable(chunk=chunk, reason=reason, expires_at=expires_at, account=account, logger=logger)
                     session = get_session()
                 except (DatabaseException, DatabaseError) as error:
-                    if re.match('.*ORA-00054.*', error.args[0]) or re.match('.*ORA-00060.*', error.args[0]) or 'ERROR 1205 (HY000)' in error.args[0]:
+                    if re.match(ORACLE_RESOURCE_BUSY_REGEX, error.args[0]) or re.match(ORACLE_DEADLOCK_DETECTED_REGEX, error.args[0]) or MYSQL_LOCK_WAIT_TIMEOUT_EXCEEDED in error.args[0]:
                         logger(logging.WARNING, 'Lock detected when handling request - skipping: %s', str(error))
                     else:
                         logger(logging.ERROR, 'Exception', exc_info=True)
@@ -282,7 +295,7 @@ def run(threads: int = 1, bulk: int = 100, once: bool = False, sleep_time: int =
     """
     Starts up the minos threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise DatabaseException('Database was not updated, daemon won\'t start')
@@ -302,7 +315,7 @@ def run(threads: int = 1, bulk: int = 100, once: bool = False, sleep_time: int =
             thread_list = [thread.join(timeout=3.14) for thread in thread_list if thread and thread.is_alive()]
 
 
-def stop(signum=None, frame=None):
+def stop(signum: Optional[int] = None, frame: Optional["FrameType"] = None) -> None:
     """
     Graceful exit.
     """

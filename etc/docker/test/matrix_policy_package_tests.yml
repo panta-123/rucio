@@ -1,10 +1,10 @@
 atlas:
-  installation_cmd: ""
   config_overrides:
     permission: atlas
     extract_scope:  atlas
     schema: atlas
     lfn2pfn_algorithm_default: "hash"
+    package: atlas_rucio_policy_package
   tests:
     allow:
       - rucio_tests
@@ -81,9 +81,9 @@ atlas:
   rdbms:
     - postgres14
   python:
-    - "3.6"
+    - "3.9"
   dists:
-    - centos7
+    - alma9
   image_identifier:
     - atlas
 
@@ -169,8 +169,8 @@ belleii:
   rdbms:
     - postgres14
   python:
-    - "3.6"
+    - "3.9"
   dists:
-    - centos7
+    - alma9
   image_identifier:
     - belleii

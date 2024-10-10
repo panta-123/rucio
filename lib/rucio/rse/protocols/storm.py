@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,9 +14,9 @@
 
 import logging
 import os
-import requests
-
 from xml.dom import minidom
+
+import requests
 
 from rucio.common import exception
 from rucio.common.utils import run_cmd_process
@@ -60,7 +59,7 @@ class Default(protocol.RSEProtocol):
 
     def path2pfn(self, path):
         """
-            Retruns a fully qualified PFN for the file referred by path.
+            Returns a fully qualified PFN for the file referred by path.
 
             :param path: The path to the file.
 
@@ -156,7 +155,7 @@ class Default(protocol.RSEProtocol):
             if rcode != 207:
                 rcode, etag_meta = davix_etag(pfn, 300)
 
-            p_output = minidom.parseString(etag_meta)
+            p_output = minidom.parseString(etag_meta)  # noqa: S318
             # we need to strip off the quotation marks and the <timestamp> from the etag
             # but since we can have multiple underscores, we have to rely on the uniqueness
             # of the full LFN to make the split

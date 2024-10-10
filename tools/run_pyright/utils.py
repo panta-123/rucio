@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,30 +13,31 @@
 # limitations under the License.
 
 import json
-from pathlib import Path
-from typing import Any, TypeVar, Iterable, Callable, Dict, List
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from .models import ReportDict
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from pathlib import Path
 
 
 _T = TypeVar('_T')
 _K = TypeVar('_K')
 
 
-def group_by(iterable: Iterable[_T], key: Callable[[_T], _K]) -> Dict[_K, List[_T]]:
-    result: Dict[_K, List[_T]] = {}
+def group_by(iterable: 'Iterable[_T]', key: 'Callable[[_T], _K]') -> dict[_K, list[_T]]:
+    result: dict[_K, list[_T]] = {}
     for elem in iterable:
         k = key(elem)
         result.setdefault(k, []).append(elem)
     return result
 
 
-def load_json(path: Path) -> ReportDict:
+def load_json(path: 'Path') -> dict[str, Any]:
     with open(path, 'r') as f:
         return json.load(f)
 
 
-def save_json(path: Path, data: Dict[str, Any]) -> None:
+def save_json(path: 'Path', data: dict[str, Any]) -> None:
     with open(path, 'w') as file:
         json.dump(data, file, indent=4)
         file.write('\n')

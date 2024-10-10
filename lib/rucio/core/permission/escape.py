@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,8 @@
 from typing import TYPE_CHECKING
 
 import rucio.core.scope
-from rucio.core.account import list_account_attributes, has_account_attribute
+from rucio.common.constants import RseAttr
+from rucio.core.account import has_account_attribute, list_account_attributes
 from rucio.core.identity import exist_identity_account
 from rucio.core.lifetime_exception import list_exceptions
 from rucio.core.rse import list_rse_attributes
@@ -25,7 +25,10 @@ from rucio.db.sqla.constants import IdentityType
 
 if TYPE_CHECKING:
     from typing import Optional
+
     from sqlalchemy.orm import Session
+
+    from rucio.common.types import InternalAccount
 
 
 def has_permission(issuer, action, kwargs, *, session: "Optional[Session]" = None):
@@ -107,7 +110,7 @@ def has_permission(issuer, action, kwargs, *, session: "Optional[Session]" = Non
             'list_heartbeats': perm_list_heartbeats,
             'resurrect': perm_resurrect,
             'update_lifetime_exceptions': perm_update_lifetime_exceptions,
-            'get_ssh_challenge_token': perm_get_ssh_challenge_token,
+            'get_auth_token_ssh': perm_get_auth_token_ssh,
             'get_signed_url': perm_get_signed_url,
             'add_bad_pfns': perm_add_bad_pfns,
             'del_account_identity': perm_del_account_identity,
@@ -274,7 +277,7 @@ def perm_add_scope(issuer, kwargs, *, session: "Optional[Session]" = None):
     :param session: The DB session to use
     :returns: True if account is allowed, otherwise False
     """
-    return _is_root(issuer) or issuer == kwargs.get('account')
+    return _is_root(issuer) or has_account_attribute(account=issuer, key='admin', session=session)
 
 
 def perm_get_auth_token_user_pass(issuer, kwargs, *, session: "Optional[Session]" = None):
@@ -343,7 +346,7 @@ def perm_add_account_identity(issuer, kwargs, *, session: "Optional[Session]" = 
     :returns: True if account is allowed, otherwise False
     """
 
-    return _is_root(issuer) or issuer == kwargs.get('account')
+    return _is_root(issuer) or has_account_attribute(account=issuer, key='admin', session=session)
 
 
 def perm_del_account_identity(issuer, kwargs, *, session: "Optional[Session]" = None):
@@ -356,7 +359,7 @@ def perm_del_account_identity(issuer, kwargs, *, session: "Optional[Session]" = 
     :returns: True if account is allowed, otherwise False
     """
 
-    return _is_root(issuer) or issuer == kwargs.get('account')
+    return _is_root(issuer) or has_account_attribute(account=issuer, key='admin', session=session)
 
 
 def perm_del_identity(issuer, kwargs, *, session: "Optional[Session]" = None):
@@ -390,7 +393,7 @@ def perm_add_did(issuer, kwargs, *, session: "Optional[Session]" = None):
     return _is_root(issuer)\
         or has_account_attribute(account=issuer, key='admin', session=session)\
         or rucio.core.scope.is_scope_owner(scope=kwargs['scope'], account=issuer, session=session)\
-        or kwargs['scope'].external == u'mock'
+        or kwargs['scope'].external == 'mock'
 
 
 def perm_add_dids(issuer, kwargs, *, session: "Optional[Session]" = None):
@@ -813,7 +816,7 @@ def perm_set_local_account_limit(issuer, kwargs, *, session: "Optional[Session]"
     for kv in list_account_attributes(account=issuer, session=session):
         if kv['key'].startswith('country-') and kv['value'] == 'admin':
             admin_in_country.append(kv['key'].partition('-')[2])
-    if admin_in_country and list_rse_attributes(rse_id=kwargs['rse_id'], session=session).get('country') in admin_in_country:
+    if admin_in_country and list_rse_attributes(rse_id=kwargs['rse_id'], session=session).get(RseAttr.COUNTRY) in admin_in_country:
         return True
     return False
 
@@ -834,7 +837,7 @@ def perm_set_global_account_limit(issuer, kwargs, *, session: "Optional[Session]
     for kv in list_account_attributes(account=issuer, session=session):
         if kv['key'].startswith('country-') and kv['value'] == 'admin':
             admin_in_country.add(kv['key'].partition('-')[2])
-    resolved_rse_countries = {list_rse_attributes(rse_id=rse['rse_id'], session=session).get('country')
+    resolved_rse_countries = {list_rse_attributes(rse_id=rse['rse_id'], session=session).get(RseAttr.COUNTRY)
                               for rse in parse_expression(kwargs['rse_expression'], filter_={'vo': issuer.vo}, session=session)}
     if resolved_rse_countries.issubset(admin_in_country):
         return True
@@ -857,7 +860,7 @@ def perm_delete_local_account_limit(issuer, kwargs, *, session: "Optional[Sessio
     for kv in list_account_attributes(account=issuer, session=session):
         if kv['key'].startswith('country-') and kv['value'] == 'admin':
             admin_in_country.append(kv['key'].partition('-')[2])
-    if admin_in_country and list_rse_attributes(rse_id=kwargs['rse_id'], session=session).get('country') in admin_in_country:
+    if admin_in_country and list_rse_attributes(rse_id=kwargs['rse_id'], session=session).get(RseAttr.COUNTRY) in admin_in_country:
         return True
     return False
 
@@ -879,7 +882,7 @@ def perm_delete_global_account_limit(issuer, kwargs, *, session: "Optional[Sessi
         if kv['key'].startswith('country-') and kv['value'] == 'admin':
             admin_in_country.add(kv['key'].partition('-')[2])
     if admin_in_country:
-        resolved_rse_countries = {list_rse_attributes(rse_id=rse['rse_id'], session=session).get('country')
+        resolved_rse_countries = {list_rse_attributes(rse_id=rse['rse_id'], session=session).get(RseAttr.COUNTRY)
                                   for rse in parse_expression(kwargs['rse_expression'], filter_={'vo': issuer.vo}, session=session)}
         if resolved_rse_countries.issubset(admin_in_country):
             return True
@@ -998,7 +1001,7 @@ def perm_update_lifetime_exceptions(issuer, kwargs, *, session: "Optional[Sessio
     return _is_root(issuer) or has_account_attribute(account=issuer, key='admin', session=session)
 
 
-def perm_get_ssh_challenge_token(issuer, kwargs, *, session: "Optional[Session]" = None):
+def perm_get_auth_token_ssh(issuer: "InternalAccount", kwargs: dict, *, session: "Optional[Session]" = None) -> bool:
     """
     Checks if an account can request a challenge token.
 

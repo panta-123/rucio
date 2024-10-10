@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,13 +15,17 @@
 import logging
 from operator import itemgetter
 from random import shuffle
+from typing import TYPE_CHECKING, Any
 
+from rucio.common.exception import DataIdentifierNotFound
+from rucio.core.did import get_did
+from rucio.core.replica import list_dataset_replicas
 from rucio.daemons.c3po.collectors.agis import MappingCollector
 from rucio.daemons.c3po.collectors.workload import WorkloadCollector
-from rucio.common.exception import DataIdentifierNotFound
-from rucio.core.replica import list_dataset_replicas
-from rucio.core.did import get_did
 from rucio.db.sqla.constants import ReplicaState
+
+if TYPE_CHECKING:
+    from rucio.common.types import InternalScope
 
 
 class PlacementAlgorithm:
@@ -31,20 +34,20 @@ class PlacementAlgorithm:
         self._wc = WorkloadCollector()
         self.__setup_penalties()
 
-    def __setup_penalties(self):
+    def __setup_penalties(self) -> None:
         self._penalties = {}
         for panda_site in self._wc.get_sites():
             site = self._mc.panda_to_site(panda_site)
             self._penalties[site] = 0.1
 
-    def __update_penalties(self):
+    def __update_penalties(self) -> None:
         for site, penalty in self._penalties.items():
             if penalty > 0.1:
                 self._penalties[site] = penalty - 0.1
 
-    def place(self, did):
+    def place(self, did: tuple['InternalScope', str]) -> dict[str, Any]:
         self.__update_penalties()
-        decision = {'did': '{}:{}'.format(did['scope'].internal, did['name'])}
+        decision: dict[str, Any] = {'did': '{}:{}'.format(did['scope'].internal, did['name'])}  # type: ignore (did is treated as a dict here, and as a tuple everywhere else)
         try:
             meta = get_did(did[0], did[1])
         except DataIdentifierNotFound:

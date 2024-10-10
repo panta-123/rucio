@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +15,7 @@
 ''' remove history table pks '''
 
 from alembic import context
-from alembic.op import drop_constraint, create_primary_key
+from alembic.op import create_primary_key, drop_constraint
 
 # Alembic revision identifiers
 revision = '739064d31565'

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +24,7 @@ import traceback
 from datetime import datetime, timedelta
 from random import randint
 from re import match
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm.exc import FlushError
@@ -34,14 +34,23 @@ from rucio.common.exception import DatabaseException, DataIdentifierNotFound, Re
 from rucio.common.logging import setup_logging
 from rucio.common.types import InternalScope
 from rucio.core.monitor import MetricManager
-from rucio.core.rule import re_evaluate_did, get_updated_dids, delete_updated_did
-from rucio.daemons.common import run_daemon
+from rucio.core.rule import delete_updated_did, get_updated_dids, re_evaluate_did
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+from rucio.db.sqla.constants import ORACLE_CONNECTION_LOST_CONTACT_REGEX, ORACLE_RESOURCE_BUSY_REGEX, ORACLE_UNIQUE_CONSTRAINT_VIOLATED_REGEX
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 METRICS = MetricManager(module=__name__)
 graceful_stop = threading.Event()
+DAEMON_NAME = 'judge-evaluator'
 
 
-def re_evaluator(once=False, sleep_time=30, did_limit=100):
+def re_evaluator(
+        once: bool = False,
+        sleep_time: int = 30,
+        did_limit: int = 100
+) -> None:
     """
     Main loop to check the re-evaluation of dids.
     """
@@ -50,8 +59,7 @@ def re_evaluator(once=False, sleep_time=30, did_limit=100):
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable='judge-evaluator',
-        logger_prefix='re_evaluator',
+        executable=DAEMON_NAME,
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -62,7 +70,12 @@ def re_evaluator(once=False, sleep_time=30, did_limit=100):
     )
 
 
-def run_once(paused_dids, did_limit, heartbeat_handler, **_kwargs):
+def run_once(
+        paused_dids: dict[tuple[str, str], datetime],
+        did_limit: int,
+        heartbeat_handler: HeartbeatHandler,
+        **_kwargs
+) -> None:
     worker_number, total_workers, logger = heartbeat_handler.live()
 
     # heartbeat
@@ -116,14 +129,14 @@ def run_once(paused_dids, did_limit, heartbeat_handler, **_kwargs):
         except DataIdentifierNotFound:
             delete_updated_did(id_=did.id)
         except (DatabaseException, DatabaseError) as e:
-            if match('.*ORA-000(01|54).*', str(e.args[0])):
-                paused_dids[(did.scope.internal, did.name)] = datetime.utcnow() + timedelta(seconds=randint(60, 600))
+            if match(ORACLE_UNIQUE_CONSTRAINT_VIOLATED_REGEX, str(e.args[0])) or match(ORACLE_RESOURCE_BUSY_REGEX, str(e.args[0])):
+                paused_dids[(did.scope.internal, did.name)] = datetime.utcnow() + timedelta(seconds=randint(60, 600))  # noqa: S311
                 logger(logging.WARNING, 'Locks detected for %s:%s', did.scope, did.name)
                 METRICS.counter('exceptions.{exception}').labels(exception='LocksDetected').inc()
             elif match('.*QueuePool.*', str(e.args[0])):
                 logger(logging.WARNING, traceback.format_exc())
                 METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
-            elif match('.*ORA-03135.*', str(e.args[0])):
+            elif match(ORACLE_CONNECTION_LOST_CONTACT_REGEX, str(e.args[0])):
                 logger(logging.WARNING, traceback.format_exc())
                 METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
             else:
@@ -137,7 +150,7 @@ def run_once(paused_dids, did_limit, heartbeat_handler, **_kwargs):
             logger(logging.WARNING, 'Flush error for %s:%s', did.scope, did.name)
 
 
-def stop(signum=None, frame=None):
+def stop(signum: Optional[int] = None, frame: Optional["FrameType"] = None) -> None:
     """
     Graceful exit.
     """
@@ -145,11 +158,16 @@ def stop(signum=None, frame=None):
     graceful_stop.set()
 
 
-def run(once=False, threads=1, sleep_time=30, did_limit=100):
+def run(
+        once: bool = False,
+        threads: int = 1,
+        sleep_time: int = 30,
+        did_limit: int = 100
+) -> None:
     """
     Starts up the Judge-Eval threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise DatabaseException('Database was not updated, daemon won\'t start')
@@ -158,10 +176,10 @@ def run(once=False, threads=1, sleep_time=30, did_limit=100):
         re_evaluator(once=once, did_limit=did_limit)
     else:
         logging.info('Evaluator starting %s threads' % str(threads))
-        threads = [threading.Thread(target=re_evaluator, kwargs={'once': once,
-                                                                 'sleep_time': sleep_time,
-                                                                 'did_limit': did_limit}) for i in range(0, threads)]
-        [t.start() for t in threads]
+        thread_list = [threading.Thread(target=re_evaluator, kwargs={'once': once,
+                                                                     'sleep_time': sleep_time,
+                                                                     'did_limit': did_limit}) for i in range(0, threads)]
+        [t.start() for t in thread_list]
         # Interruptible joins require a timeout.
-        while threads[0].is_alive():
-            [t.join(timeout=3.14) for t in threads]
+        while thread_list[0].is_alive():
+            [t.join(timeout=3.14) for t in thread_list]

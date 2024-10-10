@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,19 +13,17 @@
 # limitations under the License.
 
 import argparse
-import logging
-from pathlib import Path
-
-import os
 import json
+import logging
+import os
 import sys
+from pathlib import Path
 
 try:
     import yaml
 except ImportError:
     yaml = None
 import configparser
-
 
 # Multi-word sections used in kubernetes are slightly different from what rucio expects.
 # Usually, it's just a .replace('-', '_'), but not for hermes2, which doesn't follow any convention.
@@ -130,6 +127,7 @@ def merge_configs(source_file_paths, dest_file_path, use_env=True, logger=loggin
         logger(logging.INFO, "Merged {} configuration values from ENV".format(config_len(env_config)))
 
     if dest_file_path:
+        logger(logging.INFO, "Writing {}".format(dest_file_path))
         with open(dest_file_path, 'w') as dest_file:
             parser.write(dest_file)
     else:

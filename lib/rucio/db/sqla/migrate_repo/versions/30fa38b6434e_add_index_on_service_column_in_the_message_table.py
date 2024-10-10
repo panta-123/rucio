@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,9 +14,8 @@
 
 ''' Add index on service column in the message table '''
 import sqlalchemy as sa
-
 from alembic import context
-from alembic.op import create_index, drop_index, alter_column
+from alembic.op import alter_column, create_index, drop_index
 
 # Alembic revision identifiers
 revision = '30fa38b6434e'

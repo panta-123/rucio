@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,7 +18,7 @@ SQLAlchemy utilities
 '''
 
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.sql.expression import Executable, ClauseElement
+from sqlalchemy.sql.expression import ClauseElement, Executable
 
 
 class InsertFromSelect(Executable, ClauseElement):
@@ -30,7 +29,7 @@ class InsertFromSelect(Executable, ClauseElement):
 
 @compiles(InsertFromSelect)
 def visit_insert_from_select(element, compiler, **kw):
-    if type(element.insert_spec) == list:
+    if isinstance(element.insert_spec, list):
         columns = []
         for column in element.insert_spec:
             if element.insert_spec[0].table != column.table:

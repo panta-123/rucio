@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from rucio.common.dumper import DUMPS_CACHE_DIR
-from rucio.common.dumper import temp_file
-from rucio.common.dumper.data_models import Replica
 import hashlib
 import logging
 import os
@@ -23,9 +19,19 @@ import re
 import shutil
 import subprocess
 import tempfile
+from typing import TYPE_CHECKING
+
+from rucio.common.dumper import DUMPS_CACHE_DIR, temp_file
+from rucio.common.dumper.data_models import Replica
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
-def _hdfs_get(src_url, dst_path):
+def _hdfs_get(
+        src_url: str,
+        dst_path: str
+) -> None:
     cmd = ['hadoop', 'fs', '-get', src_url, dst_path]
     get = subprocess.Popen(
         cmd,
@@ -33,7 +39,7 @@ def _hdfs_get(src_url, dst_path):
     )
     _, stderr = get.communicate()
     if get.returncode != 0:
-        raise IOError('_hdfs_get(): "{0}": {1}. Return code {2}'.format(
+        raise OSError('_hdfs_get(): "{0}": {1}. Return code {2}'.format(
             ' '.join(cmd),
             stderr,
             get.returncode,
@@ -44,7 +50,13 @@ class ReplicaFromHDFS(Replica):
     BASE_URL = '/user/rucio01/reports/{0}/replicas_per_rse/{1}/*'
 
     @classmethod
-    def download(cls, rse, date, cache_dir=DUMPS_CACHE_DIR, buffer_size=65536):
+    def download(
+        cls,
+        rse: str,
+        date: "datetime",
+        cache_dir: str = DUMPS_CACHE_DIR,
+        buffer_size: int = 65536
+    ) -> str:
         logger = logging.getLogger('auditor.hdfs')
 
         if not os.path.isdir(cache_dir):

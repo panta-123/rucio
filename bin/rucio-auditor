@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,14 +21,16 @@ import signal
 import sys
 import textwrap
 import time
+from configparser import NoSectionError
 from datetime import datetime
 from functools import partial
-from multiprocessing import Queue, Process, Event, Pipe
+from multiprocessing import Event, Pipe, Process, Queue
 
 import rucio.common.config as config
 import rucio.common.dumper as dumper
 import rucio.daemons.auditor
 from rucio.client.rseclient import RSEClient
+from rucio.common.exception import RSENotFound
 
 
 def setup_pipe_logger(pipe, loglevel):
@@ -49,14 +50,17 @@ def main(args):
     RETRY_AFTER = 60 * 60 * 24 * 14  # Two weeks
 
     nprocs = args.nprocs
-    assert nprocs >= 1
+    if nprocs < 1:
+        raise RuntimeError("No Processes to Run")
+
     if args.rses is None:
         rses_gen = RSEClient().list_rses()
     else:
         rses_gen = RSEClient().list_rses(args.rses)
 
     rses = [entry['rse'] for entry in rses_gen]
-    assert len(rses) > 0
+    if len(rses) <= 0:
+        raise RSENotFound("No RSEs found to audit.")
 
     procs = []
     queue = Queue()
@@ -70,7 +74,9 @@ def main(args):
     logpipes.append(mainlogr)
     logger = setup_pipe_logger(mainlogw, loglevel)
 
-    assert config.config_has_section('auditor')
+    if not config.config_has_section('auditor'):
+        raise NoSectionError("Auditor section required in config to run the auditor daemon.")
+
     cache_dir = config.config_get('auditor', 'cache')
     results_dir = config.config_get('auditor', 'results')
 
@@ -130,7 +136,7 @@ def main(args):
             time.sleep(RETRY_AFTER)
 
             # Avoid infinite loop if an alternative check() implementation doesn't
-            # decrement the number of attemps and keeps pushing failed checks.
+            # decrement the number of attempts and keeps pushing failed checks.
             tmp_list = []
             while not retry.empty():
                 tmp_list.append(retry.get())
@@ -150,7 +156,7 @@ def get_parser():
     """
     Returns the argparse parser.
     """
-    parser = argparse.ArgumentParser(description="The auditor daemon is the one responsable for the detection of inconsistencies on storage, i.e.: dark data discovery.",
+    parser = argparse.ArgumentParser(description="The auditor daemon is the one responsible for the detection of inconsistencies on storage, i.e.: dark data discovery.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         '--nprocs',

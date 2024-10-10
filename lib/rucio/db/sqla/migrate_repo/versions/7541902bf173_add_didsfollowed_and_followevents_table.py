@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-''' add DidsFollowed and FollowEvents table '''
+''' add DidFollowed and FollowEvent table '''
 
-import sqlalchemy as sa
 import datetime
 
+import sqlalchemy as sa
 from alembic import context
-from alembic.op import (create_table, create_primary_key, create_check_constraint,
-                        create_foreign_key, create_index, drop_table)
+from alembic.op import create_check_constraint, create_foreign_key, create_index, create_primary_key, create_table, drop_table
 
 from rucio.db.sqla.constants import DIDType
 

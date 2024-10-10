@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,31 +17,32 @@ import logging
 import re
 import threading
 import time
-from typing import TYPE_CHECKING
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy.exc import DatabaseError
 from dogpile.cache.api import NO_VALUE
+from sqlalchemy.exc import DatabaseError
 
 import rucio.db.sqla.util
-from rucio.db.sqla.constants import ReplicaState
 from rucio.common import exception
-from rucio.common.cache import make_region_memcached
+from rucio.common.cache import MemcacheRegion
 from rucio.common.config import config_get_int
 from rucio.common.exception import DatabaseException
 from rucio.common.logging import setup_logging
 from rucio.core.monitor import MetricManager
-from rucio.core.replica import list_bad_replicas, get_replicas_state, get_bad_replicas_backlog
-from rucio.core.rule import (update_rules_for_lost_replica, update_rules_for_bad_replica,
-                             get_evaluation_backlog)
-from rucio.daemons.common import run_daemon
+from rucio.core.replica import get_bad_replicas_backlog, get_replicas_state, list_bad_replicas
+from rucio.core.rule import get_evaluation_backlog, update_rules_for_bad_replica, update_rules_for_lost_replica
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+from rucio.db.sqla.constants import MYSQL_LOCK_WAIT_TIMEOUT_EXCEEDED, ORACLE_DEADLOCK_DETECTED_REGEX, ORACLE_RESOURCE_BUSY_REGEX, ReplicaState
 
 if TYPE_CHECKING:
-    from rucio.daemons.common import HeartbeatHandler
+    from types import FrameType
+
 
 graceful_stop = threading.Event()
 METRICS = MetricManager(module=__name__)
-REGION = make_region_memcached(expiration_time=config_get_int('necromancer', 'cache_time', False, 600))
+REGION = MemcacheRegion(expiration_time=config_get_int('necromancer', 'cache_time', False, 600))
+DAEMON_NAME = 'necromancer'
 
 
 def necromancer(bulk: int, once: bool = False, sleep_time: int = 60) -> None:
@@ -57,8 +57,7 @@ def necromancer(bulk: int, once: bool = False, sleep_time: int = 60) -> None:
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable='necromancer',
-        logger_prefix='necromancer',
+        executable=DAEMON_NAME,
         partition_wait_time=10,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -68,9 +67,8 @@ def necromancer(bulk: int, once: bool = False, sleep_time: int = 60) -> None:
     )
 
 
-def run_once(heartbeat_handler: "HeartbeatHandler", bulk: int, **_kwargs) -> bool:
+def run_once(heartbeat_handler: HeartbeatHandler, bulk: int, **_kwargs) -> bool:
     worker_number, total_workers, logger = heartbeat_handler.live()
-    logger(logging.INFO, 'Graceful stop done')
     must_sleep = True
 
     # Check if there is a Judge Evaluator backlog
@@ -138,7 +136,7 @@ def run_once(heartbeat_handler: "HeartbeatHandler", bulk: int, **_kwargs) -> boo
                         update_rules_for_lost_replica(scope=scope, name=name, rse_id=rse_id, nowait=True)
                         METRICS.counter(name='badfiles.lostfile').inc()
                     except (DatabaseException, DatabaseError) as error:
-                        if re.match('.*ORA-00054.*', error.args[0]) or re.match('.*ORA-00060.*', error.args[0]) or 'ERROR 1205 (HY000)' in error.args[0]:
+                        if re.match(ORACLE_RESOURCE_BUSY_REGEX, error.args[0]) or re.match(ORACLE_DEADLOCK_DETECTED_REGEX, error.args[0]) or MYSQL_LOCK_WAIT_TIMEOUT_EXCEEDED in error.args[0]:
                             logger(logging.WARNING, 'Lock detected when handling request - skipping: %s', str(error))
                         else:
                             logger(logging.ERROR, str(error))
@@ -151,7 +149,7 @@ def run_once(heartbeat_handler: "HeartbeatHandler", bulk: int, **_kwargs) -> boo
                         update_rules_for_bad_replica(scope=scope, name=name, rse_id=rse_id, nowait=True)
                         METRICS.counter(name='badfiles.recovering').inc()
                     except (DatabaseException, DatabaseError) as error:
-                        if re.match('.*ORA-00054.*', error.args[0]) or re.match('.*ORA-00060.*', error.args[0]) or 'ERROR 1205 (HY000)' in error.args[0]:
+                        if re.match(ORACLE_RESOURCE_BUSY_REGEX, error.args[0]) or re.match(ORACLE_DEADLOCK_DETECTED_REGEX, error.args[0]) or MYSQL_LOCK_WAIT_TIMEOUT_EXCEEDED in error.args[0]:
                             logger(logging.WARNING, 'Lock detected when handling request - skipping: %s', str(error))
                         else:
                             logger(logging.ERROR, str(error))
@@ -169,7 +167,7 @@ def run(threads: int = 1, bulk: int = 100, once: bool = False, sleep_time: int =
     """
     Starts up the necromancer threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise exception.DatabaseException('Database was not updated, daemon won\'t start')
@@ -191,7 +189,7 @@ def run(threads: int = 1, bulk: int = 100, once: bool = False, sleep_time: int =
             thread_list = [thread.join(timeout=3.14) for thread in thread_list if thread and thread.is_alive()]
 
 
-def stop(signum=None, frame=None):
+def stop(signum: Optional[int] = None, frame: Optional["FrameType"] = None) -> None:
     """
     Graceful exit.
     """

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +20,7 @@
 import argparse
 import json
 import os
-import random
+import secrets
 import ssl
 import sys
 
@@ -76,10 +75,11 @@ def cache_operation(args):
         validate_files(payload["files"])
     else:
         validate(payload, get_schema_value('CACHE_DELETE_REPLICAS'))
-    conn = stomp.Connection([(args.broker, args.port)], use_ssl=True, ssl_key_file=args.ssl_key_file, ssl_cert_file=args.ssl_cert_file, ssl_version=ssl.PROTOCOL_TLSv1)
+    conn = stomp.Connection([(args.broker, args.port)])
+    conn.set_ssl(key_file=args.ssl_key_file, cert_file=args.ssl_cert_file, ssl_version=ssl.PROTOCOL_TLSv1)
 
     conn.connect()
-    message = {'id': int(random.random() * 1000), 'payload': payload}
+    message = {'id': secrets.randbelow(1001), 'payload': payload}
     conn.send(destination=args.destination, body=json.dumps(message), id='rucio-cache-messaging', ack='auto', headers={'vo': 'atlas'})
     conn.disconnect()
 

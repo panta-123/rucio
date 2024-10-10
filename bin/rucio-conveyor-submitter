@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,7 +34,7 @@ Upload a file and create a replication rule::
   $ rucio add-rule mock:file 1 MOCK2
   $ rucio-admin rse add-distance MOCK2 MOCK --distance 1
 
-The rule should replicate the file from RSE MOCK to RSE MOCK2. Therefor a distance between these RSEs is needed.
+The rule should replicate the file from RSE MOCK to RSE MOCK2. Therefore a distance between these RSEs is needed.
 
 Check transfer requests for the DID::
 
@@ -57,7 +56,7 @@ Check again the transfer requests for the DID::
     session.get_session().query(models.Request).filter_by(scope='mock', name='file').first()
     # {'request_type': TRANSFER, 'state': SUBMITTED', ...}
 
-A tranfer request got created by executing the transfer. Depending on the transfer submission, the request state can be different. In this example the transfer got submitted successfully.
+A transfer request got created by executing the transfer. Depending on the transfer submission, the request state can be different. In this example the transfer got submitted successfully.
 
 When run in multi-VO mode, by default the daemon will run on RSEs from all VOs::
 
@@ -89,8 +88,6 @@ Note that attempting the use the ``--vos`` argument when in single-VO mode will 
                         help='Group control: number of requests per group')
     parser.add_argument("--group-policy", action="store", default='rule', type=str,
                         help='Group control: policy used to group. enum{rule, dest, src_dest, rule_src_dest, activity_dest, activity_src_dest}')
-    parser.add_argument("--mock", action="store_true", default=False,
-                        help='Fake source replicas for requests')
     parser.add_argument('--source-strategy', action="store", default=None, type=str,
                         help='Source strategy. Overload the strategy defined in config DB.')
     parser.add_argument('--exclude-rses', action="store", default=None, type=str,
@@ -109,8 +106,8 @@ Note that attempting the use the ``--vos`` argument when in single-VO mode will 
                         help='If True, will also try to submit transfers having blocklisted RSEs as sources')
     parser.add_argument('--sleep-time', action="store", default=600, type=int,
                         help='Seconds to sleep if few requests')
-    parser.add_argument('--max-sources', action="store", default=4, type=int,
-                        help='Maximum source replicas per FTS job')
+    parser.add_argument('--max-sources', action="store", default=5, type=int,
+                        help='Maximum source replicas per multi-source FTS job')
     parser.add_argument('--archive-timeout-override', action="store", default=None, type=int, metavar="INTEGER_SECONDS",
                         help='Override the archive_timeout parameter for any transfers with it set (0 to unset)')
     return parser
@@ -126,7 +123,6 @@ if __name__ == "__main__":
             bulk=args.bulk,
             group_bulk=args.group_bulk,
             group_policy=args.group_policy,
-            mock=args.mock,
             include_rses=args.include_rses,
             exclude_rses=args.exclude_rses,
             rses=args.rses,

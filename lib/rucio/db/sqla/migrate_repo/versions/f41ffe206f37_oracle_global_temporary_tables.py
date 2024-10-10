@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,11 +15,11 @@
 ''' oracle_global_temporary_tables '''
 
 import sqlalchemy as sa
-
 from alembic import context
 from alembic.op import create_table, drop_table
+
 from rucio.common.schema import get_schema_value
-from rucio.db.sqla.types import InternalScopeString, String, GUID
+from rucio.db.sqla.types import GUID, InternalScopeString, String
 
 # Alembic revision identifiers
 revision = 'f41ffe206f37'

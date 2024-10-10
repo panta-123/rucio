@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,31 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import queue as Queue
 import bz2
 import glob
 import logging
 import os
+import queue as Queue
 import select
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Optional
 
-from datetime import datetime
-from datetime import timedelta
 from rucio.common import config
-from rucio.common.dumper import LogPipeHandler
-from rucio.common.dumper import mkdir
-from rucio.common.dumper import temp_file
+from rucio.common.dumper import LogPipeHandler, mkdir, temp_file
 from rucio.common.dumper.consistency import Consistency
 from rucio.common.types import InternalAccount, InternalScope
 from rucio.common.utils import chunks
 from rucio.core.quarantined_replica import add_quarantined_replicas
 from rucio.core.replica import declare_bad_file_replicas, list_replicas
-from rucio.core.rse import get_rse_usage, get_rse_id
-from rucio.daemons.auditor.hdfs import ReplicaFromHDFS
+from rucio.core.rse import get_rse_id, get_rse_usage
 from rucio.daemons.auditor import srmdumps
+from rucio.daemons.auditor.hdfs import ReplicaFromHDFS
 from rucio.db.sqla.constants import BadFilesStatus
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from configparser import RawConfigParser
+    from multiprocessing import Queue as QueueType
+    from multiprocessing.connection import Connection
+    from multiprocessing.synchronize import Event
 
-def consistency(rse, delta, configuration, cache_dir, results_dir):
+
+def consistency(
+        rse: str,
+        delta: timedelta,
+        configuration: "RawConfigParser",
+        cache_dir: str,
+        results_dir: str
+) -> Optional[str]:
     logger = logging.getLogger('auditor-worker')
     rsedump, rsedate = srmdumps.download_rse_dump(rse, configuration, destdir=cache_dir)
     results_path = os.path.join(results_dir, '{0}_{1}'.format(rse, rsedate.strftime('%Y%m%d')))  # pylint: disable=no-member
@@ -65,11 +75,12 @@ def consistency(rse, delta, configuration, cache_dir, results_dir):
     return results_path
 
 
-def guess_replica_info(path):
+def guess_replica_info(
+        path: str
+) -> tuple[Optional[str], str]:
     """Try to extract the scope and name from a path.
 
-    ``path`` should be an ``str`` with the relative path to the file on
-    the RSE.
+    ``path``: relative path to the file on the RSE.
 
     Returns a ``tuple`` of which the first element is the scope of the
     replica and the second element is its name.
@@ -83,7 +94,10 @@ def guess_replica_info(path):
         return items[0], items[-1]
 
 
-def bz2_compress_file(source, chunk_size=65000):
+def bz2_compress_file(
+        source: str,
+        chunk_size: int = 65000
+) -> str:
     """Compress a file with bzip2.
 
     The destination is the path passed through ``source`` extended with
@@ -92,13 +106,11 @@ def bz2_compress_file(source, chunk_size=65000):
     Errors are deliberately not handled gracefully.  Any exceptions
     should be propagated to the caller.
 
-    ``source`` should be an ``str`` with the absolute path to the file
-    to compress.
+    ``source``: absolute path to the file to compress.
 
-    ``chunk_size`` should be an ``int`` with the size (in bytes) of the
-    chunks by which to read the file.
+    ``chunk_size``: size (in bytes) of the chunks by which to read the file.
 
-    Returns an ``str`` with the destination path.
+    Returns the destination path.
     """
     destination = '{}.bz2'.format(source)
     with open(source) as plain, bz2.BZ2File(destination, 'w') as compressed:
@@ -111,14 +123,18 @@ def bz2_compress_file(source, chunk_size=65000):
     return destination
 
 
-def process_output(output, sanity_check=True, compress=True):
+def process_output(
+        output: str,
+        sanity_check: bool = True,
+        compress: bool = True
+) -> None:
     """Perform post-consistency-check actions.
 
     DARK files are put in the quarantined-replica table so that they
     may be deleted by the Dark Reaper.  LOST files are reported as
     suspicious so that they may be further checked by the cloud squads.
 
-    ``output`` should be an ``str`` with the absolute path to the file
+    ``output``: absolute path to the file
     produced by ``consistency()``.  It must maintain its naming
     convention.
 
@@ -154,7 +170,7 @@ def process_output(output, sanity_check=True, compress=True):
     rse = os.path.basename(output[:output.rfind('_')])
     rse_id = get_rse_id(rse=rse)
     usage = get_rse_usage(rse_id=rse_id, source='rucio')[0]
-    threshold = config.config_get('auditor', 'threshold', False, 0.2)
+    threshold = config.config_get_float('auditor', 'threshold', False, 0.1)
 
     # Perform a basic sanity check by comparing the number of entries
     # with the total number of files on the RSE.  If the percentage is
@@ -189,7 +205,16 @@ def process_output(output, sanity_check=True, compress=True):
         logger.debug('Compressed "%s"', destination)
 
 
-def check(queue, retry, terminate, logpipe, cache_dir, results_dir, keep_dumps, delta_in_days):
+def check(
+        queue: "QueueType",
+        retry: "QueueType",
+        terminate: "Event",
+        logpipe: "Connection",
+        cache_dir: str,
+        results_dir: str,
+        keep_dumps: bool,
+        delta_in_days: int
+) -> None:
     logger = logging.getLogger('auditor-worker')
     lib_logger = logging.getLogger('dumper')
 
@@ -212,7 +237,7 @@ def check(queue, retry, terminate, logpipe, cache_dir, results_dir, keep_dumps, 
 
     while not terminate.is_set():
         try:
-            rse, attemps = queue.get(timeout=30)
+            rse, attempts = queue.get(timeout=30)
         except Queue.Empty:
             continue
         start = datetime.now()
@@ -224,7 +249,7 @@ def check(queue, retry, terminate, logpipe, cache_dir, results_dir, keep_dumps, 
                 process_output(output)
         except:
             elapsed = (datetime.now() - start).total_seconds() / 60
-            logger.error('Check of "%s" failed in %d minutes, %d remaining attemps', rse, elapsed, attemps, exc_info=True)
+            logger.error('Check of "%s" failed in %d minutes, %d remaining attempts', rse, elapsed, attempts, exc_info=True)
             success = False
         else:
             elapsed = (datetime.now() - start).total_seconds() / 60
@@ -238,11 +263,15 @@ def check(queue, retry, terminate, logpipe, cache_dir, results_dir, keep_dumps, 
             for fil in remove:
                 os.remove(fil)
 
-        if not success and attemps > 0:
-            retry.put((rse, attemps - 1))
+        if not success and attempts > 0:
+            retry.put((rse, attempts - 1))
 
 
-def activity_logger(logpipes, logfilename, terminate):
+def activity_logger(
+        logpipes: "Iterable[Connection]",
+        logfilename: str,
+        terminate: "Event"
+) -> None:
     handler = logging.handlers.RotatingFileHandler(
         logfilename,
         maxBytes=20971520,

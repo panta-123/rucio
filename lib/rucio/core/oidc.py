@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,46 +12,53 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import json
-import random
-import subprocess
 import logging
+import subprocess
 import traceback
 from datetime import datetime, timedelta
 from math import floor
-from urllib.parse import urlparse, parse_qs
-from typing import Dict, Tuple, Any, TYPE_CHECKING, Optional
+from secrets import choice
+from typing import TYPE_CHECKING, Any, Final, Optional, Union
+from urllib.parse import parse_qs, urljoin, urlparse
 
+import requests
+from dogpile.cache.api import NoValue
 from jwkest.jws import JWS
 from jwkest.jwt import JWT
 from oic import rndstr
 from oic.oauth2.message import CCAccessTokenRequest
-from oic.oic import Client, Grant, Token, REQUEST2ENDPOINT
-from oic.oic.message import (AccessTokenResponse, AuthorizationResponse,
-                             Message, RegistrationResponse)
+from oic.oic import REQUEST2ENDPOINT, Client, Grant, Token
+from oic.oic.message import AccessTokenResponse, AuthorizationResponse, Message, RegistrationResponse
 from oic.utils import time_util
 from oic.utils.authn.client import CLIENT_AUTHN_METHOD
-from sqlalchemy import and_
+from sqlalchemy import delete, select, update
 from sqlalchemy.sql.expression import true
 
+from rucio.common.cache import MemcacheRegion
 from rucio.common.config import config_get, config_get_int
-from rucio.common.exception import (CannotAuthenticate, CannotAuthorize,
-                                    RucioException)
+from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
 from rucio.common.stopwatch import Stopwatch
 from rucio.common.utils import all_oidc_req_claims_present, build_url, val_to_space_sep_str
-from rucio.common import types
 from rucio.core.account import account_exists
 from rucio.core.identity import exist_identity_account, get_default_account
 from rucio.core.monitor import MetricManager
-from rucio.db.sqla import filter_thread_work
-from rucio.db.sqla import models
+from rucio.db.sqla import filter_thread_work, models
 from rucio.db.sqla.constants import IdentityType
 from rucio.db.sqla.session import read_session, transactional_session
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from rucio.common.types import InternalAccount
 
+# The WLCG Common JWT Profile dictates that the lifetime of access and ID tokens
+# should range from five minutes to six hours.
+TOKEN_MIN_LIFETIME: Final = config_get_int('oidc', 'token_min_lifetime', default=300)
+TOKEN_MAX_LIFETIME: Final = config_get_int('oidc', 'token_max_lifetime', default=21600)
+
+REGION: Final = MemcacheRegion(expiration_time=TOKEN_MAX_LIFETIME)
 METRICS = MetricManager(module=__name__)
 
 # worokaround for a bug in pyoidc (as of Dec 2019)
@@ -75,7 +81,82 @@ LEEWAY_SECS = 120
 # --> check 'profile' info (requested profile scope)
 
 
-def __get_rucio_oidc_clients(keytimeout: int = 43200) -> Tuple[Dict, Dict]:
+@METRICS.time_it
+def _token_cache_get(
+    key: str,
+    min_lifetime: int = TOKEN_MIN_LIFETIME,
+) -> Optional[str]:
+    """Retrieve a token from the cache.
+
+    Return ``None`` if the cache backend did not return a value, the value is
+    not a valid JWT, or the token has a remaining lifetime less than
+    ``min_lifetime`` seconds.
+    """
+    value = REGION.get(key)
+    if isinstance(value, NoValue):
+        METRICS.counter('token_cache.miss').inc()
+        return None
+
+    if isinstance(value, str):
+        try:
+            payload = JWT().unpack(value).payload()
+        except Exception:
+            METRICS.counter('token_cache.invalid').inc()
+            return None
+    else:
+        METRICS.counter('token_cache.invalid').inc()
+        return None
+
+    now = datetime.utcnow().timestamp()
+    expiration = payload.get('exp', 0)    # type: ignore
+    if now + min_lifetime > expiration:
+        METRICS.counter('token_cache.expired').inc()
+        return None
+
+    METRICS.counter('token_cache.hit').inc()
+    return value
+
+
+def _token_cache_set(key: str, value: str) -> None:
+    """Store a token in the cache."""
+    REGION.set(key, value)
+
+
+def request_token(audience: str, scope: str, use_cache: bool = True) -> Optional[str]:
+    """Request a token from the provider.
+
+    Return ``None`` if the configuration was not loaded properly or the request
+    was unsuccessful.
+    """
+    if not all([OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_PROVIDER_ENDPOINT]):
+        if OIDC_CONFIGURATION_RUN or not __load_oidc_configuration():
+            return None
+
+    key = hashlib.md5(f'audience={audience};scope={scope}'.encode()).hexdigest()
+
+    if use_cache and (token := _token_cache_get(key)):
+        return token
+
+    try:
+        response = requests.post(url=OIDC_PROVIDER_ENDPOINT,
+                                 auth=(OIDC_CLIENT_ID, OIDC_CLIENT_SECRET),
+                                 data={'grant_type': 'client_credentials',
+                                       'audience': audience,
+                                       'scope': scope})
+        response.raise_for_status()
+        payload = response.json()
+        token = payload['access_token']
+    except Exception:
+        logging.debug('Failed to procure a token', exc_info=True)
+        return None
+
+    if use_cache:
+        _token_cache_set(key, token)
+
+    return token
+
+
+def __get_rucio_oidc_clients(keytimeout: int = 43200) -> tuple[dict, dict]:
     """
     Creates a Rucio OIDC Client instances per Identity Provider (IdP)
     according to etc/idpsecrets.json configuration file.
@@ -125,6 +206,11 @@ def __get_rucio_oidc_clients(keytimeout: int = 43200) -> Tuple[Dict, Dict]:
 # global variables to represent the IdP clients
 OIDC_CLIENTS = {}
 OIDC_ADMIN_CLIENTS = {}
+# New-style token support.
+OIDC_CLIENT_ID = ''
+OIDC_CLIENT_SECRET = ''
+OIDC_PROVIDER_ENDPOINT = ''
+OIDC_CONFIGURATION_RUN = False
 
 
 def __initialize_oidc_clients() -> None:
@@ -143,11 +229,43 @@ def __initialize_oidc_clients() -> None:
         pass
 
 
-# try loading OIDC clients uppon module import
-__initialize_oidc_clients()
+def __load_oidc_configuration() -> bool:
+    """Load the configuration for the new-style token support."""
+    global OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_PROVIDER_ENDPOINT, OIDC_CONFIGURATION_RUN
+
+    OIDC_CONFIGURATION_RUN = True
+
+    if not IDPSECRETS:
+        logging.error('Configuration option "idpsecrets" in section "oidc" is not set')
+        return False
+    if not ADMIN_ISSUER_ID:
+        logging.error('Configuration option "admin_issuer" in section "oidc" is not set')
+        return False
+
+    try:
+        with open(IDPSECRETS) as f:
+            data = json.load(f)
+            OIDC_CLIENT_ID = data[ADMIN_ISSUER_ID]['client_id']
+            OIDC_CLIENT_SECRET = data[ADMIN_ISSUER_ID]['client_secret']
+            issuer = data[ADMIN_ISSUER_ID]['issuer']
+    except Exception:
+        logging.error('Failed to parse configuration file "%s"', IDPSECRETS,
+                      exc_info=True)
+        return False
+    try:
+        oidc_discover_url = urljoin(issuer, '.well-known/openid-configuration')
+        response = requests.get(oidc_discover_url)
+        response.raise_for_status()
+        payload = response.json()
+        OIDC_PROVIDER_ENDPOINT = payload['token_endpoint']
+    except (requests.HTTPError, requests.JSONDecodeError, KeyError):
+        logging.error('Failed to discover token endpoint', exc_info=True)
+        return False
+
+    return True
 
 
-def __get_init_oidc_client(token_object: models.Token = None, token_type: str = None, **kwargs) -> Dict[Any, Any]:
+def __get_init_oidc_client(token_object: models.Token = None, token_type: str = None, **kwargs) -> dict[Any, Any]:
     """
     Get an OIDC client object, (re-)initialised with parameters corresponding
     to authorization flows used to get a token. For special cases - token refresh,
@@ -189,11 +307,11 @@ def __get_init_oidc_client(token_object: models.Token = None, token_type: str = 
             token = ''
             if not token_type:
                 token_type = kwargs.get('token_type', None)
-            if token_type == 'subject_token':
+            if token_type == 'subject_token':  # noqa: S105
                 token = token_object.token
                 # do not remove - even though None, oic expects this key to exist
                 auth_args["redirect_uri"] = None
-            if token_type == 'refresh_token':
+            if token_type == 'refresh_token':  # noqa: S105
                 token = token_object.refresh_token
                 # do not remove - even though None, oic expects this key to exist
                 auth_args["redirect_uri"] = None
@@ -219,7 +337,7 @@ def __get_init_oidc_client(token_object: models.Token = None, token_type: str = 
             if not redirect_url:
                 redirect_to = kwargs.get("redirect_to", "auth/oidc_token")
                 redirect_urls = [u for u in client_secret["redirect_uris"] if redirect_to in u]
-                redirect_url = random.choice(redirect_urls)
+                redirect_url = choice(redirect_urls)
             if not redirect_url:
                 raise CannotAuthenticate("Could not pick any redirect URL(s) from the ones defined "
                                          + "in Rucio OIDC Client configuration file.")  # NOQA: W503
@@ -275,7 +393,7 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
               OR a redirection url to be used in user's browser for authentication.
     """
     # TO-DO - implement a check if that account already has a valid
-    # token withthe required scope and audience and return such token !
+    # token with the required scope and audience and return such token !
     auth_scope = kwargs.get('auth_scope', EXPECTED_OIDC_SCOPE)
     if not auth_scope:
         auth_scope = EXPECTED_OIDC_SCOPE
@@ -360,7 +478,12 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
 
 
 @transactional_session
-def get_token_oidc(auth_query_string: str, ip: str = None, *, session: "Session"):
+def get_token_oidc(
+    auth_query_string: str,
+    ip: Optional[str] = None,
+    *,
+    session: "Session"
+) -> Optional[dict[str, Optional[Union[str, bool]]]]:
     """
     After Rucio User got redirected to Rucio /auth/oidc_token (or /auth/oidc_code)
     REST endpoints with authz code and session state encoded within the URL.
@@ -380,17 +503,23 @@ def get_token_oidc(auth_query_string: str, ip: str = None, *, session: "Session"
         state = parsed_authquery["state"][0]
         code = parsed_authquery["code"][0]
         # getting oauth request params from the oauth_requests DB Table
-        oauth_req_params = session.query(models.OAuthRequest).filter_by(state=state).first()
+        query = select(
+            models.OAuthRequest
+        ).where(
+            models.OAuthRequest.state == state
+        )
+        oauth_req_params = session.execute(query).scalar()
         if oauth_req_params is None:
             raise CannotAuthenticate("User related Rucio OIDC session could not keep "
                                      + "track of responses from outstanding requests.")  # NOQA: W503
-        req_url = urlparse(oauth_req_params.redirect_msg)
+        req_url = urlparse(oauth_req_params.redirect_msg or '')
         issuer = req_url.scheme + "://" + req_url.netloc
         req_params = parse_qs(req_url.query)
+        client_params = {}
         for key in list(req_params):
-            req_params[key] = val_to_space_sep_str(req_params[key])
+            client_params[key] = val_to_space_sep_str(req_params[key])
 
-        oidc_client = __get_init_oidc_client(issuer=issuer, code=code, **req_params)['client']
+        oidc_client = __get_init_oidc_client(issuer=issuer, code=code, **client_params)['client']
         METRICS.counter(name='IdP_authentication.code_granted').inc()
         # exchange access code for a access token
         oidc_tokens = oidc_client.do_access_token_request(state=state,
@@ -449,10 +578,12 @@ def get_token_oidc(auth_query_string: str, ip: str = None, *, session: "Session"
         if 'refresh_token' in oidc_tokens:
             extra_dict['refresh_token'] = oidc_tokens['refresh_token']
             extra_dict['refresh'] = True
+            extra_dict['refresh_lifetime'] = REFRESH_LIFETIME_H
             try:
-                extra_dict['refresh_lifetime'] = int(oauth_req_params.refresh_lifetime)
+                if oauth_req_params.refresh_lifetime is not None:
+                    extra_dict['refresh_lifetime'] = int(oauth_req_params.refresh_lifetime)
             except Exception:
-                extra_dict['refresh_lifetime'] = REFRESH_LIFETIME_H
+                pass
             try:
                 values = __get_keyvalues_from_claims(oidc_tokens['refresh_token'], ['exp'])
                 exp = values['exp']
@@ -472,15 +603,26 @@ def get_token_oidc(auth_query_string: str, ip: str = None, *, session: "Session"
             if 'http' not in oauth_req_params.access_msg:
                 if '_polling' not in oauth_req_params.access_msg:
                     fetchcode = rndstr(50)
-                    session.query(models.OAuthRequest).filter(models.OAuthRequest.state == state)\
-                           .update({models.OAuthRequest.access_msg: fetchcode,
-                                    models.OAuthRequest.redirect_msg: new_token['token']})
+                    query = update(
+                        models.OAuthRequest
+                    ).where(
+                        models.OAuthRequest.state == state
+                    ).values({
+                        models.OAuthRequest.access_msg: fetchcode,
+                        models.OAuthRequest.redirect_msg: new_token['token']
+                    })
                 # If Rucio Client was requested to poll the Rucio Auth server
                 # for a token automatically, we save the token under a access_msg.
                 else:
-                    session.query(models.OAuthRequest).filter(models.OAuthRequest.state == state)\
-                           .update({models.OAuthRequest.access_msg: oauth_req_params.access_msg,
-                                    models.OAuthRequest.redirect_msg: new_token['token']})
+                    query = update(
+                        models.OAuthRequest
+                    ).where(
+                        models.OAuthRequest.state == state
+                    ).values({
+                        models.OAuthRequest.access_msg: oauth_req_params.access_msg,
+                        models.OAuthRequest.redirect_msg: new_token['token']
+                    })
+                session.execute(query)
                 session.commit()
             METRICS.timer('IdP_authorization').observe(stopwatch.elapsed)
             if '_polling' in oauth_req_params.access_msg:
@@ -502,7 +644,7 @@ def get_token_oidc(auth_query_string: str, ip: str = None, *, session: "Session"
 
 
 @transactional_session
-def __get_admin_token_oidc(account: types.InternalAccount, req_scope, req_audience, issuer, *, session: "Session"):
+def __get_admin_token_oidc(account: 'InternalAccount', req_scope, req_audience, issuer, *, session: "Session"):
     """
     Get a token for Rucio application to act on behalf of itself.
     client_credential flow is used for this purpose.
@@ -575,9 +717,14 @@ def __get_admin_account_for_issuer(*, session: "Session"):
     issuer_account_dict = {}
     for issuer in OIDC_ADMIN_CLIENTS:
         admin_identity = oidc_identity_string(OIDC_ADMIN_CLIENTS[issuer].client_id, issuer)
-        admin_account = session.query(models.IdentityAccountAssociation)\
-                               .filter_by(identity_type=IdentityType.OIDC, identity=admin_identity).first()
-        issuer_account_dict[issuer] = (admin_account.account, admin_identity)
+        query = select(
+            models.IdentityAccountAssociation.account
+        ).where(
+            models.IdentityAccountAssociation.identity_type == IdentityType.OIDC,
+            models.IdentityAccountAssociation.identity == admin_identity
+        )
+        admin_account = session.execute(query).scalar()
+        issuer_account_dict[issuer] = (admin_account, admin_identity)
     return issuer_account_dict
 
 
@@ -603,24 +750,32 @@ def get_token_for_account_operation(account: str, req_audience: str = None, req_
             req_audience = EXPECTED_OIDC_AUDIENCE
 
         # get all identities for the corresponding account
-        identities_list = session.query(models.IdentityAccountAssociation.identity) \
-                                 .filter(models.IdentityAccountAssociation.identity_type == IdentityType.OIDC,
-                                         models.IdentityAccountAssociation.account == account).all()
-        identities = []
-        for identity in identities_list:
-            identities.append(identity[0])
+        query = select(
+            models.IdentityAccountAssociation.identity
+        ).where(
+            models.IdentityAccountAssociation.identity_type == IdentityType.OIDC,
+            models.IdentityAccountAssociation.account == account
+        )
+        identities = session.execute(query).scalars().all()
         # get all active/valid OIDC tokens
-        account_tokens = session.query(models.Token).filter(models.Token.identity.in_(identities),
-                                                            models.Token.account == account,
-                                                            models.Token.expired_at > datetime.utcnow()).with_for_update(skip_locked=True).all()
+        query = select(
+            models.Token
+        ).where(
+            models.Token.identity.in_(identities),
+            models.Token.account == account,
+            models.Token.expired_at > datetime.utcnow()
+        ).with_for_update(
+            skip_locked=True
+        )
+        account_tokens = session.execute(query).scalars().all()
 
         # for Rucio Admin account we ask IdP for a token via client_credential grant
         # for each user account OIDC identity there is an OIDC issuer that must be, by construction,
         # supported by Rucio server (have OIDC admin client registered as well)
         # that is why we take the issuer of the account identity that has an active/valid token
         # and look for admin account identity which has this issuer assigned
-        # requestor should always have at least one active subject token unless it is root
-        # this is why we first discover if the requestor is root or not
+        # requester should always have at least one active subject token unless it is root
+        # this is why we first discover if the requester is root or not
         get_token_for_adminacc = False
         admin_identity = None
         admin_issuer = None
@@ -630,10 +785,10 @@ def get_token_for_account_operation(account: str, req_audience: str = None, req_
         preferred_issuer = None
         for token in account_tokens:
             preferred_issuer = token.identity.split(", ")[1].split("=")[1]
-        # loop through all OIDC identities registerd for the account of the requestor
+        # loop through all OIDC identities registered for the account of the requester
         for identity in identities:
             issuer = identity.split(", ")[1].split("=")[1]
-            # compare the account of the requestor with the account of the admin
+            # compare the account of the requester with the account of the admin
             if account == admin_iss_acc_idt_dict[issuer][0]:
                 # take first matching case which means root is requesting OIDC authentication
                 admin_identity = admin_iss_acc_idt_dict[issuer][1]
@@ -650,8 +805,13 @@ def get_token_for_account_operation(account: str, req_audience: str = None, req_
             if 'openid' in req_scope:
                 req_scope = req_scope.replace("openid", "").strip()
             # checking if there is not already a token to use
-            admin_account_tokens = session.query(models.Token).filter(models.Token.account == account,
-                                                                      models.Token.expired_at > datetime.utcnow()).all()
+            query = select(
+                models.Token
+            ).where(
+                models.Token.account == account,
+                models.Token.expired_at > datetime.utcnow()
+            )
+            admin_account_tokens = session.execute(query).scalars().all()
             for admin_token in admin_account_tokens:
                 if hasattr(admin_token, 'audience') and hasattr(admin_token, 'oidc_scope') and\
                    all_oidc_req_claims_present(admin_token.oidc_scope, admin_token.audience, req_scope, req_audience):
@@ -688,9 +848,14 @@ def get_token_for_account_operation(account: str, req_audience: str = None, req_
                 admin_acc_idt_tuple = admin_iss_acc_idt_dict[admin_issuer]
                 admin_account = admin_acc_idt_tuple[0]
                 admin_identity = admin_acc_idt_tuple[1]
-                admin_account_tokens = session.query(models.Token).filter(models.Token.identity == admin_identity,
-                                                                          models.Token.account == admin_account,
-                                                                          models.Token.expired_at > datetime.utcnow()).all()
+                query = select(
+                    models.Token
+                ).where(
+                    models.Token.identity == admin_identity,
+                    models.Token.account == admin_account,
+                    models.Token.expired_at > datetime.utcnow()
+                )
+                admin_account_tokens = session.execute(query).scalars().all()
                 for admin_token in admin_account_tokens:
                     if hasattr(admin_token, 'audience') and hasattr(admin_token, 'oidc_scope') and\
                        all_oidc_req_claims_present(admin_token.oidc_scope, admin_token.audience, req_scope, req_audience):
@@ -723,7 +888,7 @@ def get_token_for_account_operation(account: str, req_audience: str = None, req_
                     subject_token = token
             # if not proceed with token exchange
             if not subject_token:
-                subject_token = random.choice(account_tokens)
+                subject_token = choice(account_tokens)
             exchanged_token = __exchange_token_oidc(subject_token,
                                                     scope=req_scope,
                                                     audience=req_audience,
@@ -771,7 +936,7 @@ def __exchange_token_oidc(subject_token_object: models.Token, *, session: "Sessi
     if not grant_type:
         grant_type = EXCHANGE_GRANT_TYPE
     try:
-        oidc_dict = __get_init_oidc_client(token_object=subject_token_object, token_type="subject_token")
+        oidc_dict = __get_init_oidc_client(token_object=subject_token_object, token_type="subject_token")  # noqa: S106
         oidc_client = oidc_dict['client']
         args = {"subject_token": subject_token_object.token,
                 "scope": jwt_row_dict['authz_scope'],
@@ -828,21 +993,28 @@ def __change_refresh_state(token: str, refresh: bool = False, *, session: "Sessi
     :param token:      the access token for which the refresh value should be changed.
     """
     try:
+        query = update(
+            models.Token
+        ).where(
+            models.Token.token == token
+        )
         if refresh:
             # update refresh column for a token to True
-            session.query(models.Token).filter(models.Token.token == token)\
-                                       .update({models.Token.refresh: True})
+            query = query.values({
+                models.Token.refresh: True
+            })
         else:
-            session.query(models.Token).filter(models.Token.token == token)\
-                                       .update({models.Token.refresh: False,
-                                                models.Token.refresh_expired_at: datetime.utcnow()})
-        session.commit()
+            query = query.values({
+                models.Token.refresh: False,
+                models.Token.refresh_expired_at: datetime.utcnow()
+            })
+        session.execute(query)
     except Exception as error:
         raise RucioException(error.args) from error
 
 
 @transactional_session
-def refresh_cli_auth_token(token_string: str, account: str, *, session: "Session"):
+def refresh_cli_auth_token(token_string: str, account: str, *, session: "Session") -> Optional[tuple[str, int]]:
     """
     Checks if there is active refresh token and if so returns
     either active token with expiration timestamp or requests a new
@@ -853,11 +1025,16 @@ def refresh_cli_auth_token(token_string: str, account: str, *, session: "Session
     :return: tuple of (access token, expiration epoch), None otherswise
     """
     # only validated tokens are in the DB, check presence of token_string
-    account_token = session.query(models.Token) \
-                           .filter(models.Token.token == token_string,
-                                   models.Token.account == account,
-                                   models.Token.expired_at > datetime.utcnow()) \
-                           .with_for_update(skip_locked=True).first()
+    query = select(
+        models.Token
+    ).where(
+        models.Token.token == token_string,
+        models.Token.account == account,
+        models.Token.expired_at > datetime.utcnow()
+    ).with_for_update(
+        skip_locked=True
+    )
+    account_token = session.execute(query).scalar()
 
     # if token does not exist in the DB, return None
     if account_token is None:
@@ -889,12 +1066,17 @@ def refresh_cli_auth_token(token_string: str, account: str, *, session: "Session
     else:
         # find account token with the same scope,
         # audience and has a valid refresh token
-        new_token = session.query(models.Token) \
-                           .filter(models.Token.refresh == true(),
-                                   models.Token.refresh_expired_at > datetime.utcnow(),
-                                   models.Token.account == account,
-                                   models.Token.expired_at > datetime.utcnow()) \
-                           .with_for_update(skip_locked=True).first()
+        query = select(
+            models.Token
+        ).where(
+            models.Token.refresh == true(),
+            models.Token.refresh_expired_at > datetime.utcnow(),
+            models.Token.account == account,
+            models.Token.expired_at > datetime.utcnow()
+        ).with_for_update(
+            skip_locked=True
+        )
+        new_token = session.execute(query).scalar()
         if new_token is None:
             return None
 
@@ -927,22 +1109,31 @@ def refresh_jwt_tokens(total_workers: int, worker_number: int, refreshrate: int 
     try:
         # get tokens for refresh that expire in the next <refreshrate> seconds
         expiration_future = datetime.utcnow() + timedelta(seconds=refreshrate)
-        query = session.query(models.Token.token) \
-                       .filter(and_(models.Token.refresh == true(),
-                                    models.Token.refresh_expired_at > datetime.utcnow(),
-                                    models.Token.expired_at < expiration_future))\
-                       .order_by(models.Token.expired_at)
+        query = select(
+            models.Token
+        ).where(
+            models.Token.refresh == true(),
+            models.Token.refresh_expired_at > datetime.utcnow(),
+            models.Token.expired_at < expiration_future
+        ).order_by(
+            models.Token.expired_at
+        )
         query = filter_thread_work(session=session, query=query, total_threads=total_workers, thread_id=worker_number, hash_variable='token')
-
         # limiting the number of tokens for refresh
         query = query.limit(limit)
-        filtered_tokens = []
-        for items in session.execute(query).partitions(10):
-            tokens = tuple(map(lambda row: row.token, items))
-            filtered_tokens += session.query(models.Token) \
-                                      .filter(models.Token.token.in_(tokens)) \
-                                      .with_for_update(skip_locked=True) \
-                                      .all()
+        # Oracle does not support chaining order_by(), limit(), and
+        # with_for_update(). Use a nested query to overcome this.
+        if session.bind.dialect.name == 'oracle':
+            query = select(
+                models.Token
+            ).where(
+                models.Token.token.in_(query.with_only_columns(models.Token.token))
+            ).with_for_update(
+                skip_locked=True
+            )
+        else:
+            query = query.with_for_update(skip_locked=True)
+        filtered_tokens = session.execute(query).scalars().all()
 
         # refreshing these tokens
         for token in filtered_tokens:
@@ -989,7 +1180,7 @@ def __refresh_token_oidc(token_object: models.Token, *, session: "Session"):
         if datetime.utcnow() - extra_dict['refresh_start'] > timedelta(hours=extra_dict['refresh_lifetime']):
             __change_refresh_state(token_object.token, refresh=False, session=session)
             return None
-        oidc_dict = __get_init_oidc_client(token_object=token_object, token_type="refresh_token")
+        oidc_dict = __get_init_oidc_client(token_object=token_object, token_type="refresh_token")  # noqa: S106
         oidc_client = oidc_dict['client']
         # getting a new refreshed set of tokens
         state = oidc_dict['state']
@@ -1049,20 +1240,37 @@ def delete_expired_oauthrequests(total_workers: int, worker_number: int, limit: 
 
     try:
         # get expired OAuth request parameters
-        query = session.query(models.OAuthRequest.state).filter(models.OAuthRequest.expired_at < datetime.utcnow())\
-                       .order_by(models.OAuthRequest.expired_at)
-
+        query = select(
+            models.OAuthRequest.state
+        ).where(
+            models.OAuthRequest.expired_at < datetime.utcnow()
+        ).order_by(
+            models.OAuthRequest.expired_at
+        )
         query = filter_thread_work(session=session, query=query, total_threads=total_workers, thread_id=worker_number, hash_variable='state')
-
         # limiting the number of oauth requests deleted at once
         query = query.limit(limit)
+        # Oracle does not support chaining order_by(), limit(), and
+        # with_for_update(). Use a nested query to overcome this.
+        if session.bind.dialect.name == 'oracle':
+            query = select(
+                models.OAuthRequest.state
+            ).where(
+                models.OAuthRequest.state.in_(query)
+            ).with_for_update(
+                skip_locked=True
+            )
+        else:
+            query = query.with_for_update(skip_locked=True)
+
         ndeleted = 0
-        for items in session.execute(query).partitions(10):
-            states = tuple(map(lambda row: row.state, items))
-            ndeleted += session.query(models.OAuthRequest) \
-                               .filter(models.OAuthRequest.state.in_(states)) \
-                               .with_for_update(skip_locked=True) \
-                               .delete(synchronize_session='fetch')
+        for states in session.execute(query).scalars().partitions(10):
+            query = delete(
+                models.OAuthRequest
+            ).where(
+                models.OAuthRequest.state.in_(states)
+            )
+            ndeleted += session.execute(query).rowcount
         return ndeleted
     except Exception as error:
         raise RucioException(error.args) from error
@@ -1084,7 +1292,7 @@ def __get_keyvalues_from_claims(token: str, keys=None):
         for key in keys:
             value = ''
             if key in claims:
-                value = val_to_space_sep_str(claims[key])
+                value = val_to_space_sep_str(claims[key])  # type: ignore
             resdict[key] = value
         return resdict
     except Exception as error:
@@ -1170,7 +1378,7 @@ def __save_validated_token(token, valid_dict, extra_dict=None, *, session: "Sess
 
 
 @transactional_session
-def validate_jwt(json_web_token: str, *, session: "Session") -> "Dict[str, Any]":
+def validate_jwt(json_web_token: str, *, session: "Session") -> dict[str, Any]:
     """
     Verifies signature and validity of a JSON Web Token.
     Gets the issuer public keys from the oidc_client
@@ -1197,7 +1405,7 @@ def validate_jwt(json_web_token: str, *, session: "Session") -> "Dict[str, Any]"
     try:
 
         # getting issuer from the token payload
-        token_dict: "Optional[Dict[str, Any]]" = __get_rucio_jwt_dict(json_web_token, session=session)
+        token_dict: Optional[dict[str, Any]] = __get_rucio_jwt_dict(json_web_token, session=session)
         if not token_dict:
             raise CannotAuthenticate(traceback.format_exc())
         issuer = token_dict['identity'].split(", ")[1].split("=")[1]
@@ -1208,7 +1416,7 @@ def validate_jwt(json_web_token: str, *, session: "Session") -> "Dict[str, Any]"
         # try to get it from IdP introspection endpoint
         # TO-BE-REMOVED - once all IdPs support scope and audience in token claims !!!
         if not token_dict['authz_scope'] or not token_dict['audience']:
-            clprocess = subprocess.Popen(['curl', '-s', '-L', '-u', '%s:%s'
+            clprocess = subprocess.Popen(['curl', '-s', '-L', '-u', '%s:%s'  # noqa: S607
                                           % (oidc_client.client_id, oidc_client.client_secret),
                                           '-d', 'token=%s' % (json_web_token),
                                           oidc_client.introspection_endpoint],

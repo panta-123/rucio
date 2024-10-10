@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,16 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-import traceback
-import json
 import argparse
-import logging
-import functools
 import configparser
-from pathlib import Path
+import functools
 import glob
 import itertools
+import json
+import logging
+import sys
+import traceback
+from pathlib import Path
+
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def validate(func):
     """
-    A decorator to validate vo-specific sections contained in matrix_policy_package_testss.yaml
+    A decorator to validate vo-specific sections contained in matrix_policy_package_tests.yaml
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -94,7 +94,7 @@ def persist_config_overrides(data: dict, vo: str, rucio_cfg: Path):
 
 def collect_tests(data: dict, vo: str):
     keyword_path_mapping = {
-        Path("rucio_tests"): Path("lib/rucio/tests"),
+        Path("rucio_tests"): Path("tests/"),
         Path("rucio_root"): Path("/opt/rucio"),
     }
     substitute_keywords = functools.partial(functools.reduce, lambda path, part: path / keyword_path_mapping[part] if part in keyword_path_mapping.keys() else path / part)

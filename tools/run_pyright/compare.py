@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from argparse import ArgumentParser, Namespace
 from collections import Counter
 from pathlib import Path
-from typing import List, Tuple
+from typing import TYPE_CHECKING
 
 from .models import Report, ReportDiagnostic, ReportDiagnosticWithoutRange, Severity
 from .utils import group_by, load_json
 
+if TYPE_CHECKING:
+    from argparse import ArgumentParser, Namespace
 
-def setup_parser(parser: ArgumentParser) -> None:
+
+def setup_parser(parser: 'ArgumentParser') -> None:
     parser.description = """
     Compares two Pyright reports and outputs newly introduced warnings and errors.
 
@@ -35,7 +36,7 @@ def setup_parser(parser: ArgumentParser) -> None:
     parser.set_defaults(func=compare)
 
 
-def compare(args: Namespace) -> int:
+def compare(args: 'Namespace') -> int:
     """Compares two reports to find new warnings and errors."""
     old_report = Report.from_dict(load_json(args.old))
     new_report = Report.from_dict(load_json(args.new))
@@ -73,7 +74,7 @@ def _indent(text: str, prefix: str) -> str:
     return text.replace('\n', '\n' + prefix)
 
 
-def print_regressions(collection: List[Tuple[ReportDiagnosticWithoutRange, int]], report: Report) -> None:
+def print_regressions(collection: list[tuple[ReportDiagnosticWithoutRange, int]], report: Report) -> None:
     """Takes the output of `_compare_reports` and prints it in a human-readable way."""
     all_problems = group_by(report.diagnostics, key=lambda elem: elem.without_range())
     diagnostics_by_file = group_by(collection, key=lambda elem: elem[0].file)
@@ -82,7 +83,7 @@ def print_regressions(collection: List[Tuple[ReportDiagnosticWithoutRange, int]]
         num_diagnostics = sum(count for _, count in diagnostics)
         print(f'Found {num_diagnostics} new problems in {file}')
         for diagnostic, count in diagnostics:
-            candidate_line_list: List[str] = []
+            candidate_line_list: list[str] = []
             for candidate in all_problems.get(diagnostic, []):
                 if candidate.range_start_line == candidate.range_end_line:
                     candidate_line_list.append(f'{candidate.range_start_line+1}')

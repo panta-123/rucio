@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +17,10 @@ import warnings
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import List, Dict, Any
+    from typing import Any
 
 
-def import_extras(module_list):
-    # type: (List[str]) -> Dict[str, Any]
+def import_extras(module_list: list[str]) -> "dict[str, Any]":
     out = dict()
     for mod in module_list:
         out[mod] = None

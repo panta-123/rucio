@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,15 +14,14 @@
 
 import os
 import sys
-from typing import Optional, Tuple
-from dataclasses import dataclass
-
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import Any, Optional
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
-from urllib.parse import urlparse
 
 from rucio.common import exception
 from rucio.rse.protocols import protocol
@@ -41,7 +39,7 @@ class TLSHTTPAdapter(HTTPAdapter):
                                        ca_cert_dir="/etc/grid-security/certificates")
 
 
-class UploadInChunks(object):
+class UploadInChunks:
     '''
     Class to upload by chunks.
     '''
@@ -74,7 +72,7 @@ class UploadInChunks(object):
         return self.__totalsize
 
 
-class IterableToFileAdapter(object):
+class IterableToFileAdapter:
     '''
     Class IterableToFileAdapter
     '''
@@ -120,7 +118,7 @@ class _PropfindFile:
 class _PropfindResponse:
     """Contains all the files from a PROPFIND response."""
 
-    files: Tuple[_PropfindFile]
+    files: tuple[_PropfindFile]
 
     @classmethod
     def parse(cls, document: str):
@@ -135,7 +133,7 @@ class _PropfindResponse:
         """
 
         try:
-            xml = ET.fromstring(document)
+            xml = ET.fromstring(document)  # noqa: S314
         except ET.ParseError as ex:
             raise ValueError("Couldn't parse XML document") from ex
 
@@ -153,7 +151,7 @@ class Default(protocol.RSEProtocol):
 
     """ Implementing access to RSEs using the webDAV protocol."""
 
-    def connect(self, credentials={}):
+    def connect(self, credentials: Optional[dict[str, Any]] = None) -> None:
         """ Establishes the actual connection to the referred RSE.
 
             :param credentials: Provides information to establish a connection
@@ -162,6 +160,7 @@ class Default(protocol.RSEProtocol):
 
             :raises RSEAccessDenied
         """
+        credentials = credentials or {}
         try:
             parse_url = urlparse(self.path2pfn(''))
             self.server = f'{parse_url.scheme}://{parse_url.netloc}'
@@ -186,12 +185,15 @@ class Default(protocol.RSEProtocol):
                 # Trying to get the proxy from the default location
                 proxy_path = '/tmp/x509up_u%s' % os.geteuid()
                 if os.path.isfile(proxy_path):
-                    x509 = proxy_path
+                    self.cert = (proxy_path, proxy_path)
                 elif self.auth_token:
+                    # If no proxy is found, we set the cert to None and use the auth_token
+                    self.cert = None
                     pass
                 else:
                     raise exception.RSEAccessDenied('X509_USER_PROXY is not set')
-            self.cert = (x509, x509)
+            else:
+                self.cert = (x509, x509)
 
         try:
             self.timeout = credentials['timeout']
@@ -333,13 +335,13 @@ class Default(protocol.RSEProtocol):
                         raise exception.RucioException(result.status_code, result.text)
                 except requests.exceptions.ConnectionError as error:
                     raise exception.ServiceUnavailable(error)
-                except IOError as error:
+                except OSError as error:
                     raise exception.SourceNotFound(error)
         except requests.exceptions.ConnectionError as error:
             raise exception.ServiceUnavailable(error)
         except requests.exceptions.ReadTimeout as error:
             raise exception.ServiceUnavailable(error)
-        except IOError as error:
+        except OSError as error:
             raise exception.SourceNotFound(error)
 
     def rename(self, pfn, new_pfn):
@@ -480,11 +482,11 @@ class Default(protocol.RSEProtocol):
 
             :param path: path to file
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
             :raises RSEAccessDenied: in case of permission issue.
 
-            :returns: a dict with two keys, filesize and adler32 of the file provided in path.
+            :returns: a dict with filesize of the file provided in path as a key.
         """
         headers = {'Depth': '1'}
         dict_ = {}
@@ -529,13 +531,13 @@ class Default(protocol.RSEProtocol):
 
         :returns: a list with dict containing 'totalsize' and 'unusedsize'
 
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         """
         endpoint_basepath = self.path2pfn('')
         headers = {'Depth': '0'}
 
         try:
-            root = ET.fromstring(self.session.request('PROPFIND', endpoint_basepath, verify=False, headers=headers, cert=self.session.cert).text)
+            root = ET.fromstring(self.session.request('PROPFIND', endpoint_basepath, verify=False, headers=headers, cert=self.session.cert).text)  # noqa: S314
             usedsize = root[0][1][0].find('{DAV:}quota-used-bytes').text
             try:
                 unusedsize = root[0][1][0].find('{DAV:}quota-available-bytes').text

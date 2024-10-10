@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,20 +13,23 @@
 # limitations under the License.
 
 from json import dumps
+from typing import TYPE_CHECKING
 
-from flask import Flask, request
+from flask import Flask, Response, request
 
-from rucio.api.did import list_archive_content
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    parse_scope_name, try_stream, generate_http_error_flask, ErrorHandlingMethodView
+from rucio.gateway.did import list_archive_content
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, parse_scope_name, response_headers, try_stream
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class Archive(ErrorHandlingMethodView):
     """ REST APIs for archive. """
 
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self, scope_name):
+    def get(self, scope_name: str) -> Response:
         """
         ---
         summary: List
@@ -74,16 +76,16 @@ class Archive(ErrorHandlingMethodView):
         try:
             scope, name = parse_scope_name(scope_name, request.environ.get('vo'))
 
-            def generate(vo):
+            def generate(vo: str) -> 'Iterator[str]':
                 for file in list_archive_content(scope=scope, name=name, vo=vo):
                     yield dumps(file) + '\n'
 
-            return try_stream(generate(vo=request.environ.get('vo')))
+            return try_stream(generate(vo=request.environ.get('vo', 'def')))
         except ValueError as error:
             return generate_http_error_flask(400, error)
 
 
-def blueprint():
+def blueprint() -> AuthenticatedBlueprint:
     bp = AuthenticatedBlueprint('archives', __name__, url_prefix='/archives')
 
     archive_view = Archive.as_view('archive')
@@ -93,7 +95,7 @@ def blueprint():
     return bp
 
 
-def make_doc():
+def make_doc() -> Flask:
     """ Only used for sphinx documentation """
     doc_app = Flask(__name__)
     doc_app.register_blueprint(blueprint())

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,32 +23,38 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from random import randint
 from re import match
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy.exc import DatabaseError
 
 import rucio.db.sqla.util
+from rucio.common.exception import DatabaseException, InsufficientAccountLimit, ReplicationRuleCreationTemporaryFailed, RSEWriteBlocked, RuleNotFound
 from rucio.common.logging import setup_logging
-from rucio.common.exception import (DatabaseException, RuleNotFound, RSEWriteBlocked,
-                                    ReplicationRuleCreationTemporaryFailed, InsufficientAccountLimit)
 from rucio.core.monitor import MetricManager
-from rucio.core.rule import inject_rule, get_injected_rules, update_rule
-from rucio.daemons.common import run_daemon
+from rucio.core.rule import get_injected_rules, inject_rule, update_rule
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+from rucio.db.sqla.constants import ORACLE_CONNECTION_LOST_CONTACT_REGEX, ORACLE_RESOURCE_BUSY_REGEX
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 METRICS = MetricManager(module=__name__)
 graceful_stop = threading.Event()
+DAEMON_NAME = 'judge-injector'
 
 
-def rule_injector(once=False, sleep_time=60):
+def rule_injector(
+        once: bool = False,
+        sleep_time: int = 60
+) -> None:
     """
     Main loop to check for asynchronous creation of replication rules
     """
-    executable = 'judge-injector'
     paused_rules = {}  # {rule_id: datetime}
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable=executable,
-        logger_prefix=executable,
+        executable=DAEMON_NAME,
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -59,7 +64,11 @@ def rule_injector(once=False, sleep_time=60):
     )
 
 
-def run_once(paused_rules, heartbeat_handler, **_kwargs):
+def run_once(
+        paused_rules: dict[str, datetime],
+        heartbeat_handler: HeartbeatHandler,
+        **_kwargs
+) -> None:
     worker_number, total_workers, logger = heartbeat_handler.live()
 
     start = time.time()
@@ -80,9 +89,8 @@ def run_once(paused_rules, heartbeat_handler, **_kwargs):
         logger(logging.DEBUG, 'did not get any work (paused_rules=%s)' % str(len(paused_rules)))
         return
 
-    for rule in rules:
+    for rule_id in rules:
         _, _, logger = heartbeat_handler.live()
-        rule_id = rule[0]
         logger(logging.INFO, 'Injecting rule %s' % rule_id)
         if graceful_stop.is_set():
             break
@@ -91,25 +99,25 @@ def run_once(paused_rules, heartbeat_handler, **_kwargs):
             inject_rule(rule_id=rule_id, logger=logger)
             logger(logging.DEBUG, 'injection of %s took %f' % (rule_id, time.time() - start))
         except (DatabaseException, DatabaseError) as e:
-            if match('.*ORA-00054.*', str(e.args[0])):
-                paused_rules[rule_id] = datetime.utcnow() + timedelta(seconds=randint(60, 600))
+            if match(ORACLE_RESOURCE_BUSY_REGEX, str(e.args[0])):
+                paused_rules[rule_id] = datetime.utcnow() + timedelta(seconds=randint(60, 600))  # noqa: S311
                 METRICS.counter('exceptions.{exception}').labels(exception='LocksDetected').inc()
                 logger(logging.WARNING, 'Locks detected for %s' % rule_id)
             elif match('.*QueuePool.*', str(e.args[0])):
                 logger(logging.WARNING, 'DatabaseException', exc_info=True)
                 METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
-            elif match('.*ORA-03135.*', str(e.args[0])):
+            elif match(ORACLE_CONNECTION_LOST_CONTACT_REGEX, str(e.args[0])):
                 logger(logging.WARNING, 'DatabaseException', exc_info=True)
                 METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
             else:
                 logger(logging.ERROR, 'DatabaseException', exc_info=True)
                 METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
         except (RSEWriteBlocked) as e:
-            paused_rules[rule_id] = datetime.utcnow() + timedelta(seconds=randint(60, 600))
+            paused_rules[rule_id] = datetime.utcnow() + timedelta(seconds=randint(60, 600))  # noqa: S311
             logger(logging.WARNING, 'RSEWriteBlocked for rule %s' % rule_id)
             METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
         except ReplicationRuleCreationTemporaryFailed as e:
-            paused_rules[rule_id] = datetime.utcnow() + timedelta(seconds=randint(60, 600))
+            paused_rules[rule_id] = datetime.utcnow() + timedelta(seconds=randint(60, 600))  # noqa: S311
             logger(logging.WARNING, 'ReplicationRuleCreationTemporaryFailed for rule %s' % rule_id)
             METRICS.counter('exceptions.{exception}').labels(exception=e.__class__.__name__).inc()
         except RuleNotFound:
@@ -121,7 +129,7 @@ def run_once(paused_rules, heartbeat_handler, **_kwargs):
             update_rule(rule_id=rule_id, options={'state': 'SUSPENDED'})
 
 
-def stop(signum=None, frame=None):
+def stop(signum: Optional[int] = None, frame: Optional["FrameType"] = None) -> None:
     """
     Graceful exit.
     """
@@ -129,11 +137,15 @@ def stop(signum=None, frame=None):
     graceful_stop.set()
 
 
-def run(once=False, threads=1, sleep_time=60):
+def run(
+        once: bool = False,
+        threads: int = 1,
+        sleep_time: int = 60
+) -> None:
     """
     Starts up the Judge-Injector threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise DatabaseException('Database was not updated, daemon won\'t start')
@@ -142,9 +154,9 @@ def run(once=False, threads=1, sleep_time=60):
         rule_injector(once)
     else:
         logging.info('Injector starting %s threads' % str(threads))
-        threads = [threading.Thread(target=rule_injector, kwargs={'once': once,
-                                                                  'sleep_time': sleep_time}) for i in range(0, threads)]
-        [t.start() for t in threads]
+        thread_list = [threading.Thread(target=rule_injector, kwargs={'once': once,
+                                                                      'sleep_time': sleep_time}) for i in range(0, threads)]
+        [t.start() for t in thread_list]
         # Interruptible joins require a timeout.
-        while threads[0].is_alive():
-            [t.join(timeout=3.14) for t in threads]
+        while thread_list[0].is_alive():
+            [t.join(timeout=3.14) for t in thread_list]

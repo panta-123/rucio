@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,15 +16,15 @@
 This script is to be used to background rebalance ATLAS t2 datadisks
 """
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_, select
 
+from rucio.common.constants import RseAttr
+from rucio.core.rse import get_rse_attribute, get_rse_usage
 from rucio.core.rse_expression_parser import parse_expression
-from rucio.core.rse import get_rse_usage, get_rse_attribute
 from rucio.daemons.bb8.common import rebalance_rse
 from rucio.db.sqla import models
-from rucio.db.sqla.session import get_session
 from rucio.db.sqla.constants import RuleState
-
+from rucio.db.sqla.session import get_session
 
 tolerance = 0.15
 max_total_rebalance_volume = 200 * 1E12
@@ -35,7 +34,7 @@ total_rebalance_volume = 0
 
 
 # groupdisks
-def group_space(site):
+def group_space(site: str) -> int:
     """
     groupdisks of given site
     contributing to primaries
@@ -61,7 +60,7 @@ total_secondary = 0
 total_total = 0
 global_ratio = float(0)
 for rse in rses:
-    site_name = get_rse_attribute(rse['id'], 'site')
+    site_name = get_rse_attribute(rse['id'], RseAttr.SITE)
     rse['groupdisk'] = group_space(site_name)
     rse['primary'] = get_rse_usage(rse_id=rse['id'], source='rucio')[0]['used'] - get_rse_usage(rse_id=rse['id'], source='expired')[0]['used']
     rse['primary'] += rse['groupdisk']
@@ -82,12 +81,18 @@ rses_over_ratio = sorted([rse for rse in rses if rse['ratio'] > global_ratio + g
 rses_under_ratio = sorted([rse for rse in rses if rse['ratio'] < global_ratio - global_ratio * tolerance], key=lambda k: k['ratio'], reverse=False)
 
 session = get_session()
-active_rses = session.query(models.ReplicationRule.rse_expression).filter(or_(models.ReplicationRule.state == RuleState.REPLICATING, models.ReplicationRule.state == RuleState.STUCK),
-                                                                          models.ReplicationRule.comments == 'T2 Background rebalancing').group_by(models.ReplicationRule.rse_expression).all()
-
+stmt = select(
+    models.ReplicationRule.rse_expression
+).where(
+    and_(or_(models.ReplicationRule.state == RuleState.REPLICATING,
+             models.ReplicationRule.state == RuleState.STUCK),
+         models.ReplicationRule.comments == 'T2 Background rebalancing')
+).group_by(
+    models.ReplicationRule.rse_expression
+)
 # Excluding RSEs
 print('Excluding RSEs as destination which have active Background Rebalancing rules:')
-for rse in active_rses:
+for rse in session.execute(stmt).all():
     print('  %s' % (rse[0]))
     for des in rses_under_ratio:
         des_as_expr = des['rse']

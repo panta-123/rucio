@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +13,11 @@
 # limitations under the License.
 
 from json import loads
-
-from requests.status_codes import codes
 from urllib.parse import quote_plus
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from requests.status_codes import codes
+
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url
 
 
@@ -29,7 +27,11 @@ class ScopeClient(BaseClient):
 
     SCOPE_BASEURL = 'accounts'
 
-    def add_scope(self, account, scope):
+    def add_scope(
+            self,
+            account: str,
+            scope: str
+    ) -> bool:
         """
         Sends the request to add a new scope.
 
@@ -49,7 +51,7 @@ class ScopeClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def list_scopes(self):
+    def list_scopes(self) -> list[str]:
         """
         Sends the request to list all scopes.
 
@@ -66,7 +68,7 @@ class ScopeClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def list_scopes_for_account(self, account):
+    def list_scopes_for_account(self, account: str) -> list[str]:
         """
         Sends the request to list all scopes for a rucio account.
 

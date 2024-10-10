@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,15 +16,12 @@ from json import dumps
 
 from flask import Flask, Response, request
 
-from rucio.api.rule import list_replication_rules
-from rucio.api.subscription import list_subscriptions, add_subscription, update_subscription, \
-    list_subscription_rule_states, get_subscription_by_id
-from rucio.common.exception import InvalidObject, SubscriptionDuplicate, SubscriptionNotFound, RuleNotFound, \
-    AccessDenied
-from rucio.common.utils import render_json, APIEncoder
-from rucio.web.rest.flaskapi.v1.common import check_accept_header_wrapper_flask, try_stream, \
-    response_headers, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
+from rucio.common.exception import AccessDenied, InvalidObject, RuleNotFound, SubscriptionDuplicate, SubscriptionNotFound
+from rucio.common.utils import APIEncoder, render_json
+from rucio.gateway.rule import list_replication_rules
+from rucio.gateway.subscription import add_subscription, get_subscription_by_id, list_subscription_rule_states, list_subscriptions, update_subscription
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, response_headers, try_stream
 
 
 class Subscription(ErrorHandlingMethodView):
@@ -151,7 +147,7 @@ class Subscription(ErrorHandlingMethodView):
                   - options
                 properties:
                   options:
-                    description: The values for the new subcription.
+                    description: The values for the new subscription.
                     type: object
                     properties:
                       filter:
@@ -168,7 +164,7 @@ class Subscription(ErrorHandlingMethodView):
                         type: string
                         format: date-time
                       retroactive:
-                        description: If the retroactive is actiavted for a subscription.
+                        description: If the retroactive is activated for a subscription.
                         type: boolean
                       priority:
                         description: The priority/policyid for the subscription. Stored as policyid.
@@ -238,7 +234,7 @@ class Subscription(ErrorHandlingMethodView):
                   - options
                 properties:
                   options:
-                    description: The values for the new subcription.
+                    description: The values for the new subscription.
                     type: object
                     required:
                       - filter
@@ -261,7 +257,7 @@ class Subscription(ErrorHandlingMethodView):
                         type: string
                         format: date-time
                       retroactive:
-                        description: If the retroactive is actiavted for a subscription.
+                        description: If the retroactive is activated for a subscription.
                         type: boolean
                       priority:
                         description: The priority/policyid for the subscription. Stored as policyid.
@@ -530,7 +526,7 @@ class States(ErrorHandlingMethodView):
             description: Not acceptable
         """
         def generate(vo):
-            for row in list_subscription_rule_states(account=account, vo=vo):
+            for row in list_subscription_rule_states(name=name, account=account, vo=vo):
                 yield dumps(row, cls=APIEncoder) + '\n'
 
         return try_stream(generate(vo=request.environ.get('vo')))
@@ -622,17 +618,25 @@ def blueprint():
     bp = AuthenticatedBlueprint('subscriptions', __name__, url_prefix='/subscriptions')
 
     subscription_id_view = SubscriptionId.as_view('subscription_id')
-    bp.add_url_rule('/Id/<subscription_id>', view_func=subscription_id_view, methods=['get', ])
+    bp.add_url_rule('/id/<subscription_id>', view_func=subscription_id_view, methods=['get', ])
     states_view = States.as_view('states')
-    bp.add_url_rule('/<account>/<name>/Rules/States', view_func=states_view, methods=['get', ])
-    bp.add_url_rule('/<account>/Rules/States', view_func=states_view, methods=['get', ])
+    bp.add_url_rule('/<account>/<name>/rules/states', view_func=states_view, methods=['get', ])
+    bp.add_url_rule('/<account>/rules/states', view_func=states_view, methods=['get', ])
     rules_view = Rules.as_view('rules')
-    bp.add_url_rule('/<account>/<name>/Rules', view_func=rules_view, methods=['get', ])
+    bp.add_url_rule('/<account>/<name>/rules', view_func=rules_view, methods=['get', ])
     subscription_view = Subscription.as_view('subscription')
     bp.add_url_rule('/<account>/<name>', view_func=subscription_view, methods=['get', 'post', 'put'])
     bp.add_url_rule('/<account>', view_func=subscription_view, methods=['get', ])
     bp.add_url_rule('/', view_func=subscription_view, methods=['get', ])
     subscription_name_view = SubscriptionName.as_view('subscription_name')
+    bp.add_url_rule('/name/<name>', view_func=subscription_name_view, methods=['get', ])
+
+    # Legacy url support
+    # TODO: Take out with Rucio 38
+    bp.add_url_rule('/Id/<subscription_id>', view_func=subscription_id_view, methods=['get', ])
+    bp.add_url_rule('/<account>/<name>/Rules/States', view_func=states_view, methods=['get', ])
+    bp.add_url_rule('/<account>/Rules/States', view_func=states_view, methods=['get', ])
+    bp.add_url_rule('/<account>/<name>/Rules', view_func=rules_view, methods=['get', ])
     bp.add_url_rule('/Name/<name>', view_func=subscription_name_view, methods=['get', ])
 
     bp.after_request(response_headers)

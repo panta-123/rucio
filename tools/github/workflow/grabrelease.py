@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,12 +16,11 @@
 import itertools
 import json
 import sys
-from typing import List
 
 from util import all_branches
 
 
-def branches_to_add() -> "List[str]":
+def branches_to_add() -> list[str]:
     add_branches = []
     idx = 0
     while True:

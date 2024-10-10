@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -68,7 +67,7 @@ $ id0=`uuidgen`
 $ id1=`uuidgen`
 $ id2=`uuidgen`
 $ id3=`uuidgen`
-$ echo "file available on MOCK_RECOVERY and decalred suspicious on MOCK_SUSPICIOUS  (11 times)" > /tmp/file_available_suspicious'_'$id1
+$ echo "file available on MOCK_RECOVERY and declared suspicious on MOCK_SUSPICIOUS  (11 times)" > /tmp/file_available_suspicious'_'$id1
 $ echo "file available on MOCK_RECOVERY and declared suspicious on MOCK_SUSPICIOUS  (11 times) and 1 time bad/deleted/lost on MOCK_SUSPICIOUS" > /tmp/file_available_suspicious_and_bad'_'$id2
 $ echo "file declared as unavailable on MOCK_RECOVERY and declared as suspicious 11 times on MOCK_SUSPICIOUS" > /tmp/file_notavailable_suspicious'_'$id3
 
@@ -165,12 +164,12 @@ $$ from rucio.core.replica import list_bad_replicas_status
 
 $$ get_suspicious_files('MOCK_SUSPICIOUS',from_date,10)
 
-[{'created_at': datetime.datetime(2019, 2, 19, 14, 12, 56), 'scope': u'mock', 'cnt': 11L, 'name': u'file_notavailable_suspicious_6157f589-80db-492c-acdd-ef5f0c45112f', 'rse': u'MOCK_SUSPICIOUS'},
- {'created_at': datetime.datetime(2019, 2, 19, 14, 12, 48), 'scope': u'mock', 'cnt': 11L, 'name': u'file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e', 'rse': u'MOCK_SUSPICIOUS'}]
+[{'created_at': datetime.datetime(2019, 2, 19, 14, 12, 56), 'scope': 'mock', 'cnt': 11L, 'name': 'file_notavailable_suspicious_6157f589-80db-492c-acdd-ef5f0c45112f', 'rse': 'MOCK_SUSPICIOUS'},
+ {'created_at': datetime.datetime(2019, 2, 19, 14, 12, 48), 'scope': 'mock', 'cnt': 11L, 'name': 'file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e', 'rse': 'MOCK_SUSPICIOUS'}]
 
 $$ list_bad_replicas_status(rse='MOCK_SUSPICIOUS', younger_than=from_date)
 
-[{'name': u'file_available_suspicious_and_bad_46964411-95d4-46c4-a973-72c045195835', 'rse': u'MOCK_SUSPICIOUS', 'created_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'updated_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'state': BAD, 'scope': u'mock'}]
+[{'name': 'file_available_suspicious_and_bad_46964411-95d4-46c4-a973-72c045195835', 'rse': 'MOCK_SUSPICIOUS', 'created_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'updated_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'state': BAD, 'scope': 'mock'}]
 
 $$ exit()
 
@@ -183,10 +182,10 @@ Terminal output:
 ----------------
 
 2019-02-19 14:39:24,114 709 INFO  replica_recoverer[0/0]: ready to query replicas at RSEs like *MOCK*, declared as suspicious in the last 3 days at least 10 times and which are available on other RSEs.
-2019-02-19 14:39:24,124 709 INFO  replica_recoverer[0/0]: suspicious replica query took 0.0101511478424 seconds, total of 1 replicas were found. [{'scope': u'mock', 'cnt': 11L, 'name': u'file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e', 'rse': u'MOCK_SUSPICIOUS'}]
-2019-02-19 14:39:24,125 709 INFO  replica_recoverer[0/0]: looking for replica surls.
-2019-02-19 14:39:24,160 709 INFO  replica_recoverer[0/0]: found 1/1 surls (took 0.035572052002 seconds) - declaring them as bad replicas now.
-2019-02-19 14:39:24,160 709 INFO  replica_recoverer[0/0]: ready to declare 1 bad replica(s) on MOCK_SUSPICIOUS: [u'file://localhost:0/tmp/rucio_rse1/mock/1f/6b/file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e'].
+2019-02-19 14:39:24,124 709 INFO  replica_recoverer[0/0]: suspicious replica query took 0.0101511478424 seconds, total of 1 replicas were found. [{'scope': 'mock', 'cnt': 11L, 'name': 'file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e', 'rse': 'MOCK_SUSPICIOUS'}]
+2019-02-19 14:39:24,125 709 INFO  replica_recoverer[0/0]: looking for replica pfns.
+2019-02-19 14:39:24,160 709 INFO  replica_recoverer[0/0]: found 1/1 pfns (took 0.035572052002 seconds) - declaring them as bad replicas now.
+2019-02-19 14:39:24,160 709 INFO  replica_recoverer[0/0]: ready to declare 1 bad replica(s) on MOCK_SUSPICIOUS: ['file://localhost:0/tmp/rucio_rse1/mock/1f/6b/file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e'].
 2019-02-19 14:39:24,188 709 INFO  replica_recoverer[0/0]: finished declaring bad replicas on MOCK_SUSPICIOUS.
 2019-02-19 14:39:24,192 709 INFO  replica_recoverer[0/0]: graceful stop done
 
@@ -208,8 +207,8 @@ $$ get_suspicious_files('MOCK_SUSPICIOUS',younger_than=from_date, nattempts=10, 
 
 $$ list_bad_replicas_status(rse='MOCK_SUSPICIOUS', younger_than=from_date)
 
-[{'name': u'file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e', 'rse': u'MOCK_SUSPICIOUS', 'created_at': datetime.datetime(2019, 2, 19, 14, 39, 24), 'updated_at': datetime.datetime(2019, 2, 19, 14, 39, 24), 'state': BAD, 'scope': u'mock'},
- {'name': u'file_available_suspicious_and_bad_46964411-95d4-46c4-a973-72c045195835', 'rse': u'MOCK_SUSPICIOUS', 'created_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'updated_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'state': BAD, 'scope': u'mock'}]
+[{'name': 'file_available_suspicious_5180be3e-4ebc-4c34-b528-efbfd09f067e', 'rse': 'MOCK_SUSPICIOUS', 'created_at': datetime.datetime(2019, 2, 19, 14, 39, 24), 'updated_at': datetime.datetime(2019, 2, 19, 14, 39, 24), 'state': BAD, 'scope': 'mock'},
+ {'name': 'file_available_suspicious_and_bad_46964411-95d4-46c4-a973-72c045195835', 'rse': 'MOCK_SUSPICIOUS', 'created_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'updated_at': datetime.datetime(2019, 2, 19, 14, 18, 33), 'state': BAD, 'scope': 'mock'}]
 
 $$ exit()
 
@@ -228,12 +227,13 @@ Note that attempting the use the ``--vos`` argument when in single-VO mode will 
   $ rucio-replica-recoverer --run-once --vos abc xyz
   2020-07-28 15:21:33,349 5488    WARNING Ignoring argument vos, this is only applicable in a multi-VO setup.
 ''', formatter_class=argparse.RawDescriptionHelpFormatter)  # NOQA: E501
-    parser.add_argument("--nattempts", action="store", default=10, help='Minimum count of suspicious file replica appearance in bad_replicas table. Default value is 10.')
-    parser.add_argument("--younger-than", action="store", default=3, help='Consider all file replicas logged in bad_replicas table since speicified number of younger-than days. Default value is 3.')
+    parser.add_argument("--nattempts", action="store", default=5, help='Minimum count of suspicious file replica appearance in bad_replicas table. Default value is 5.')
+    parser.add_argument("--younger-than", action="store", default=5, help='Consider all file replicas logged in bad_replicas table since specified number of younger-than days. Default value is 5.')
     parser.add_argument('--vos', nargs='+', type=str, help='Optional list of VOs to consider. Only used in multi-VO mode.')
     parser.add_argument("--run-once", action="store_true", default=False, help='One iteration only.')
     parser.add_argument("--limit-suspicious-files-on-rse", action="store", default=5, help='Maximum number of suspicious replicas on an RSE before that RSE is considered problematic and the suspicious replicas on that RSE are declared "TEMPORARY_UNAVAILABLE". Default value is 5.')
-    parser.add_argument('--sleep-time', action="store", default=3600, type=int, help='Concurrency control: thread sleep time after each chunk of work')
+    parser.add_argument('--json-file-name', action="store", default="/opt/rucio/etc/suspicious_replica_recoverer.json", type=str, help='Name of the json file that that contains the policies which will be used by the suspicious replica recoverer.')
+    parser.add_argument('--sleep-time', action="store", default=3600, type=int, help='Concurrency control: Thread sleep time after each chunk of work.')
     parser.add_argument('--active-mode', action="store_true", default=False, help='If NOT specified, the daemon will run without taking any actions on any files. In either case, the log file will be produced normally.')
     return parser
 
@@ -243,6 +243,6 @@ if __name__ == "__main__":
     PARSER = get_parser()
     ARGS = PARSER.parse_args()
     try:
-        run(once=ARGS.run_once, younger_than=ARGS.younger_than, nattempts=ARGS.nattempts, vos=ARGS.vos, limit_suspicious_files_on_rse=ARGS.limit_suspicious_files_on_rse, sleep_time=ARGS.sleep_time, active_mode=ARGS.active_mode)
+        run(once=ARGS.run_once, younger_than=ARGS.younger_than, nattempts=ARGS.nattempts, vos=ARGS.vos, limit_suspicious_files_on_rse=ARGS.limit_suspicious_files_on_rse, json_file_name=ARGS.json_file_name, sleep_time=ARGS.sleep_time, active_mode=ARGS.active_mode)
     except KeyboardInterrupt:
         stop()

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +13,11 @@
 # limitations under the License.
 
 from json import dumps
+from typing import Any, Optional
 
 from requests.status_codes import codes
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url
 
 
@@ -28,7 +27,11 @@ class ConfigClient(BaseClient):
 
     CONFIG_BASEURL = 'config'
 
-    def get_config(self, section=None, option=None):
+    def get_config(
+            self,
+            section: Optional[str] = None,
+            option: Optional[str] = None
+    ) -> dict[str, Any]:
         """
         Sends the request to get the matching configuration.
 
@@ -55,7 +58,13 @@ class ConfigClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def set_config_option(self, section, option, value, use_body_for_params=True):
+    def set_config_option(
+            self,
+            section: str,
+            option: str,
+            value: Any,
+            use_body_for_params: bool = True
+    ) -> bool:
         """
         Sends the request to create or set an option within a section. Missing sections will be created.
 
@@ -92,7 +101,11 @@ class ConfigClient(BaseClient):
             exc_cls, exc_msg = self._get_exception(headers=r.headers, status_code=r.status_code, data=r.content)
             raise exc_cls(exc_msg)
 
-    def delete_config_option(self, section, option):
+    def delete_config_option(
+            self,
+            section: str,
+            option: str
+    ) -> bool:
         """
         Sends the request to remove an option from a section
 

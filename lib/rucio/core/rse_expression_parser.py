@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,14 +14,14 @@
 
 import abc
 import re
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from dogpile.cache.api import NoValue
-from hashlib import sha256
 
-from rucio.common.cache import make_region_memcached
+from rucio.common.cache import MemcacheRegion
 from rucio.common.exception import InvalidRSEExpression, RSEWriteBlocked
-from rucio.core.rse import list_rses, get_rses_with_attribute, get_rse_attribute
+from rucio.core.rse import get_rse_attribute, get_rses_with_attribute, list_rses
 from rucio.db.sqla.session import transactional_session
 
 if TYPE_CHECKING:
@@ -38,7 +37,7 @@ COMPLEMENT = r'(\\%s)' % (PRIMITIVE)
 
 PATTERN = r'^%s(%s|%s|%s)*' % (PRIMITIVE, UNION, INTERSECTION, COMPLEMENT)
 
-REGION = make_region_memcached(expiration_time=600)
+REGION = MemcacheRegion(expiration_time=600)
 
 
 @transactional_session
@@ -63,9 +62,9 @@ def parse_expression(expression, filter_=None, *, session: "Session"):
             elif (char == ')'):
                 parantheses_close_count += 1
             if (parantheses_close_count > parantheses_open_count):
-                raise InvalidRSEExpression('Problem with parantheses.')
+                raise InvalidRSEExpression('Problem with parentheses.')
         if (parantheses_open_count != parantheses_close_count):
-            raise InvalidRSEExpression('Problem with parantheses.')
+            raise InvalidRSEExpression('Problem with parentheses.')
 
         # Check the expression pattern
         match = re.match(PATTERN, expression)
@@ -170,7 +169,7 @@ def __resolve_primitive_expression(expression):
     """
     Resolve a primitive expression and return a RSEAttribute object
 
-    :param expression:    String of the expresssion
+    :param expression:    String of the expression
     :returns:             Tuple of RSEAttribute, primitive expression
     """
     primitiveexpression = re.match(PRIMITIVE, expression).group()
@@ -191,7 +190,7 @@ def __resolve_primitive_expression(expression):
 
 def __extract_term(expression):
     """
-    Extract a term from an expression with parantheses
+    Extract a term from an expression with parentheses
 
     :param expression:  The expression starting with a '('
     :return:            The extracted term string
@@ -209,7 +208,7 @@ def __extract_term(expression):
     raise SystemError('This point in the code should not be reachable')
 
 
-class BaseExpressionElement(object, metaclass=abc.ABCMeta):
+class BaseExpressionElement(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def resolve_elements(self, session):
         """

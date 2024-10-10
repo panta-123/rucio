@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,22 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from argparse import ArgumentParser, Namespace
-from pathlib import Path
 import json
 import subprocess
 import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from .models import ReportDict, Report
+from .models import Report
 from .utils import save_json
 
+if TYPE_CHECKING:
+    from argparse import ArgumentParser, Namespace
 
 PATHS = (
     'lib/',
 )
 
 
-def setup_parser(parser: ArgumentParser) -> None:
+def setup_parser(parser: 'ArgumentParser') -> None:
     parser.description = """
     Invokes Pyright to generate a report of current typing errors and warnings.
     """
@@ -36,7 +37,7 @@ def setup_parser(parser: ArgumentParser) -> None:
     parser.set_defaults(func=generate)
 
 
-def generate(args: Namespace) -> int:
+def generate(args: 'Namespace') -> int:
     """Generate a Pyright report and save it at the specified path."""
     reportdict = _run_pyright()
 
@@ -54,7 +55,7 @@ def generate(args: Namespace) -> int:
     return 0
 
 
-def _run_pyright() -> ReportDict:
+def _run_pyright() -> dict[str, Any]:
     """Runs the pyright type-checker and returns its output as json."""
     cmdline = ['pyright', '--outputjson', *PATHS]
     try:

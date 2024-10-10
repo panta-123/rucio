@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,12 +20,12 @@ from collections import deque
 from threading import Lock, Timer
 
 
-class ExpiringList(object):
+class ExpiringList:
     """
     Simple list with time based element expiration
     """
 
-    def __init__(self, timeout=1):
+    def __init__(self, timeout: int = 1):
         self._lock = Lock()
         self._timeout = timeout
         self._items = deque()
@@ -38,26 +37,26 @@ class ExpiringList(object):
             self._items.append(item)
             Timer(self._timeout, self._expire).start()
 
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Return number of active events
         """
         with self._lock:
             return len(self._items)
 
-    def _expire(self):
+    def _expire(self) -> None:
         """
         Remove any expired events
         """
         with self._lock:
             self._items.popleft()
 
-    def to_set(self):
+    def to_set(self) -> set:
         """
         Return items as a set
         """
         return set(self._items)
 
-    def __str__(self):
+    def __str__(self) -> str:
         with self._lock:
             return str(self._items)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +15,7 @@
 ''' add request_type to requests idx '''
 
 from alembic import context
-from alembic.op import (create_foreign_key, create_unique_constraint, create_index,
-                        drop_constraint, drop_index)
-
+from alembic.op import create_foreign_key, create_index, create_unique_constraint, drop_constraint, drop_index
 
 # Alembic revision identifiers
 revision = '156fb5b5a14'

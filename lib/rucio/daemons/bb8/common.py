@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,44 +13,50 @@
 # limitations under the License.
 
 import logging
-
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
 from string import Template
-from sqlalchemy.orm import aliased
-from sqlalchemy import func, and_, or_, cast, BigInteger
-from sqlalchemy.sql.expression import case, select
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
-from rucio.core.lock import get_dataset_locks
-from rucio.core.rule import get_rule, add_rule, update_rule
-from rucio.core.rse_expression_parser import parse_expression
-from rucio.core.rse import list_rse_attributes, get_rse_name, get_rse_vo
-from rucio.core.rse_selector import RSESelector
-from rucio.common.config import config_get, config_get_int, config_get_bool
+from requests import get
+from sqlalchemy import BigInteger, and_, case, cast, false, func, or_, select
+from sqlalchemy.orm import Session, aliased
+
+from rucio.common.config import config_get, config_get_bool, config_get_int
 from rucio.common.exception import (
-    InsufficientTargetRSEs,
-    RuleNotFound,
     DuplicateRule,
     InsufficientAccountLimit,
+    InsufficientTargetRSEs,
+    RuleNotFound,
 )
 from rucio.common.types import InternalAccount, InternalScope
-
-from rucio.db.sqla.session import transactional_session, read_session
+from rucio.core.lock import get_dataset_locks
+from rucio.core.rse import get_rse_name, get_rse_vo, list_rse_attributes
+from rucio.core.rse_expression_parser import parse_expression
+from rucio.core.rse_selector import RSESelector
+from rucio.core.rule import add_rule, get_rule, update_rule
 from rucio.db.sqla import models
-from rucio.db.sqla.constants import DIDType, RuleState, RuleGrouping, LockState
-from requests import get
+from rucio.db.sqla.constants import DIDType, LockState, RuleGrouping, RuleState
+from rucio.db.sqla.session import read_session, transactional_session
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    from sqlalchemy.engine import Row
+
+    from rucio.common.types import LoggerFunction
 
 
 @transactional_session
 def rebalance_rule(
-    parent_rule,
-    activity,
-    rse_expression,
-    priority,
-    source_replica_expression="*\\bb8-enabled=false",
-    comment=None,
+    parent_rule: "Mapping[str, Any]",
+    activity: str,
+    rse_expression: str,
+    priority: int,
+    source_replica_expression: str = "*\\bb8-enabled=false",
+    comment: Optional[str] = None,
     *,
-    session,
-):
+    session: Session,
+) -> Optional[list[str]]:
     """
     Rebalance a replication rule to a new RSE
     :param parent_rule:                Replication rule to be rebalanced.
@@ -118,7 +123,10 @@ def rebalance_rule(
     return child_rule
 
 
-def __dump_url(rse_id, logger=logging.log):
+def __dump_url(
+        rse_id: str,
+        logger: "LoggerFunction" = logging.log
+) -> Union[list[str], Literal[False]]:
     """
     getting potential urls of the dump over last week
     :param rse_id:                     RSE where the dump is released.
@@ -174,7 +182,11 @@ def __dump_url(rse_id, logger=logging.log):
     return urls
 
 
-def _list_rebalance_rule_candidates_dump(rse_id, mode=None, logger=logging.log):
+def _list_rebalance_rule_candidates_dump(
+        rse_id: str,
+        mode: Optional[str] = None,
+        logger: "LoggerFunction" = logging.log
+) -> list[tuple]:
     """
     Download dump to temporary directory
     :param rse_id:                     RSE of the source.
@@ -186,11 +198,11 @@ def _list_rebalance_rule_candidates_dump(rse_id, mode=None, logger=logging.log):
     candidates = []
     rules = {}
     rse_dump_urls = __dump_url(rse_id=rse_id)
-    rse_dump_urls.reverse()
     resp = None
     if not rse_dump_urls:
         logger(logging.DEBUG, "URL of the dump was not built from template.")
         return candidates
+    rse_dump_urls.reverse()
     success = False
     while not success and len(rse_dump_urls):
         url = rse_dump_urls.pop()
@@ -252,7 +264,12 @@ def _list_rebalance_rule_candidates_dump(rse_id, mode=None, logger=logging.log):
 
 
 @transactional_session
-def list_rebalance_rule_candidates(rse_id, mode=None, *, session=None):
+def list_rebalance_rule_candidates(
+    rse_id: str,
+    mode: Optional[str] = None,
+    *,
+    session: Optional[Session] = None
+) -> Union[list[tuple], list["Row[tuple]"]]:
     """
     List the rebalance rule candidates based on the agreed on specification
     :param rse_id:       RSE of the source.
@@ -289,10 +306,8 @@ def list_rebalance_rule_candidates(rse_id, mode=None, *, session=None):
         min_expires_date_in_days = datetime.utcnow() + timedelta(
             days=min_expires_date_in_days
         )
-        expiration_clause = or_(
-            models.ReplicationRule.expires_at > min_expires_date_in_days,
-            models.ReplicationRule.expires_at.is_(None),
-        )
+        expiration_clause = or_(models.ReplicationRule.expires_at > min_expires_date_in_days,
+                                models.ReplicationRule.expires_at.is_(None))
     rule_clause.append(expiration_clause)
 
     # Only move rules which were created more than <min_created_days> days ago
@@ -392,105 +407,89 @@ def list_rebalance_rule_candidates(rse_id, mode=None, *, session=None):
         expiration_time=3600,
     )
     if only_move_closed_did:
-        did_clause.append(models.DataIdentifier.is_open == False)  # NOQA
+        did_clause.append(models.DataIdentifier.is_open == false())
 
     # Now build the query
     external_dsl = aliased(models.DatasetLock)
-    count_locks = (
-        select(func.count())
-        .where(
-            and_(
-                external_dsl.scope == models.DatasetLock.scope,
-                external_dsl.name == models.DatasetLock.name,
-                external_dsl.rse_id == models.DatasetLock.rse_id,
-            )
-        )
-        .as_scalar()
-    )
-    query = (
-        session.query(
-            models.DatasetLock.scope,
-            models.DatasetLock.name,
-            models.ReplicationRule.id,
-            models.ReplicationRule.rse_expression,
-            models.ReplicationRule.subscription_id,
-            models.DataIdentifier.bytes,
-            models.DataIdentifier.length,
-            case(
-                (
-                    or_(
-                        models.DatasetLock.length < 1,
-                        models.DatasetLock.length.is_(None),
-                    ),
-                    0,
-                ),
-                else_=cast(
-                    models.DatasetLock.bytes / models.DatasetLock.length, BigInteger
-                ),
-            ),
-        )
-        .join(
-            models.ReplicationRule,
-            models.ReplicationRule.id == models.DatasetLock.rule_id,
-        )
-        .join(
-            models.DataIdentifier,
-            and_(
-                models.DatasetLock.scope == models.DataIdentifier.scope,
-                models.DatasetLock.name == models.DataIdentifier.name,
-            ),
-        )
-        .filter(models.DatasetLock.rse_id == rse_id)
-        .filter(and_(*rule_clause))
-        .filter(and_(*did_clause))
-        .filter(
-            case(
-                (
-                    or_(
-                        models.DatasetLock.length < 1,
-                        models.DatasetLock.length.is_(None),
-                    ),
-                    0,
-                ),
-                else_=cast(
-                    models.DatasetLock.bytes / models.DatasetLock.length, BigInteger
-                ),
-            )
-            > 1000000000
-        )
-        .filter(count_locks == 1)
-    )
-    summary = query.order_by(
+    count_locks = select(
+        func.count()
+    ).select_from(
+        models.DatasetLock
+    ).where(
+        and_(external_dsl.scope == models.DatasetLock.scope,
+             external_dsl.name == models.DatasetLock.name,
+             external_dsl.rse_id == models.DatasetLock.rse_id)
+    ).scalar_subquery()
+
+    stmt = select(
+        models.DatasetLock.scope,
+        models.DatasetLock.name,
+        models.ReplicationRule.id,
+        models.ReplicationRule.rse_expression,
+        models.ReplicationRule.subscription_id,
+        models.DataIdentifier.bytes,
+        models.DataIdentifier.length,
         case(
             (
-                or_(
-                    models.DatasetLock.length < 1,
-                    models.DatasetLock.length.is_(None),
-                ),
-                0,
+                or_(models.DatasetLock.length < 1,
+                    models.DatasetLock.length.is_(None)),
+                0
             ),
             else_=cast(
                 models.DatasetLock.bytes / models.DatasetLock.length, BigInteger
+            )
+        )
+    ).join(
+        models.ReplicationRule,
+        models.ReplicationRule.id == models.DatasetLock.rule_id
+    ).join(
+        models.DataIdentifier,
+        and_(models.DatasetLock.scope == models.DataIdentifier.scope,
+             models.DatasetLock.name == models.DataIdentifier.name)
+    ).where(
+        and_(models.DatasetLock.rse_id == rse_id,
+             *rule_clause,
+             *did_clause,
+             case(
+                 (
+                     or_(models.DatasetLock.length < 1,
+                         models.DatasetLock.length.is_(None)),
+                     0
+                 ),
+                 else_=cast(
+                     models.DatasetLock.bytes / models.DatasetLock.length, BigInteger
+                 )
+             ) > 1000000000,
+             count_locks == 1)
+    ).order_by(
+        case(
+            (
+                or_(models.DatasetLock.length < 1,
+                    models.DatasetLock.length.is_(None)),
+                0
             ),
+            else_=cast(
+                models.DatasetLock.bytes / models.DatasetLock.length, BigInteger
+            )
         ),
-        models.DatasetLock.accessed_at,
-    ).all()
-    return summary
+        models.DatasetLock.accessed_at
+    )
+    return list(session.execute(stmt).all())  # type: ignore (session could be None)
 
 
 @read_session
 def select_target_rse(
-    parent_rule,
-    current_rse_id,
-    rse_expression,
-    subscription_id,
-    rse_attributes,
-    other_rses=[],
-    exclude_expression=None,
-    force_expression=None,
+    parent_rule: "Mapping[str, Any]",
+    current_rse_id: str,
+    rse_expression: str,
+    subscription_id: str,
+    rse_attributes: "Mapping[str, Any]",
+    other_rses: Optional["Sequence[str]"] = None,
+    exclude_expression: Optional[str] = None,
+    force_expression: Optional[str] = None,
     *,
-    session=None,
-):
+    session: Optional[Session] = None,
+) -> str:
     """
     Select a new target RSE for a rebalanced rule.
     :param parent_rule           rule that is rebalanced.
@@ -505,6 +504,7 @@ def select_target_rse(
     :returns:                    New RSE expression.
     """
 
+    other_rses = other_rses or []
     current_rse = get_rse_name(rse_id=current_rse_id)
     current_rse_expr = current_rse
     # if parent rule has a vo, enforce it
@@ -578,20 +578,20 @@ def select_target_rse(
 
 @transactional_session
 def rebalance_rse(
-    rse_id,
-    max_bytes=1e9,
-    max_files=None,
-    dry_run=False,
-    exclude_expression=None,
-    comment=None,
-    force_expression=None,
-    mode=None,
-    priority=3,
-    source_replica_expression="*\\bb8-enabled=false",
+    rse_id: str,
+    max_bytes: float = 1e9,
+    max_files: Optional[int] = None,
+    dry_run: bool = False,
+    exclude_expression: Optional[str] = None,
+    comment: Optional[str] = None,
+    force_expression: Optional[str] = None,
+    mode: Optional[str] = None,
+    priority: int = 3,
+    source_replica_expression: str = "*\\bb8-enabled=false",
     *,
-    session=None,
-    logger=logging.log,
-):
+    session: Optional[Session] = None,
+    logger: "LoggerFunction" = logging.log,
+) -> list[tuple]:
     """
     Rebalance data from an RSE
     :param rse_id:                     RSE to rebalance data from.
@@ -706,7 +706,7 @@ def rebalance_rse(
         except Exception as error:
             logger(
                 logging.ERROR,
-                "Exception %s occured while rebalancing %s:%s, rule_id: %s!",
+                "Exception %s occurred while rebalancing %s:%s, rule_id: %s!",
                 str(error),
                 scope,
                 name,
@@ -724,38 +724,34 @@ def rebalance_rse(
 
 
 @read_session
-def get_active_locks(*, session=None):
-    locks_dict = {}
-    rule_ids = (
-        session.query(models.ReplicationRule.id)
-        .filter(
-            or_(
-                models.ReplicationRule.state == RuleState.REPLICATING,
-                models.ReplicationRule.state == RuleState.STUCK,
-            ),
-            models.ReplicationRule.comments == "Background rebalancing",
-        )
-        .all()
+def get_active_locks(
+    *,
+    session: Optional[Session] = None
+) -> dict[str, dict[str, int]]:
+    locks_dict: dict[str, dict[str, int]] = {}
+    stmt = select(
+        models.ReplicationRule.id
+    ).where(
+        and_(or_(models.ReplicationRule.state == RuleState.REPLICATING,
+                 models.ReplicationRule.state == RuleState.STUCK),
+             models.ReplicationRule.comments == "Background rebalancing")
     )
-    for row in rule_ids:
-        rule_id = row[0]
-        query = (
-            session.query(
-                func.count(),
-                func.sum(models.ReplicaLock.bytes),
-                models.ReplicaLock.state,
-                models.ReplicaLock.rse_id,
-            )
-            .filter(
-                and_(
-                    models.ReplicaLock.rule_id == rule_id,
-                    models.ReplicaLock.state != LockState.OK,
-                )
-            )
-            .group_by(models.ReplicaLock.state, models.ReplicaLock.rse_id)
+    for rule_id in session.execute(stmt).scalars().all():    # type: ignore (session could be None)
+        stmt = select(
+            func.count(),
+            func.sum(models.ReplicaLock.bytes),
+            models.ReplicaLock.state,
+            models.ReplicaLock.rse_id
+        ).select_from(
+            models.ReplicaLock
+        ).where(
+            and_(models.ReplicaLock.rule_id == rule_id,
+                 models.ReplicaLock.state != LockState.OK)
+        ).group_by(
+            models.ReplicaLock.state,
+            models.ReplicaLock.rse_id
         )
-        for lock in query.all():
-            cnt, size, _, rse_id = lock
+        for cnt, size, _, rse_id in session.execute(stmt).all():  # type: ignore (session could be None)
             if rse_id not in locks_dict:
                 locks_dict[rse_id] = {"bytes": 0, "locks": 0}
             locks_dict[rse_id]["locks"] += cnt

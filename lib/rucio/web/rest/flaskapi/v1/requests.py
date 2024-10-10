@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +13,21 @@
 # limitations under the License.
 
 import json
+from typing import TYPE_CHECKING
 
 import flask
 from flask import Flask, Response
 
-from rucio.api import request
 from rucio.common.exception import RequestNotFound
 from rucio.common.utils import APIEncoder, render_json
-from rucio.core.rse import get_rses_with_attribute_value, get_rse_name
+from rucio.core.rse import get_rses_with_attribute_value
 from rucio.db.sqla.constants import RequestState
-from rucio.web.rest.flaskapi.v1.common import check_accept_header_wrapper_flask, parse_scope_name, try_stream, \
-    response_headers, generate_http_error_flask, ErrorHandlingMethodView
+from rucio.gateway import request
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, parse_scope_name, response_headers, try_stream
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class RequestGet(ErrorHandlingMethodView):
@@ -36,7 +38,7 @@ class RequestGet(ErrorHandlingMethodView):
         """
         ---
         summary: Get Request
-        description: Get a request for a given DID to a destinaion RSE.
+        description: Get a request for a given DID to a destination RSE.
         tags:
           - Requests
         parameters:
@@ -100,7 +102,7 @@ class RequestGet(ErrorHandlingMethodView):
                       description: The numbers of attempted retires.
                       type: integer
                     err_msg:
-                      description: An error message if one occured.
+                      description: An error message if one occurred.
                       type: string
                     previous_attempt_id:
                       description: The id of the previous attempt.
@@ -130,7 +132,7 @@ class RequestGet(ErrorHandlingMethodView):
                       description: The time the request got started.
                       type: string
                     transferred_at:
-                      description: The time the request got transfered.
+                      description: The time the request got transferred.
                       type: string
                     estimated_at:
                       description: The time the request got estimated.
@@ -142,7 +144,7 @@ class RequestGet(ErrorHandlingMethodView):
                       description: The estimation of the started at value.
                       type: string
                     estimated_transferred_at:
-                      description: The estimation of the transfered at value.
+                      description: The estimation of the transferred at value.
                       type: string
                     staging_started_at:
                       description: The time the staging got started.
@@ -201,7 +203,7 @@ class RequestHistoryGet(ErrorHandlingMethodView):
         """
         ---
         summary: Get Historical Request
-        description: List a hostorical request for a given DID to a destination RSE.
+        description: List a historical request for a given DID to a destination RSE.
         tags:
           - Requests
         parameters:
@@ -265,7 +267,7 @@ class RequestHistoryGet(ErrorHandlingMethodView):
                       description: The numbers of attempted retires.
                       type: integer
                     err_msg:
-                      description: An error message if one occured.
+                      description: An error message if one occurred.
                       type: string
                     previous_attempt_id:
                       description: The id of the previous attempt.
@@ -295,7 +297,7 @@ class RequestHistoryGet(ErrorHandlingMethodView):
                       description: The time the request got started.
                       type: string
                     transferred_at:
-                      description: The time the request got transfered.
+                      description: The time the request got transferred.
                       type: string
                     estimated_at:
                       description: The time the request got estimated.
@@ -307,7 +309,7 @@ class RequestHistoryGet(ErrorHandlingMethodView):
                       description: The estimation of the started at value.
                       type: string
                     estimated_transferred_at:
-                      description: The estimation of the transfered at value.
+                      description: The estimation of the transferred at value.
                       type: string
                     staging_started_at:
                       description: The time the staging got started.
@@ -365,7 +367,7 @@ class RequestList(ErrorHandlingMethodView):
     def get(self):
         """
         ---
-        summary: List Historic Requests
+        summary: List Requests
         description: List requests for a given source and destination RSE or site.
         tags:
           - Requests
@@ -417,7 +419,7 @@ class RequestList(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: All requests matching the arguments. Seperated by the new line character.
+                  description: All requests matching the arguments. Separated by the new line character.
                   type: array
                   items:
                     description: A request.
@@ -462,7 +464,7 @@ class RequestList(ErrorHandlingMethodView):
                         description: The numbers of attempted retires.
                         type: integer
                       err_msg:
-                        description: An error message if one occured.
+                        description: An error message if one occurred.
                         type: string
                       previous_attempt_id:
                         description: The id of the previous attempt.
@@ -492,7 +494,7 @@ class RequestList(ErrorHandlingMethodView):
                         description: The time the request got started.
                         type: string
                       transferred_at:
-                        description: The time the request got transfered.
+                        description: The time the request got transferred.
                         type: string
                       estimated_at:
                         description: The time the request got estimated.
@@ -504,7 +506,7 @@ class RequestList(ErrorHandlingMethodView):
                         description: The estimation of the started at value.
                         type: string
                       estimated_transferred_at:
-                        description: The estimation of the transfered at value.
+                        description: The estimation of the transferred at value.
                         type: string
                       staging_started_at:
                         description: The time the staging got started.
@@ -562,14 +564,14 @@ class RequestList(ErrorHandlingMethodView):
         src_rses = []
         dst_rses = []
         if src_site:
-            src_rses = get_rses_with_attribute_value(key='site', value=src_site, lookup_key='site', vo=flask.request.environ.get('vo'))
+            src_rses = get_rses_with_attribute_value(key='site', value=src_site, vo=flask.request.environ.get('vo'))
             if not src_rses:
                 return generate_http_error_flask(404, 'NotFound', f'Could not resolve site name {src_site} to RSE')
-            src_rses = [get_rse_name(rse['rse_id']) for rse in src_rses]
-            dst_rses = get_rses_with_attribute_value(key='site', value=dst_site, lookup_key='site', vo=flask.request.environ.get('vo'))
+            src_rses = [rse['rse_name'] for rse in src_rses]
+            dst_rses = get_rses_with_attribute_value(key='site', value=dst_site, vo=flask.request.environ.get('vo'))
             if not dst_rses:
                 return generate_http_error_flask(404, 'NotFound', f'Could not resolve site name {dst_site} to RSE')
-            dst_rses = [get_rse_name(rse['rse_id']) for rse in dst_rses]
+            dst_rses = [rse['rse_name'] for rse in dst_rses]
         else:
             dst_rses = [dst_rse]
             src_rses = [src_rse]
@@ -652,7 +654,7 @@ class RequestHistoryList(ErrorHandlingMethodView):
             content:
               application/x-json-stream:
                 schema:
-                  description: All requests matching the arguments. Seperated by a new line character.
+                  description: All requests matching the arguments. Separated by a new line character.
                   type: array
                   items:
                     description: A request.
@@ -697,7 +699,7 @@ class RequestHistoryList(ErrorHandlingMethodView):
                         description: The numbers of attempted retires.
                         type: integer
                       err_msg:
-                        description: An error message if one occured.
+                        description: An error message if one occurred.
                         type: string
                       previous_attempt_id:
                         description: The id of the previous attempt.
@@ -727,7 +729,7 @@ class RequestHistoryList(ErrorHandlingMethodView):
                         description: The time the request got started.
                         type: string
                       transferred_at:
-                        description: The time the request got transfered.
+                        description: The time the request got transferred.
                         type: string
                       estimated_at:
                         description: The time the request got estimated.
@@ -739,7 +741,7 @@ class RequestHistoryList(ErrorHandlingMethodView):
                         description: The estimation of the started at value.
                         type: string
                       estimated_transferred_at:
-                        description: The estimation of the transfered at value.
+                        description: The estimation of the transferred at value.
                         type: string
                       staging_started_at:
                         description: The time the staging got started.
@@ -799,14 +801,14 @@ class RequestHistoryList(ErrorHandlingMethodView):
         src_rses = []
         dst_rses = []
         if src_site:
-            src_rses = get_rses_with_attribute_value(key='site', value=src_site, lookup_key='site', vo=flask.request.environ.get('vo'))
+            src_rses = get_rses_with_attribute_value(key='site', value=src_site, vo=flask.request.environ.get('vo'))
             if not src_rses:
                 return generate_http_error_flask(404, 'NotFound', f'Could not resolve site name {src_site} to RSE')
-            src_rses = [get_rse_name(rse['rse_id']) for rse in src_rses]
-            dst_rses = get_rses_with_attribute_value(key='site', value=dst_site, lookup_key='site', vo=flask.request.environ.get('vo'))
+            src_rses = [rse['rse_name'] for rse in src_rses]
+            dst_rses = get_rses_with_attribute_value(key='site', value=dst_site, vo=flask.request.environ.get('vo'))
             if not dst_rses:
                 return generate_http_error_flask(404, 'NotFound', f'Could not resolve site name {dst_site} to RSE')
-            dst_rses = [get_rse_name(rse['rse_id']) for rse in dst_rses]
+            dst_rses = [rse['rse_name'] for rse in dst_rses]
         else:
             dst_rses = [dst_rse]
             src_rses = [src_rse]
@@ -816,6 +818,159 @@ class RequestHistoryList(ErrorHandlingMethodView):
                 yield render_json(**result) + '\n'
 
         return try_stream(generate(issuer=flask.request.environ.get('issuer'), vo=flask.request.environ.get('vo')))
+
+
+class RequestMetricsGet(ErrorHandlingMethodView):
+    """ REST API to get request stats. """
+
+    @check_accept_header_wrapper_flask(['application/x-json-stream'])
+    def get(self):
+        """
+        ---
+        summary: Get Request Statistics
+        description: Get statistics of requests grouped by source, destination, and activity.
+        tags:
+          - Requests
+        parameters:
+        - name: dest_rse
+          in: query
+          description: The destination RSE name
+          schema:
+            type: string
+        - name: source_rse
+          in: query
+          description: The source RSE name
+          schema:
+            type: string
+        - name: activity
+          in: query
+          description: The activity
+          schema:
+            type: string
+        - name: group_by_rse_attribute
+          in: query
+          description: The parameter to group the RSEs by.
+          schema:
+            type: string
+        responses:
+          200:
+            description: OK
+            content:
+              application/x-json-stream:
+                schema:
+                  description: Statistics of requests by source, destination, and activity.
+                  type: array
+                  items:
+                    description: Statistics of the request group for a given (source, destination, activity) tuple.
+                    type: object
+                    properties:
+                      src_rse:
+                        type: string
+                        description: The name of this links source RSE
+                      dst_rse:
+                        type: string
+                        description: The name of this links destination RSE
+                      distance:
+                        type: integer
+                        description: The distance between the source and destination RSE
+                      files:
+                        type: object
+                        properties:
+                          done-total-1h:
+                            type: integer
+                            description: The total number of files successfully transferred in the last 1 hour
+                          done-total-6h:
+                            type: integer
+                            description: The total number of files successfully transferred in the last 6 hours
+                          failed-total-1h:
+                            type: integer
+                            description: The total number of transfer failures in the last 1 hour
+                          failed-total-6h:
+                            type: integer
+                            description: The total number of transfer failures in the last 6 hours
+                          queued-total:
+                            type: integer
+                            description: The total number of files queued in rucio
+                          queued:
+                            type: object
+                            description: Per-activity number of queued files
+                            additionalProperties:
+                              type: integer
+                          done:
+                            type: object
+                            additionalProperties:
+                              type: object
+                              properties:
+                                1h:
+                                  type: integer
+                                6h:
+                                  type: integer
+                          failed:
+                            type: object
+                            description: Per-activity number of transfer failures in the last 1 and 6 hours
+                            additionalProperties:
+                              type: object
+                              properties:
+                                1h:
+                                  type: integer
+                                6h:
+                                  type: integer
+                      bytes:
+                        type: object
+                        properties:
+                          done-total-1h:
+                            type: integer
+                            description: The total number of bytes successfully transferred in the last 1 hour
+                          done-total-6h:
+                            type: integer
+                            description: The total number of bytes successfully transferred in the last 6 hours
+                          queued-total:
+                            type: integer
+                            description: The total number of bytes queued to be transferred by rucio
+                          queued:
+                            type: object
+                            description: Per-activity amount of queued bytes
+                            additionalProperties:
+                              type: integer
+                          done:
+                            type: object
+                            description: Per-activity number of transferred bytes in the last 1 and 6 hours
+                            additionalProperties:
+                              type: object
+                              properties:
+                                1h:
+                                  type: integer
+                                6h:
+                                  type: integer
+                    required:
+                      - distance
+                      - src_rse
+                      - dst_rse
+          401:
+            description: Invalid Auth Token
+        """
+        dst_rse = flask.request.args.get('dst_rse', default=None)
+        src_rse = flask.request.args.get('src_rse', default=None)
+        activity = flask.request.args.get('activity', default=None)
+        group_by_rse_attribute = flask.request.args.get('group_by_rse_attribute', default=None)
+        format = flask.request.args.get('format', default=None)
+
+        metrics = request.get_request_metrics(
+            dst_rse=dst_rse,
+            src_rse=src_rse,
+            activity=activity,
+            group_by_rse_attribute=group_by_rse_attribute,
+            issuer=flask.request.environ.get('issuer'),
+            vo=flask.request.environ.get('vo')
+        )
+
+        if format == 'panda':
+            return Response(json.dumps(metrics, cls=APIEncoder), content_type='application/json')
+
+        def generate() -> "Iterator[str]":
+            for result in metrics.values():
+                yield render_json(**result) + '\n'
+        return try_stream(generate())
 
 
 def blueprint():
@@ -829,6 +984,8 @@ def blueprint():
     bp.add_url_rule('/list', view_func=request_list_view, methods=['get', ])
     request_history_list_view = RequestHistoryList.as_view('request_history_list')
     bp.add_url_rule('/history/list', view_func=request_history_list_view, methods=['get', ])
+    request_metrics_view = RequestMetricsGet.as_view('request_metrics_get')
+    bp.add_url_rule('/metrics', view_func=request_metrics_view, methods=['get', ])
 
     bp.after_request(response_headers)
     return bp

@@ -1,3 +1,153 @@
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = [
+  ".",
+  "lib",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",  # Ignore code in TYPE_CHECKING blocks
+    "raise NotImplementedError",  # Ignore un-implemented methods
+    "@(abc\\.)?abstractmethod",  # Ignore abstract methods (they are not run directly)
+    "@overload",  # Ignore typing.overload decorated function (only used for type-checking)
+]
+
+[tool.ruff]
+line-length = 256
+
+extend-include = [
+    "bin/*",
+]
+
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "I", # isort
+    "S", # bandit
+    "TCH", # flake8-type-checking
+    "UP", # pyupgrade
+    "TID", # flake8-tidy-imports
+]
+
+ignore = [
+    "ALL",
+    "UP008", # Use `super()` instead of `super(__class__, self)`
+    "UP015", # Unnecessary open mode parameters
+    "UP027", # Replace unpacked list comprehension with a generator expression
+    "UP028", # Replace `yield` over `for` loop with `yield from`
+    "UP030", # Use implicit references for positional format fields
+    "UP031", # Use format specifiers instead of percent format
+    "UP032", # Use f-string instead of `format` call
+    "UP037", # Remove quotes from type annotation. Seeing possible false positives caused by https://github.com/astral-sh/ruff/pull/11485
+    "S101",  # Pending https://github.com/rucio/rucio/issues/6680
+    "S105",  # Pending https://github.com/rucio/rucio/issues/6696
+    "S108",  # Pending https://github.com/rucio/rucio/issues/6655
+    "S110",  # Pending https://github.com/rucio/rucio/issues/6657
+    "S112",  # Pending https://github.com/rucio/rucio/issues/6657
+    "S113",  # Pending https://github.com/rucio/rucio/issues/6654
+    "S310",  # Pending https://github.com/astral-sh/ruff/issues/7918
+    "S324",  # Pending https://github.com/rucio/rucio/issues/6665
+    "S501",  # Pending https://github.com/rucio/rucio/issues/6656
+    "S602",  # Pending https://github.com/astral-sh/ruff/issues/4045
+    "S603",  # Pending https://github.com/astral-sh/ruff/issues/4045
+    "S608",  # Pending https://github.com/rucio/rucio/issues/6669
+    "SIM210",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rucio"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.AbstractSet".msg = "Use `collections.abc.Set` instead."
+"typing.AsyncContextManager".msg = "Use `contextlib.AbstractAsyncContextManager` instead."
+"typing.AsyncGenerator".msg = "Use `collections.abc.AsyncGenerator` instead."
+"typing.AsyncIterable".msg = "Use `collections.abc.AsyncIterable` instead."
+"typing.AsyncIterator".msg = "Use `collections.abc.AsyncIterator` instead."
+"typing.Awaitable".msg = "Use `collections.abc.Awaitable` instead."
+"typing.Callable".msg = "Use `collections.abc.Callable` instead."
+"typing.ChainMap".msg = "Use `collections.ChainMap` instead."
+"typing.Collection".msg = "Use `collections.abc.Collection` instead."
+"typing.Container".msg = "Use `collections.abc.Container` instead."
+"typing.ContextManager".msg = "Use `contextlib.AbstractContextManager` instead."
+"typing.Coroutine".msg = "Use `collections.abc.Coroutine` instead."
+"typing.Counter".msg = "Use `collections.Counter` instead."
+"typing.DefaultDict".msg = "Use `collections.defaultdict` instead."
+"typing.Deque".msg = "Use `collections.deque` instead."
+"typing.Dict".msg = "Use built-in type `dict` instead. (note: to annotate arguments, the abstract collection type `collections.abc.Mapping` is preferred, if possible. See: https://docs.python.org/3/library/typing.html#typing.Dict)"
+"typing.FrozenSet".msg = "Use built-in type `frozenset` instead."
+"typing.Generator".msg = "Use `collections.abc.Generator` instead."
+"typing.ItemsView".msg = "Use `collections.abc.ItemsView` instead."
+"typing.Iterable".msg = "Use `collections.abc.Iterable` instead."
+"typing.Iterator".msg = "Use `collections.abc.Iterator` instead."
+"typing.KeysView".msg = "Use `collections.abc.KeysView` instead."
+"typing.List".msg = "Use built-in type `list` instead. (note: to annotate arguments, abstract collection types such as `collections.abc.Sequence` and `collections.abc.Iterable` are preferred, if possible. See: https://docs.python.org/3/library/typing.html#typing.List)"
+"typing.Mapping".msg = "Use `collections.abc.Mapping` instead."
+"typing.MappingView".msg = "Use `collections.abc.MappingView` instead."
+"typing.Match".msg = "Use `re.Match` instead."
+"typing.MutableMapping".msg = "Use `collections.abc.MutableMapping` instead."
+"typing.MutableSequence".msg = "Use `collections.abc.MutableSequence` instead."
+"typing.MutableSet".msg = "Use `collections.abc.MutableSet` instead."
+"typing.OrderedDict".msg = "Use `collections.OrderedDict` instead."
+"typing.Pattern".msg = "Use `re.Pattern` instead."
+"typing.Reversible".msg = "Use `collections.abc.Reversible` instead."
+"typing.Sequence".msg = "Use `collections.abc.Sequence` instead."
+"typing.Set".msg = "Use built-in type `set` instead. (note: to annotate arguments, the abstract collection type `collections.abc.AbstractSet` is preferred, if possible. See: https://docs.python.org/3/library/typing.html#typing.Set)"
+"typing.Tuple".msg = "Use built-in type `tuple` instead."
+"typing.Type".msg = "Use built-in `type` instead."
+"typing.ValuesView".msg = "Use `collections.abc.ValuesView` instead."
+
+[tool.ruff.lint.per-file-ignores]
+'tests/*.py' = [
+    'S101', # Usage of assert
+    'S105', # Hardcoded password string
+    'S106', # Hardcoded password function argument
+    'S108', # Hardcoded temporary file
+    'S110', # try-except-pass
+    'S113', # Probable use of requests call without timeout
+    'S306', # Use of insecure and deprecated function
+    'S311', # Non-cryptographic random usage
+    'S324', # Probable use of insecure hash function
+    'S605', # Starting a process with a shell
+]
+
+'lib/rucio/db/sqla/migrate_repo/versions/*.py' = [
+    'S608'  # Hardcoded SQL expression
+]
+
+[tool.ruff.lint.flake8-type-checking]
+# Add quotes around type annotations, if doing so would allow
+# an import to be moved into a type-checking block.
+quote-annotations = true

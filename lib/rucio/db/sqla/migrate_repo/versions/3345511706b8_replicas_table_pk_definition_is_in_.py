@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +15,7 @@
 ''' replicas table PK definition is in wrong order '''
 
 from alembic import context
-from alembic.op import create_primary_key, drop_constraint, create_foreign_key, drop_index
-
+from alembic.op import create_foreign_key, create_primary_key, drop_constraint, drop_index
 
 # revision identifiers used by alembic
 revision = '3345511706b8'

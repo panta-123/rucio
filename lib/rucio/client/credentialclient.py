@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +14,7 @@
 
 from requests.status_codes import codes
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url
 
 
@@ -25,7 +23,14 @@ class CredentialClient(BaseClient):
 
     CREDENTIAL_BASEURL = 'credentials'
 
-    def get_signed_url(self, rse, service, operation, url, lifetime=3600):
+    def get_signed_url(
+            self,
+            rse: str,
+            service: str,
+            operation: str,
+            url: str,
+            lifetime: int = 3600
+    ) -> str:
         """
         Return a signed version of the given URL for the given operation.
 

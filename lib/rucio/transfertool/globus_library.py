@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,8 +23,8 @@ from rucio.core.monitor import MetricManager
 EXTRA_MODULES = import_extras(['globus_sdk'])
 
 if EXTRA_MODULES['globus_sdk']:
-    from globus_sdk import NativeAppAuthClient, RefreshTokenAuthorizer, TransferClient, TransferData, DeleteData  # pylint: disable=import-error
     import yaml  # pylint: disable=import-error
+    from globus_sdk import DeleteData, NativeAppAuthClient, RefreshTokenAuthorizer, TransferClient, TransferData  # pylint: disable=import-error
 
 METRICS = MetricManager(module=__name__)
 

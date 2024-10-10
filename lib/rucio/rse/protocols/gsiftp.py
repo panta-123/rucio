@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +14,7 @@
 
 import json
 import os
+
 import requests
 
 from rucio.common import exception
@@ -52,12 +52,12 @@ class Default(protocol.RSEProtocol):
 
         :returns: a list with dict containing 'totalsize' and 'unusedsize'
 
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
         """
         rse_name = self.rse['rse']
         dest = '/tmp/rucio-gsiftp-site-size_' + rse_name
         space_usage_url = ''
-        # url of space usage json, woud be nicer to have it in rse_settings
+        # url of space usage json, would be nicer to have it in rse_settings
         agis = requests.get('http://atlas-agis-api.cern.ch/request/ddmendpoint/query/list/?json').json()
         agis_token = ''
         for res in agis:

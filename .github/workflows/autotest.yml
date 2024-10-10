@@ -12,7 +12,7 @@ jobs:
     name: Add header lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           # We need the history to determine the file creation date.
           fetch-depth: 0
@@ -20,6 +20,20 @@ jobs:
         shell: bash
         run: |
           python3 tools/add_header --dry-run --disable-progress-bar
+  python_ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - name: Install Python
+        uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+      - name: Run Ruff
+        run: ruff check --output-format=github .
   python_annotations:
     if: |
       !startsWith(github.ref_name, 'release')
@@ -32,7 +46,7 @@ jobs:
       UPDATED_PYTHON_TYPE_ANNOTATIONS_REPORT_FILE: ../updated_type_annotation_report.txt
       INITIAL_PYTHON_TYPE_ANNOTATIONS_REPORT_FILE: ../initial_type_annotation_report.txt
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: Count current number of missing type annotations
         id: count_updated
         shell: bash
@@ -88,12 +102,13 @@ jobs:
       PYRIGHT_CURRENT_REPORT: ../pyright_current_report.json
       PYRIGHT_ANCESTOR_REPORT: ../pyright_ancestor_report.json
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: Install dependencies
         run: |
-          sudo apt-get install -y npm libkrb5-dev libxmlsec1-dev 
-          npm install --global pyright@"<1.1.292 || >1.1.292"  # TODO: remove version range: https://github.com/microsoft/pyright/issues/4564
-          python -m pip --no-cache-dir install --upgrade -r requirements.txt
+          sudo apt-get update && sudo apt-get install -y npm libkrb5-dev libxmlsec1-dev git
+          npm install --global pyright
+          python -m pip --no-cache-dir install --upgrade pip
+          python -m pip --no-cache-dir install --upgrade -r requirements/requirements.server.txt -r requirements/requirements.dev.txt
       - name: Make pyright report of current commit
         run: |
           tools/run_pyright.sh generate ${{ env.PYRIGHT_CURRENT_REPORT }}
@@ -120,22 +135,22 @@ jobs:
     if: github.repository_owner == 'rucio' || github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: Update pip
         run: python3 -m pip install -U pip setuptools
       - name: Install python requirements for matrix_parser.py
         run: python3 -m pip install -U PyYAML
       - name: Identify branch
         id: branch
-        run: python3 -c 'from os import environ as env; print("::set-output name=branch::" + (env.get("GITHUB_BASE_REF", None) if env.get("GITHUB_BASE_REF", None) else env.get("GITHUB_REF", "master")))'
+        run: python3 tools/github/workflow/set_branch_output_env.py
       - name: Identify Matrix
         id: matrix
         run: |
           EVENT="${{ github.event_name }}"
           if [ $EVENT != 'schedule' ]; then
-            echo "::set-output name=matrix::$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix.yml)"
+            echo "matrix=$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix.yml)" >> $GITHUB_OUTPUT
           else
-            echo "::set-output name=matrix::$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix_nightly.yml)"
+            echo "matrix=$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix_nightly.yml)" >> $GITHUB_OUTPUT
           fi
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
@@ -148,7 +163,7 @@ jobs:
       matrix:
         cfg: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: Build images
         id: images
         shell: bash
@@ -166,81 +181,6 @@ jobs:
           done
           docker logout https://ghcr.io
           if [[ -z "$IMAGES" ]]; then echo "::error::Building images failed ultimately"; exit 1; fi
-          echo "::set-output name=images::$IMAGES"
-      - name: Run test with cfg
-        run: 'echo ''{"matrix": ${{ toJson(matrix.cfg) }}, "images": ${{ steps.images.outputs.images }} }'' | ./tools/test/run_tests.py'
-  release-patch-setup:
-    if: |
-      github.event_name == 'pull_request' && !startsWith(github.event.pull_request.base.ref, 'release') && !startsWith(github.event.pull_request.head.ref, 'feature')
-      && (github.repository_owner == 'rucio' || github.event_name != 'schedule')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Update pip
-        run: python3 -m pip install -U pip setuptools
-      - name: Install python requirements for matrix_parser.py
-        run: python3 -m pip install -U sh PyYAML
-      - name: Grab latest release branch
-        id: grabrelease
-        run: echo "::set-output name=release_branch::$(echo "${{ github.event.repository.branches_url }}" | ./tools/github/workflow/grabrelease.py)"
-      - name: Fetch pull request commit range
-        id: prcommits
-        run: echo "::set-output name=source_commits::$(echo "${{ github.event.pull_request.commits_url }}" | ./tools/github/workflow/prcommits.py)"
-      - name: Test cherry-picking pull request changes
-        run: |
-          echo '{
-            "source_remote_name": "${{ github.actor }}",
-            "source_remote": "${{ github.event.pull_request.head.repo.full_name }}",
-            "source_commits": "${{ steps.prcommits.outputs.source_commits }}",
-            "target_remote": "${{ github.event.pull_request.base.repo.full_name }}",
-            "target_branch": "${{ steps.grabrelease.outputs.release_branch }}"
-          }' | ./tools/github/workflow/mergetest.py
-      - name: Identify Matrix
-        id: matrix
-        run: echo "::set-output name=matrix::$(./tools/test/matrix_parser.py < ./etc/docker/test/matrix.yml)"
-    outputs:
-      release_branch: ${{ steps.grabrelease.outputs.release_branch }}
-      source_commits: ${{ steps.prcommits.outputs.source_commits }}
-      matrix: ${{ steps.matrix.outputs.matrix }}
-  release-patch-test:
-    needs: release-patch-setup
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        cfg: ${{ fromJson(needs.release-patch-setup.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v2
-      - name: Update pip
-        run: python3 -m pip install -U pip setuptools
-      - name: Install python requirements for mergetest.py
-        run: python3 -m pip install -U sh
-      - name: Cherry-pick pull request changes
-        run: |
-          echo '{
-            "source_remote_name": "${{ github.actor }}",
-            "source_remote": "${{ github.event.pull_request.head.repo.full_name }}",
-            "source_commits": "${{ needs.release-patch-setup.outputs.source_commits }}",
-            "target_remote": "${{ github.event.pull_request.base.repo.full_name }}",
-            "target_branch": "${{ needs.release-patch-setup.outputs.release_branch }}"
-          }' | ./tools/github/workflow/mergetest.py
-      - name: Build images
-        id: images
-        shell: bash
-        run: |
-          docker login https://ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-          i=0; until [ "$i" -ge 3 ]; do
-            IMAGES=$(echo '${{ toJson(matrix.cfg) }}' | DOCKER_BUILDKIT=1 ./tools/test/build_images.py \
-                --cache-repo ghcr.io/${{ github.repository }} \
-                --branch "${{ needs.release-patch-setup.outputs.release_branch }}" ./etc/docker/test || echo "")
-            if [[ -n $IMAGES ]]; then break;
-            else
-              i=$((i+1)); sleep 5;
-              echo "::warning::Building images failed, retrying…"
-            fi
-          done
-          docker logout https://ghcr.io
-          if [[ -z "$IMAGES" ]]; then echo "::error::Building images failed ultimately"; exit 1; fi
-          echo "::set-output name=images::$IMAGES"
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
       - name: Run test with cfg
         run: 'echo ''{"matrix": ${{ toJson(matrix.cfg) }}, "images": ${{ steps.images.outputs.images }} }'' | ./tools/test/run_tests.py'

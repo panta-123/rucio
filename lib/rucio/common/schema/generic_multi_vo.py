@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from jsonschema import validate, ValidationError
+from jsonschema import ValidationError, validate
 
 from rucio.common.exception import InvalidObject
 
@@ -21,7 +20,8 @@ ACCOUNT_LENGTH = 29
 
 ACCOUNT = {"description": "Account name",
            "type": "string",
-           "pattern": "^[a-z0-9-_]{1,%s}$" % (ACCOUNT_LENGTH - 4)}
+           "maxLength": ACCOUNT_LENGTH - 4,
+           "pattern": "^[a-z0-9-_]+$"}
 
 
 ACCOUNTS = {"description": "Array of accounts",
@@ -37,7 +37,7 @@ ACCOUNT_TYPE = {"description": "Account type",
 
 ACTIVITY = {"description": "Activity name",
             "type": "string",
-            "enum": ["Data Brokering", "Data Consolidation", "Data rebalancing", "Data Rebalancing",
+            "enum": ["Data Brokering", "Data Consolidation", "Data Rebalancing",
                      "Debug", "Express", "Functional Test", "Group Subscriptions",
                      "Production Input", "Production Output",
                      "Analysis Input", "Analysis Output", "Staging",
@@ -48,7 +48,8 @@ SCOPE_LENGTH = 29
 
 SCOPE = {"description": "Scope name",
          "type": "string",
-         "pattern": "^[a-zA-Z_\\-.0-9]{1,%s}$" % (SCOPE_LENGTH - 4)}
+         "maxLength": SCOPE_LENGTH - 4,
+         "pattern": "^[a-zA-Z_\\-.0-9]+$"}
 
 R_SCOPE = {"description": "Scope name",
            "type": "string",
@@ -58,7 +59,8 @@ NAME_LENGTH = 250
 
 NAME = {"description": "Data Identifier name",
         "type": "string",
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9\\.\\-\\_]{1,%s}$" % NAME_LENGTH}
+        "maxLength": NAME_LENGTH,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9\\.\\-\\_]*$"}
 
 R_NAME = {"description": "Data Identifier name",
           "type": "string",
@@ -407,4 +409,4 @@ def validate_schema(name, obj):
         if obj:
             validate(obj, SCHEMAS.get(name, {}))
     except ValidationError as error:  # NOQA, pylint: disable=W0612
-        raise InvalidObject("Problem validating %(name)s : %(error)s" % locals())
+        raise InvalidObject(f'Problem validating {name}: {error}')

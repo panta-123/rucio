@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +18,8 @@ import sys
 
 from setuptools import setup
 
-if sys.version_info < (3, 6):
-    print('ERROR: Rucio Client requires at least Python 3.6 to run.')
+if sys.version_info < (3, 9):
+    print('ERROR: Rucio Client requires at least Python 3.9 to run.')
     sys.exit(1)
 
 try:
@@ -29,7 +28,7 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.dirname(__file__)))
     from setuputil import clients_requirements_table, get_rucio_version, match_define_requirements
 
-install_requires, extras_require = match_define_requirements(clients_requirements_table)
+install_requires, extras_require = match_define_requirements('client', clients_requirements_table)
 
 # Arguments to the setup script to build Basic/Lite distributions
 name = 'rucio-clients'
@@ -37,8 +36,9 @@ packages = ['rucio', 'rucio.client', 'rucio.common', 'rucio.common.schema',
             'rucio.rse.protocols', 'rucio.rse']
 description = "Rucio Client Lite Package"
 data_files = [
-    ('', ['requirements.txt']),
+    ('', ['requirements/requirements.client.txt']),
     ('etc/', ['etc/rse-accounts.cfg.template', 'etc/rucio.cfg.template', 'etc/rucio.cfg.atlas.client.template']),
+    ('rucio_client/', ['tools/merge_rucio_configs.py']),
 ]
 scripts = ['bin/rucio', 'bin/rucio-admin']
 
@@ -64,7 +64,7 @@ setup(
     description=description,
     license="Apache License, Version 2.0",
     url="https://rucio.cern.ch/",
-    python_requires=">=3.6, <4",
+    python_requires=">=3.9, <4",
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'License :: OSI Approved :: Apache Software License',
@@ -74,10 +74,8 @@ setup(
         'Natural Language :: English',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
     ],
     install_requires=install_requires,
     extras_require=extras_require,

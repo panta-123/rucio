@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,21 +14,57 @@
 
 from json import dumps
 
-from flask import Flask, Response, request, jsonify
+from flask import Flask, Response, jsonify, request
 
-from rucio.api.account_limit import get_rse_account_usage
-from rucio.api.rse import add_rse, update_rse, list_rses, del_rse, add_rse_attribute, list_rse_attributes, \
-    del_rse_attribute, add_protocol, get_rse_protocols, del_protocols, update_protocols, get_rse, set_rse_usage, \
-    get_rse_usage, list_rse_usage_history, set_rse_limits, get_rse_limits, delete_rse_limits, parse_rse_expression, \
-    add_distance, get_distance, update_distance, delete_distance, list_qos_policies, add_qos_policy, delete_qos_policy
-from rucio.common.exception import Duplicate, AccessDenied, RSENotFound, RSEOperationNotSupported, \
-    RSEProtocolNotSupported, InvalidObject, RSEProtocolDomainNotSupported, RSEProtocolPriorityError, \
-    InvalidRSEExpression, RSEAttributeNotFound, CounterNotFound, InvalidPath, ReplicaNotFound, InputValidationError
-from rucio.common.utils import Availability, render_json, APIEncoder
+from rucio.common.exception import (
+    AccessDenied,
+    CounterNotFound,
+    Duplicate,
+    InputValidationError,
+    InvalidObject,
+    InvalidPath,
+    InvalidRSEExpression,
+    ReplicaNotFound,
+    RSEAttributeNotFound,
+    RSENotFound,
+    RSEOperationNotSupported,
+    RSEProtocolDomainNotSupported,
+    RSEProtocolNotSupported,
+    RSEProtocolPriorityError,
+)
+from rucio.common.utils import APIEncoder, Availability, render_json
+from rucio.gateway.account_limit import get_rse_account_usage
+from rucio.gateway.rse import (
+    add_distance,
+    add_protocol,
+    add_qos_policy,
+    add_rse,
+    add_rse_attribute,
+    del_protocols,
+    del_rse,
+    del_rse_attribute,
+    delete_distance,
+    delete_qos_policy,
+    delete_rse_limits,
+    get_distance,
+    get_rse,
+    get_rse_limits,
+    get_rse_protocols,
+    get_rse_usage,
+    list_qos_policies,
+    list_rse_attributes,
+    list_rse_usage_history,
+    list_rses,
+    parse_rse_expression,
+    set_rse_limits,
+    set_rse_usage,
+    update_distance,
+    update_protocols,
+    update_rse,
+)
 from rucio.rse import rsemanager
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    try_stream, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, response_headers, try_stream
 
 
 class RSEs(ErrorHandlingMethodView):
@@ -43,15 +78,12 @@ class RSEs(ErrorHandlingMethodView):
         description: Lists all RSEs.
         tags:
           - Rucio Storage Elements
-        requestBody:
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  expression:
-                    description: An RSE expression.
-                    type: string
+        parameters:
+        - name: expression
+          in: query
+          description: RSE expression to select RSEs.
+          schema:
+            type: string
         responses:
           200:
             description: OK
@@ -208,8 +240,8 @@ class RSE(ErrorHandlingMethodView):
                     description: The rse type.
                     type: string
                     enum: ["DISK", "TAPE"]
-                  latitute:
-                    description: The latitute of the RSE.
+                  latitude:
+                    description: The latitude of the RSE.
                     type: number
                   longitude:
                     description: The longitude of the RSE.
@@ -349,8 +381,8 @@ class RSE(ErrorHandlingMethodView):
                     description: The rse type.
                     type: string
                     enum: ["DISK", "TAPE"]
-                  latitute:
-                    description: The latitute of the RSE.
+                  latitude:
+                    description: The latitude of the RSE.
                     type: number
                   longitude:
                     description: The longitude of the RSE.
@@ -443,8 +475,8 @@ class RSE(ErrorHandlingMethodView):
                       description: The rse type.
                       type: string
                       enum: ["DISK", "TAPE"]
-                    latitute:
-                      description: The latitute of the RSE.
+                    latitude:
+                      description: The latitude of the RSE.
                       type: number
                     longitude:
                       description: The longitude of the RSE.
@@ -790,7 +822,7 @@ class ProtocolList(ErrorHandlingMethodView):
           401:
             description: Invalid Auth Token
           404:
-            description: RSE not found or RSE Operation, RSE Protocal Doman, RSE Protocol not supported
+            description: RSE not found or RSE Operation, RSE Protocol Domain, RSE Protocol not supported
           406:
             description: Not acceptable
         """
@@ -841,7 +873,7 @@ class LFNS2PFNS(ErrorHandlingMethodView):
             type: string
         - name: operation
           in: query
-          description: Optional query argument to select the protoco for read-vs-writes.
+          description: Optional query argument to select the protocol for read-vs-writes.
           schema:
             type: string
         responses:
@@ -858,7 +890,7 @@ class LFNS2PFNS(ErrorHandlingMethodView):
           401:
             description: Invalid Auth Token
           404:
-            description: RSE not found or RSE Protocol or RSE Protocl Domain not supported
+            description: RSE not found or RSE Protocol or RSE Protocol Domain not supported
           406:
             description: Not acceptable
         """
@@ -1318,7 +1350,7 @@ class Protocol(ErrorHandlingMethodView):
         """
         ---
         summary: Delete Protocol Attributes
-        description: Delete all protocol attibutes.
+        description: Delete all protocol attributes.
         tags:
           - Rucio Storage Elements
         parameters:
@@ -1816,7 +1848,7 @@ class Distance(ErrorHandlingMethodView):
                   type: array
                   items:
                     type: object
-                    description: One distance betweeen source and destination.
+                    description: One distance between source and destination.
                     properties:
                       src_rse_id:
                         description: The source rse id.
@@ -2143,7 +2175,7 @@ class QoSPolicy(ErrorHandlingMethodView):
                   type: array
                   items:
                     type: object
-                    porperties:
+                    properties:
                       rse_id:
                         description: The rse id.
                         type: string

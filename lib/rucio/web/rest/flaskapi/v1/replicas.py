@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,21 +20,48 @@ from xml.sax.saxutils import escape
 
 from flask import Flask, Response, request
 
-from rucio.api.replica import add_replicas, list_replicas, list_dataset_replicas, list_dataset_replicas_bulk, \
-    delete_replicas, get_did_from_pfns, update_replicas_states, declare_bad_file_replicas, add_bad_dids, add_bad_pfns, \
-    get_suspicious_files, declare_suspicious_file_replicas, list_bad_replicas_status, get_bad_replicas_summary, \
-    list_datasets_per_rse, set_tombstone, list_dataset_replicas_vp
-from rucio.api.quarantined_replica import quarantine_file_replicas
-from rucio.common.config import config_get
+from rucio.common.config import config_get, config_get_int
 from rucio.common.constants import SUPPORTED_PROTOCOLS
-from rucio.common.exception import AccessDenied, DataIdentifierAlreadyExists, InvalidType, DataIdentifierNotFound, \
-    Duplicate, InvalidPath, ResourceTemporaryUnavailable, RSENotFound, ReplicaNotFound, InvalidObject, ScopeNotFound, ReplicaIsLocked
-from rucio.common.utils import parse_response, APIEncoder, render_json_list
+from rucio.common.exception import (
+    AccessDenied,
+    DataIdentifierAlreadyExists,
+    DataIdentifierNotFound,
+    Duplicate,
+    InvalidObject,
+    InvalidPath,
+    InvalidType,
+    ReplicaIsLocked,
+    ReplicaNotFound,
+    ResourceTemporaryUnavailable,
+    RSENotFound,
+    ScopeNotFound,
+    SortingAlgorithmNotSupported,
+)
+from rucio.common.utils import APIEncoder, parse_response, render_json
 from rucio.core.replica_sorter import sort_replicas
 from rucio.db.sqla.constants import BadFilesStatus
-from rucio.web.rest.flaskapi.v1.common import check_accept_header_wrapper_flask, try_stream, parse_scope_name, \
-    response_headers, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
+from rucio.gateway.quarantined_replica import quarantine_file_replicas
+from rucio.gateway.replica import (
+    add_bad_dids,
+    add_bad_pfns,
+    add_replicas,
+    declare_bad_file_replicas,
+    declare_suspicious_file_replicas,
+    delete_replicas,
+    get_bad_replicas_summary,
+    get_did_from_pfns,
+    get_suspicious_files,
+    list_bad_replicas_status,
+    list_dataset_replicas,
+    list_dataset_replicas_bulk,
+    list_dataset_replicas_vp,
+    list_datasets_per_rse,
+    list_replicas,
+    set_tombstone,
+    update_replicas_states,
+)
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, parse_scope_name, response_headers, try_stream
 
 
 def _sorted_with_priorities(replicas, sorted_pfns, limit=None):
@@ -240,7 +266,7 @@ class Replicas(ErrorHandlingMethodView):
             else:
                 response_generator = _generate_json_response(rfiles)
             return try_stream(response_generator, content_type=content_type)
-        except DataIdentifierNotFound as error:
+        except (DataIdentifierNotFound, SortingAlgorithmNotSupported) as error:
             return generate_http_error_flask(404, error)
 
     def post(self):
@@ -381,7 +407,7 @@ class Replicas(ErrorHandlingMethodView):
                           description: The pfn of the replica.
                           type: string
                         error_message:
-                          description: The error message if an error occured.
+                          description: The error message if an error occurred.
                           type: string
                         broken_rule_id:
                           description: The id of the broken rule if one was found.
@@ -653,7 +679,7 @@ class ListReplicas(ErrorHandlingMethodView):
             signature_lifetime = param_get(parameters, 'signature_lifetime')
         else:
             # hardcoded default of 10 minutes if config is not parseable
-            signature_lifetime = config_get('credentials', 'signature_lifetime', raise_exception=False, default=600)
+            signature_lifetime = config_get_int('credentials', 'signature_lifetime', raise_exception=False, default=600)
         resolve_archives = param_get(parameters, 'resolve_archives', default=True)
         resolve_parents = param_get(parameters, 'resolve_parents', default=False)
         updated_after = param_get(parameters, 'updated_after', default=None)
@@ -689,7 +715,8 @@ class ListReplicas(ErrorHandlingMethodView):
                                            all_states=all_states,
                                            rse_expression=rse_expression,
                                            client_location=client_location,
-                                           domain=domain, signature_lifetime=signature_lifetime,
+                                           domain=domain,
+                                           signature_lifetime=signature_lifetime,
                                            resolve_archives=resolve_archives,
                                            resolve_parents=resolve_parents,
                                            nrandom=nrandom,
@@ -723,10 +750,8 @@ class ListReplicas(ErrorHandlingMethodView):
             else:
                 response_generator = _generate_json_response(rfiles)
             return try_stream(response_generator, content_type=content_type)
-        except InvalidObject as error:
+        except (InvalidObject, DataIdentifierNotFound, SortingAlgorithmNotSupported) as error:
             return generate_http_error_flask(400, error)
-        except DataIdentifierNotFound as error:
-            return generate_http_error_flask(404, error)
 
 
 class ReplicasDIDs(ErrorHandlingMethodView):
@@ -1053,7 +1078,7 @@ class SuspiciousReplicas(ErrorHandlingMethodView):
                 nattempts = int(params['nattempts'][0])
 
         result = get_suspicious_files(rse_expression=rse_expression, younger_than=younger_than, nattempts=nattempts, vo=request.environ.get('vo'))
-        return Response(render_json_list(result), 200, content_type='application/json')
+        return Response(render_json(result), 200, content_type='application/json')
 
 
 class BadReplicasStates(ErrorHandlingMethodView):
@@ -1113,7 +1138,7 @@ class BadReplicasStates(ErrorHandlingMethodView):
                       - type: object
                         properties:
                           scope:
-                            description: The scope fo the replica.
+                            description: The scope of the replica.
                             type: string
                           name:
                             description: The name of the replica.
@@ -1124,7 +1149,7 @@ class BadReplicasStates(ErrorHandlingMethodView):
                       - type: object
                         properties:
                           scope:
-                            description: The scope fo the replica.
+                            description: The scope of the replica.
                             type: string
                           name:
                             description: The name of the replica.

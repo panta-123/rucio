@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,22 +23,13 @@ import logging
 import operator
 import os
 import re
+
 from tabulate import tabulate
-from typing import TYPE_CHECKING
 
-from rucio.common.dumper import DUMPS_CACHE_DIR
-from rucio.common.dumper import HTTPDownloadFailed
-from rucio.common.dumper import get_requests_session
-from rucio.common.dumper import http_download_to_file
-from rucio.common.dumper import smart_open
-from rucio.common.dumper import temp_file
-from rucio.common.dumper import to_datetime
-
-if TYPE_CHECKING:
-    from typing import List
+from rucio.common.dumper import DUMPS_CACHE_DIR, HTTPDownloadFailed, get_requests_session, http_download_to_file, smart_open, temp_file, to_datetime
 
 
-class DataModel(object):
+class DataModel:
     """
     Data model for the dumps
     """
@@ -53,7 +43,7 @@ class DataModel(object):
     def __init__(self, *args):
         if len(args) != len(self.SCHEMA):
             raise TypeError(
-                'Wrong number of parameters (fields) to initalize {0} '
+                'Wrong number of parameters (fields) to initialize {0} '
                 'instance. {1} given, {2} expected:\n{3}'.format(
                     type(self).__name__,
                     len(args),
@@ -74,7 +64,7 @@ class DataModel(object):
         self.date = None
 
     @classmethod
-    def get_fieldnames(cls) -> "List[str]":
+    def get_fieldnames(cls) -> list[str]:
         """
         Get the field names
         """
@@ -160,20 +150,17 @@ class DataModel(object):
         logger = logging.getLogger('auditor.data_models')
         requests_session = get_requests_session()
         if date == 'latest':
-            url = ''.join((cls.BASE_URL, cls.URI, '?rse={0}'.format(rse)))
+            url = ''.join((cls.BASE_URL, cls.URI, '?rse={0}'.format(rse)))  # type: ignore
             request_headers = requests_session.head(url)
             for field in request_headers.headers['content-disposition'].split(';'):
                 if field.startswith('filename='):
                     date = field.split('=')[1].split('_')[-1].split('.')[0]
 
+        elif isinstance(date, datetime.datetime):
+            date = date.strftime('%d-%m-%Y')
+            url = ''.join((cls.BASE_URL, cls.URI, '?rse={0}&date={1}'.format(rse, date)))  # type: ignore
         else:
-            assert isinstance(date, datetime.datetime)
-            date = date.strftime('%d-%m-%Y')  # pylint: disable=no-member
-            url = ''.join((
-                cls.BASE_URL,
-                cls.URI,
-                '?rse={0}&date={1}'.format(rse, date),
-            ))
+            raise ValueError("Passed date (%s) must be a datetime object or 'latest'." % date)
 
         if not os.path.isdir(cache_dir):
             os.mkdir(cache_dir)
@@ -196,7 +183,7 @@ class DataModel(object):
                     url,
                     response.status_code,
                 )
-                raise HTTPDownloadFailed('Downloading {0} dump'.format(cls.__name__), code=response.status_code)
+                raise HTTPDownloadFailed('Downloading {0} dump'.format(cls.__name__), code=str(response.status_code))
 
             with temp_file(cache_dir, final_name=filename) as (tfile, _):
                 http_download_to_file(url, tfile, session=requests_session)
@@ -247,7 +234,8 @@ class CompleteDataset(DataModel):
             self.state = args[7]
         else:
             self.state = None
-        assert len(args) <= 8
+        if len(args) > 8:
+            raise ValueError("Too many arguments, must be 8 or less. Instead passed %s" % len(args))
 
 
 class Replica(DataModel):
@@ -274,10 +262,11 @@ class Replica(DataModel):
 
         if len(args) == 8:
             logger.warning('Missing parameter\nrse: %s\ndataset: %s\n', self.rse, self.name)
-        assert len(args) <= 9
+        elif len(args) > 9:
+            raise ValueError("Too many arguments. Must be 9 or less, instead passed %s" % len(args))
 
 
-class Filter(object):
+class Filter:
     _Condition = collections.namedtuple('_Condition', ('comparator', 'attribute', 'expected'))
 
     def __init__(self, filter_str, record_class):
@@ -302,7 +291,8 @@ class Filter(object):
         for expr in filter_str.split(','):
             key, expected = expr.split('=')
             # Better checks required
-            assert key in record_class.get_fieldnames()
+            if key not in record_class.get_fieldnames():
+                raise ValueError("Key %s not supported." % key)
             parser = list(filter(lambda t: t[0] == key, record_class.SCHEMA))[0][1]
             self.conditions.append(self._Condition(
                 comparator=operator.eq,

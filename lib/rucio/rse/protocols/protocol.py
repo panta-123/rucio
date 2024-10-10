@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,16 +16,19 @@
 This module defines the base class for implementing a transfer protocol,
 along with some of the default methods for LFN2PFN translations.
 """
-
 import hashlib
 import logging
-
 from configparser import NoOptionError, NoSectionError
+from typing import TYPE_CHECKING, Any, Optional, TypeVar
 from urllib.parse import urlparse
 
 from rucio.common import config, exception
-from rucio.common.utils import register_policy_package_algorithms
+from rucio.common.constants import RseAttr
+from rucio.common.plugins import PolicyPackageAlgorithms
 from rucio.rse import rsemanager
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 if getattr(rsemanager, 'CLIENT_MODE', None):
     from rucio.client.rseclient import RSEClient
@@ -37,13 +39,102 @@ if getattr(rsemanager, 'SERVER_MODE', None):
     from rucio.core.rse import get_rse_vo
 
 
-class RSEDeterministicTranslation(object):
+class RSEDeterministicScopeTranslation(PolicyPackageAlgorithms):
+    """
+        Translates a pfn dictionary into a scope and name
+    """
+
+    _algorithm_type = "pfn2lfn"
+
+    def __init__(self, vo: str = 'def'):
+        super().__init__()
+
+        self.register(RSEDeterministicScopeTranslation._default, "def")
+        self.register(RSEDeterministicScopeTranslation._atlas, "atlas")
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            # Use the function defined in the policy package if it's configured so
+            algorithm_name = config.config_get('policy', self._algorithm_type)
+        except (NoOptionError, NoSectionError, RuntimeError):
+            # Don't use a function from the policy package. Use one defined in this class according to vo
+            logger.debug("PFN2LFN function will not be fetched from the policy package")
+            if super()._supports(self._algorithm_type, vo):
+                algorithm_name = vo
+            else:
+                algorithm_name = "def"
+
+        self.parser = self.get_parser(algorithm_name)
+
+    @classmethod
+    def get_parser(cls, algorithm_name: str) -> 'Callable[..., Any]':
+        return super()._get_one_algorithm(cls._algorithm_type, algorithm_name)
+
+    @classmethod
+    def register(
+        cls,
+        pfn2lfn_callable: 'Callable',
+        name: Optional[str] = None
+    ) -> None:
+        """
+        Provided a callable function, register it as one of the valid PFN2LFN algorithms.
+
+
+        :param pfn2lfn_callable: Callable function to use.
+        :param name: Algorithm name used for registration.
+        """
+        if name is None:
+            name = pfn2lfn_callable.__name__
+        algorithm_dict = {name: pfn2lfn_callable}
+        super()._register(cls._algorithm_type, algorithm_dict)
+
+    @staticmethod
+    def _default(parsed_pfn: 'Mapping[str, str]') -> tuple[str, str]:
+        """ Translate pfn to name/scope pair
+
+        :param parsed_pfn: dictionary representing pfn containing:
+            - path: str,
+            - name: str
+        :return: tuple containing name, scope
+        """
+        path = parsed_pfn['path']
+        scope = path.lstrip('/').split('/')[0]
+        name = parsed_pfn['name']
+        return name, scope
+
+    @staticmethod
+    def _atlas(parsed_pfn: 'Mapping[str, str]') -> tuple[str, str]:
+        """ Translate pfn to name/scope pair
+
+        :param parsed_pfn: dictionary representing pfn containing:
+            - path: str,
+            - name: str
+        :return: tuple containing name, scope
+        """
+        path = parsed_pfn['path']
+        if path.startswith('/user') or path.startswith('/group'):
+            scope = '%s.%s' % (path.split('/')[1], path.split('/')[2])
+            name = parsed_pfn['name']
+        else:
+            name, scope = RSEDeterministicScopeTranslation._default(parsed_pfn)
+
+        return name, scope
+
+
+RSEDeterministicScopeTranslation()
+
+
+RSEDeterministicTranslationT = TypeVar('RSEDeterministicTranslationT', bound='RSEDeterministicTranslation')
+
+
+class RSEDeterministicTranslation(PolicyPackageAlgorithms):
     """
     Execute the logic for translating a LFN to a path.
     """
 
-    _LFN2PFN_ALGORITHMS = {}
     _DEFAULT_LFN2PFN = "hash"
+    _algorithm_type = "lfn2pfn"
 
     def __init__(self, rse=None, rse_attributes=None, protocol_attributes=None):
         """
@@ -54,10 +145,10 @@ class RSEDeterministicTranslation(object):
         :param rse_attributes: A dictionary of RSE-specific attributes for use in the translation.
         :param protocol_attributes: A dictionary of RSE/protocol-specific attributes.
         """
+        super().__init__()
         self.rse = rse
         self.rse_attributes = rse_attributes if rse_attributes else {}
         self.protocol_attributes = protocol_attributes if protocol_attributes else {}
-        self.loaded_policy_modules = False
 
     @classmethod
     def supports(cls, name):
@@ -65,12 +156,12 @@ class RSEDeterministicTranslation(object):
         Check to see if a specific algorithm is supported.
 
         :param name: Name of the deterministic algorithm.
-        :returns: True if `name` is an algorithm supported by the translator class, False otherwise.
+        :returns: True if `name` is an algorithm supported by the translator class, False otherwise
         """
-        return name in cls._LFN2PFN_ALGORITHMS
+        return super()._supports(cls._algorithm_type, name)
 
-    @staticmethod
-    def register(lfn2pfn_callable, name=None):
+    @classmethod
+    def register(cls, lfn2pfn_callable, name=None):
         """
         Provided a callable function, register it as one of the valid LFN2PFN algorithms.
 
@@ -88,7 +179,8 @@ class RSEDeterministicTranslation(object):
         """
         if name is None:
             name = lfn2pfn_callable.__name__
-        RSEDeterministicTranslation._LFN2PFN_ALGORITHMS[name] = lfn2pfn_callable
+        algorithm_dict = {name: lfn2pfn_callable}
+        super()._register(cls._algorithm_type, algorithm_dict)
 
     @staticmethod
     def __hash(scope, name, rse, rse_attrs, protocol_attrs):
@@ -195,27 +287,6 @@ class RSEDeterministicTranslation(object):
 
         return '%s/%s/%s/%s' % (scope[0:7], scope[4:len(scope)], name.split('-')[0] + "-" + name.split('-')[1], name)
 
-    @staticmethod
-    def __lsst(scope, name, rse, rse_attrs, protocol_attrs):
-        """
-        LFN2PFN algorithm for Rubin-LSST in the ESCAPE project
-
-        Replace convention delimiter '__' by '/'
-        The Escape instance does use the 'generic' Rucio schema.
-
-        :param scope: Scope of the LFN (ignored)
-        :param name: File name of the LFN.
-        :param rse: RSE for PFN (ignored)
-        :param rse_attrs: RSE attributes for PFN (ignored)
-        :param protocol_attrs: RSE protocol attributes for PFN (ignored)
-        :returns: Path for use in the PFN generation.
-        """
-        del scope
-        del rse
-        del rse_attrs
-        del protocol_attrs
-        return name.replace('__', '/')
-
     @classmethod
     def _module_init_(cls):
         """
@@ -226,7 +297,6 @@ class RSEDeterministicTranslation(object):
         cls.register(cls.__ligo, "ligo")
         cls.register(cls.__belleii, "belleii")
         cls.register(cls.__xenon, "xenon")
-        cls.register(cls.__lsst, "lsst")
         policy_module = None
         try:
             policy_module = config.config_get('policy', 'lfn2pfn_module')
@@ -248,22 +318,17 @@ class RSEDeterministicTranslation(object):
 
             :returns: RSE specific URI of the physical file
         """
-        # on first call, register any lfn2pfn algorithms from the policy package(s) (server only)
-        if getattr(rsemanager, 'SERVER_MODE', None) and not self.loaded_policy_modules:
-            register_policy_package_algorithms('lfn2pfn', RSEDeterministicTranslation._LFN2PFN_ALGORITHMS)
-            self.loaded_policy_modules = True
-
-        algorithm = self.rse_attributes.get('lfn2pfn_algorithm', 'default')
+        algorithm = self.rse_attributes.get(RseAttr.LFN2PFN_ALGORITHM, 'default')
         if algorithm == 'default':
             algorithm = RSEDeterministicTranslation._DEFAULT_LFN2PFN
-        algorithm_callable = RSEDeterministicTranslation._LFN2PFN_ALGORITHMS[algorithm]
+        algorithm_callable = super()._get_one_algorithm(RSEDeterministicTranslation._algorithm_type, algorithm)
         return algorithm_callable(scope, name, self.rse, self.rse_attributes, self.protocol_attributes)
 
 
 RSEDeterministicTranslation._module_init_()  # pylint: disable=protected-access
 
 
-class RSEProtocol(object):
+class RSEProtocol:
     """ This class is virtual and acts as a base to inherit new protocols from. It further provides some common functionality which applies for the amjority of the protocols."""
 
     def __init__(self, protocol_attr, rse_settings, logger=logging.log):
@@ -295,7 +360,7 @@ class RSEProtocol(object):
 
     def lfns2pfns(self, lfns):
         """
-            Retruns a fully qualified PFN for the file referred by path.
+            Returns a fully qualified PFN for the file referred by path.
 
             :param path: The path to the file.
 
@@ -336,13 +401,13 @@ class RSEProtocol(object):
         return pfns
 
     def __lfns2pfns_client(self, lfns):
-        """ Provides the path of a replica for non-deterministic sites. Will be assigned to get path by the __init__ method if neccessary.
+        """ Provides the path of a replica for non-deterministic sites. Will be assigned to get path by the __init__ method if necessary.
 
             :param scope: list of DIDs
 
             :returns: dict with scope:name as keys and PFN as value (in case of errors the Rucio exception si assigned to the key)
         """
-        client = RSEClient()
+        client = RSEClient()  # pylint: disable=E0601
 
         lfns = [lfns] if isinstance(lfns, dict) else lfns
         lfn_query = ["%s:%s" % (lfn['scope'], lfn['name']) for lfn in lfns]
@@ -361,10 +426,10 @@ class RSEProtocol(object):
         return self.translator.path(scope, name)
 
     def _get_path_nondeterministic_server(self, scope, name):  # pylint: disable=invalid-name
-        """ Provides the path of a replica for non-deterministic sites. Will be assigned to get path by the __init__ method if neccessary. """
-        vo = get_rse_vo(self.rse['id'])
-        scope = InternalScope(scope, vo=vo)
-        rep = replica.get_replica(scope=scope, name=name, rse_id=self.rse['id'])
+        """ Provides the path of a replica for non-deterministic sites. Will be assigned to get path by the __init__ method if necessary. """
+        vo = get_rse_vo(self.rse['id'])  # pylint: disable=E0601
+        scope = InternalScope(scope, vo=vo)  # pylint: disable=E0601
+        rep = replica.get_replica(scope=scope, name=name, rse_id=self.rse['id'])  # pylint: disable=E0601
         if 'path' in rep and rep['path'] is not None:
             path = rep['path']
         elif 'state' in rep and (rep['state'] is None or rep['state'] == 'UNAVAILABLE'):
@@ -379,7 +444,7 @@ class RSEProtocol(object):
 
     def parse_pfns(self, pfns):
         """
-            Splits the given PFN into the parts known by the protocol. It is also checked if the provided protocol supportes the given PFNs.
+            Splits the given PFN into the parts known by the protocol. It is also checked if the provided protocol supports the given PFNs.
 
             :param pfns: a list of a fully qualified PFNs
 
@@ -419,7 +484,7 @@ class RSEProtocol(object):
                 raise exception.RSEFileNameNotSupported('Invalid prefix: provided \'%s\', expected \'%s\'' % ('/'.join(path.split('/')[0:len(prefix.split('/')) - 1]),
                                                                                                               prefix))  # len(...)-1 due to the leading '/
 
-            # Spliting parsed.path into prefix, path, filename
+            # Splitting parsed.path into prefix, path, filename
             path = path.partition(prefix)[2]
             name = path.split('/')[-1]
             path = '/'.join(path.split('/')[:-1])
@@ -464,7 +529,7 @@ class RSEProtocol(object):
             :param transfer_timeout: Transfer timeout (in seconds)
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
          """
         raise NotImplementedError
@@ -479,7 +544,7 @@ class RSEProtocol(object):
             :param transfer_timeout: Transfer timeout (in seconds)
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         raise NotImplementedError
@@ -490,7 +555,7 @@ class RSEProtocol(object):
 
             :param path: path to the to be deleted file
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         raise NotImplementedError
@@ -502,7 +567,7 @@ class RSEProtocol(object):
             :param new_path: path to the new file on the storage
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         raise NotImplementedError
@@ -513,7 +578,7 @@ class RSEProtocol(object):
 
             :returns: a list with dict containing 'totalsize' and 'unusedsize'
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
         """
         raise NotImplementedError
 
@@ -523,7 +588,7 @@ class RSEProtocol(object):
 
             :param path: path to file
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
 
             :returns: a dict with two keys, filesize and adler32 of the file provided in path.

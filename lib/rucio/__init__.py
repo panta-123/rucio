@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,9 +13,5 @@
 # limitations under the License.
 
 import gettext
-import sys
 
-if sys.version_info < (3,):
-    gettext.install('rucio', unicode=1)  # pylint: disable=unexpected-keyword-arg
-else:
-    gettext.install('rucio')
+gettext.install('rucio')

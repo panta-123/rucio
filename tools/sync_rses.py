@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import os.path
+import sys
+
 base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(base_path)
 os.chdir(base_path)
@@ -59,7 +59,7 @@ def main(argv):
                       region_code=region_code, country_name=country_name, staging_area=staging_area,
                       continent=continent, time_zone=time_zone, ISP=ISP)
         except Duplicate:
-            print('%(rse)s already added' % locals())
+            print(f'{rse} already added')
         except InvalidObject as err:
             print(err)
             continue

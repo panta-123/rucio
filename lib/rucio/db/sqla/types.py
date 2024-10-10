@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,12 +14,13 @@
 
 import uuid
 
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.dialects.oracle import RAW, CLOB
-from sqlalchemy.dialects.mysql import BINARY
-from sqlalchemy.types import TypeDecorator, CHAR, String
-from sqlalchemy.sql import operators
 import sqlalchemy.types as types
+from sqlalchemy.dialects.mysql import BINARY
+from sqlalchemy.dialects.oracle import CLOB, RAW
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.sql import operators
+from sqlalchemy.types import CHAR, String, TypeDecorator
+
 from rucio.common.exception import InvalidType
 from rucio.common.types import InternalAccount, InternalScope
 
@@ -70,11 +70,11 @@ class GUID(TypeDecorator):
         if value is None:
             return value
         elif dialect.name == 'oracle':
-            return str(uuid.UUID(bytes=value)).replace('-', '').lower()
+            return str(value if isinstance(value, uuid.UUID) else uuid.UUID(bytes=value)).replace('-', '').lower()
         elif dialect.name == 'mysql':
-            return str(uuid.UUID(bytes=value)).replace('-', '').lower()
+            return str(value if isinstance(value, uuid.UUID) else uuid.UUID(bytes=value)).replace('-', '').lower()
         else:
-            return str(uuid.UUID(value)).replace('-', '').lower()
+            return str(value if isinstance(value, uuid.UUID) else uuid.UUID(value)).replace('-', '').lower()
 
 
 class BooleanString(TypeDecorator):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,25 +19,34 @@ import functools
 import logging
 import threading
 import time
+from typing import TYPE_CHECKING
 
 import rucio.db.sqla.util
 from rucio.common import exception
 from rucio.common.logging import setup_logging
 from rucio.core.replica import get_cleaned_updated_collection_replicas, update_collection_replica
-from rucio.daemons.common import run_daemon
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+
+if TYPE_CHECKING:
+    from types import FrameType
+    from typing import Optional
 
 graceful_stop = threading.Event()
+DAEMON_NAME = 'abacus-collection-replica'
 
 
-def collection_replica_update(once=False, limit=1000, sleep_time=10):
+def collection_replica_update(
+        once: bool = False,
+        limit: int = 1000,
+        sleep_time: int = 10
+) -> None:
     """
     Main loop to check and update the collection replicas.
     """
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable='abacus-collection-replica',
-        logger_prefix='collection_replica_update',
+        executable=DAEMON_NAME,
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -48,7 +56,11 @@ def collection_replica_update(once=False, limit=1000, sleep_time=10):
     )
 
 
-def run_once(heartbeat_handler, limit, **_kwargs):
+def run_once(
+        heartbeat_handler: HeartbeatHandler,
+        limit: int,
+        **_kwargs
+) -> bool:
     worker_number, total_workers, logger = heartbeat_handler.live()
     # Select a bunch of collection replicas for to update for this worker
     start = time.time()  # NOQA
@@ -77,7 +89,7 @@ def run_once(heartbeat_handler, limit, **_kwargs):
     return must_sleep
 
 
-def stop(signum=None, frame=None):
+def stop(signum: "Optional[int]" = None, frame: "Optional[FrameType]" = None) -> None:
     """
     Graceful exit.
     """
@@ -85,11 +97,15 @@ def stop(signum=None, frame=None):
     graceful_stop.set()
 
 
-def run(once=False, threads=1, sleep_time=10, limit=1000):
+def run(
+        once: bool = False,
+        threads: int = 1,
+        sleep_time: int = 10,
+        limit: int = 1000):
     """
     Starts up the Abacus-Collection-Replica threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise exception.DatabaseException('Database was not updated, daemon won\'t start')
@@ -99,10 +115,10 @@ def run(once=False, threads=1, sleep_time=10, limit=1000):
         collection_replica_update(once)
     else:
         logging.info('main: starting threads')
-        threads = [threading.Thread(target=collection_replica_update, kwargs={'once': once, 'sleep_time': sleep_time, 'limit': limit})
-                   for _ in range(0, threads)]
-        [t.start() for t in threads]
+        thread_list = [threading.Thread(target=collection_replica_update, kwargs={'once': once, 'sleep_time': sleep_time, 'limit': limit})
+                       for _ in range(0, threads)]
+        [t.start() for t in thread_list]
         logging.info('main: waiting for interrupts')
         # Interruptible joins require a timeout.
-        while threads[0].is_alive():
-            [t.join(timeout=3.14) for t in threads]
+        while thread_list[0].is_alive():
+            [t.join(timeout=3.14) for t in thread_list]

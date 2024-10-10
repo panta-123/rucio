@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,28 +14,30 @@
 
 from datetime import datetime
 from json import dumps
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
-from flask import Flask, Response, request, redirect, jsonify
+from flask import Flask, Response, jsonify, redirect, request
 
-from rucio.api.account import add_account, del_account, get_account_info, list_accounts, list_identities, \
-    list_account_attributes, add_account_attribute, del_account_attribute, update_account, get_usage_history
-from rucio.api.account_limit import get_local_account_limits, get_local_account_limit, get_local_account_usage, \
-    get_global_account_limit, get_global_account_limits, get_global_account_usage
-from rucio.api.identity import add_account_identity, del_account_identity
-from rucio.api.rule import list_replication_rules
-from rucio.api.scope import add_scope, get_scopes
-from rucio.common.exception import AccountNotFound, Duplicate, AccessDenied, RuleNotFound, RSENotFound, \
-    IdentityError, CounterNotFound, ScopeNotFound, InvalidObject
+from rucio.common.exception import AccessDenied, AccountNotFound, CounterNotFound, Duplicate, IdentityError, InvalidObject, RSENotFound, RuleNotFound, ScopeNotFound
 from rucio.common.utils import APIEncoder, render_json
-from rucio.web.rest.flaskapi.v1.common import response_headers, check_accept_header_wrapper_flask, \
-    try_stream, generate_http_error_flask, ErrorHandlingMethodView, json_parameters, param_get
+from rucio.gateway.account import add_account, add_account_attribute, del_account, del_account_attribute, get_account_info, get_usage_history, list_account_attributes, list_accounts, list_identities, update_account
+from rucio.gateway.account_limit import get_global_account_limit, get_global_account_limits, get_global_account_usage, get_local_account_limit, get_local_account_limits, get_local_account_usage
+from rucio.gateway.identity import add_account_identity, del_account_identity
+from rucio.gateway.rule import list_replication_rules
+from rucio.gateway.scope import add_scope, get_scopes
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, check_accept_header_wrapper_flask, generate_http_error_flask, json_parameters, param_get, response_headers, try_stream
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from flask.typing import ResponseReturnValue
 
 
 class Attributes(ErrorHandlingMethodView):
 
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, account):
+    def get(self, account: str) -> Response:
         """
         ---
         summary: List attributes
@@ -81,7 +82,7 @@ class Attributes(ErrorHandlingMethodView):
 
         return jsonify(attribs)
 
-    def post(self, account, key):
+    def post(self, account: str, key: str) -> 'ResponseReturnValue':
         """
         ---
         summary: Create attribute
@@ -131,7 +132,6 @@ class Attributes(ErrorHandlingMethodView):
             description: Attribute already exists
         """
         parameters = json_parameters()
-        key = param_get(parameters, 'key', default=key)
         value = param_get(parameters, 'value')
         try:
             add_account_attribute(key=key, value=value, account=account, issuer=request.environ.get('issuer'), vo=request.environ.get('vo'))
@@ -144,7 +144,7 @@ class Attributes(ErrorHandlingMethodView):
 
         return 'Created', 201
 
-    def delete(self, account, key):
+    def delete(self, account: str, key: str) -> Union[Response, tuple[Literal[''], Literal[200]]]:
         """
         ---
         summary: Delete attribute
@@ -184,7 +184,7 @@ class Attributes(ErrorHandlingMethodView):
 
 class Scopes(ErrorHandlingMethodView):
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, account):
+    def get(self, account: str) -> Response:
         """
         ---
         summary: List scopes
@@ -226,7 +226,7 @@ class Scopes(ErrorHandlingMethodView):
 
         return jsonify(scopes)
 
-    def post(self, account, scope):
+    def post(self, account: str, scope: str) -> 'ResponseReturnValue':
         """
         ---
         summary: Create scope
@@ -281,7 +281,7 @@ class AccountParameter(ErrorHandlingMethodView):
     """ create, update, get and disable rucio accounts. """
 
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, account):
+    def get(self, account: str) -> "ResponseReturnValue":
         """
         ---
         summary: List account parameters
@@ -333,7 +333,7 @@ class AccountParameter(ErrorHandlingMethodView):
             frontend = request.headers.get('X-Requested-Host', default=None)
             if frontend:
                 return redirect(f'{frontend}/accounts/{request.environ.get("issuer")}', code=302)
-            return redirect(request.environ.get('issuer'), code=303)
+            return redirect(request.environ.get('issuer'), code=303)  # type: ignore (request.environ.get('issuer') might be None)
 
         try:
             acc = get_account_info(account, vo=request.environ.get('vo'))
@@ -350,7 +350,7 @@ class AccountParameter(ErrorHandlingMethodView):
 
         return Response(render_json(**accdict), content_type="application/json")
 
-    def put(self, account):
+    def put(self, account: str) -> Union[Response, tuple[Literal[''], Literal[200]]]:
         """
         ---
         summary: Update
@@ -393,7 +393,7 @@ class AccountParameter(ErrorHandlingMethodView):
 
         return '', 200
 
-    def post(self, account):
+    def post(self, account: str) -> 'ResponseReturnValue':
         """
         ---
         summary: Create
@@ -452,7 +452,7 @@ class AccountParameter(ErrorHandlingMethodView):
 
         return 'Created', 201
 
-    def delete(self, account):
+    def delete(self, account: str) -> Union[Response, tuple[Literal[''], Literal[200]]]:
         """
         ---
         summary: Delete
@@ -486,7 +486,7 @@ class AccountParameter(ErrorHandlingMethodView):
 
 class Account(ErrorHandlingMethodView):
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self):
+    def get(self) -> Response:
         """
         ---
         summary: List
@@ -516,16 +516,16 @@ class Account(ErrorHandlingMethodView):
             description: Invalid Auth Token
         """
 
-        def generate(_filter, vo):
+        def generate(_filter: dict[str, Any], vo: str) -> "Iterator[str]":
             for account in list_accounts(filter_=_filter, vo=vo):
                 yield render_json(**account) + "\n"
 
-        return try_stream(generate(_filter=dict(request.args.items(multi=False)), vo=request.environ.get('vo')))
+        return try_stream(generate(_filter=dict(request.args.items(multi=False)), vo=request.environ.get('vo', 'def')))
 
 
 class LocalAccountLimits(ErrorHandlingMethodView):
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, account, rse=None):
+    def get(self, account: str, rse: Optional[str] = None) -> Response:
         """
         ---
         summary: Get local limit
@@ -573,11 +573,11 @@ class LocalAccountLimits(ErrorHandlingMethodView):
 
 class GlobalAccountLimits(ErrorHandlingMethodView):
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, account, rse_expression=None):
+    def get(self, account: str, rse_expression: Optional[str] = None) -> Response:
         """
         ---
-        summary: Get gloabl limit
-        description: Get the current gloabl limits for an account on a specific RSE expression.
+        summary: Get global limit
+        description: Get the current global limits for an account on a specific RSE expression.
         tags:
           - Account
         parameters:
@@ -620,7 +620,7 @@ class GlobalAccountLimits(ErrorHandlingMethodView):
 
 
 class Identities(ErrorHandlingMethodView):
-    def post(self, account):
+    def post(self, account: str) -> 'ResponseReturnValue':
         """
         ---
         summary: Create identity
@@ -705,7 +705,7 @@ class Identities(ErrorHandlingMethodView):
         return 'Created', 201
 
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self, account):
+    def get(self, account: str) -> Response:
         """
         ---
         summary: List identities
@@ -740,15 +740,15 @@ class Identities(ErrorHandlingMethodView):
             description: Not acceptable
         """
         try:
-            def generate(vo):
+            def generate(vo: str) -> "Iterator[str]":
                 for identity in list_identities(account, vo=vo):
                     yield render_json(**identity) + "\n"
 
-            return try_stream(generate(request.environ.get('vo')))
+            return try_stream(generate(request.environ.get('vo', 'def')))
         except AccountNotFound as error:
             return generate_http_error_flask(404, error)
 
-    def delete(self, account):
+    def delete(self, account: str) -> 'ResponseReturnValue':
         """
         ---
         summary: Delete identity
@@ -801,7 +801,7 @@ class Identities(ErrorHandlingMethodView):
 class Rules(ErrorHandlingMethodView):
 
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self, account):
+    def get(self, account: str) -> Response:
         """
         ---
         summary: List rules
@@ -834,11 +834,11 @@ class Rules(ErrorHandlingMethodView):
         filters = {'account': account}
         filters.update(request.args)
         try:
-            def generate(vo):
+            def generate(vo: str) -> "Iterator[str]":
                 for rule in list_replication_rules(filters=filters, vo=vo):
                     yield dumps(rule, cls=APIEncoder) + '\n'
 
-            return try_stream(generate(vo=request.environ.get('vo')))
+            return try_stream(generate(vo=request.environ.get('vo', 'def')))
         except RuleNotFound as error:
             return generate_http_error_flask(404, error)
 
@@ -846,7 +846,7 @@ class Rules(ErrorHandlingMethodView):
 class UsageHistory(ErrorHandlingMethodView):
 
     @check_accept_header_wrapper_flask(['application/json'])
-    def get(self, account, rse):
+    def get(self, account: str, rse: str) -> Response:
         """
         ---
         summary: Get account usage history
@@ -910,7 +910,7 @@ class UsageHistory(ErrorHandlingMethodView):
 class LocalUsage(ErrorHandlingMethodView):
 
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self, account, rse=None):
+    def get(self, account: str, rse: Optional[str] = None) -> Response:
         """
         ---
         summary: Get local account usage
@@ -960,11 +960,11 @@ class LocalUsage(ErrorHandlingMethodView):
             description: Not acceptable
         """
         try:
-            def generate(issuer, vo):
+            def generate(issuer: str, vo: str) -> "Iterator[str]":
                 for usage in get_local_account_usage(account=account, rse=rse, issuer=issuer, vo=vo):
                     yield dumps(usage, cls=APIEncoder) + '\n'
 
-            return try_stream(generate(issuer=request.environ.get('issuer'), vo=request.environ.get('vo')))
+            return try_stream(generate(issuer=request.environ.get('issuer'), vo=request.environ.get('vo', 'def')))  # type: ignore (request.environ.get('issuer') could be None)
         except (AccountNotFound, RSENotFound) as error:
             return generate_http_error_flask(404, error)
         except AccessDenied as error:
@@ -974,7 +974,7 @@ class LocalUsage(ErrorHandlingMethodView):
 class GlobalUsage(ErrorHandlingMethodView):
 
     @check_accept_header_wrapper_flask(['application/x-json-stream'])
-    def get(self, account, rse_expression=None):
+    def get(self, account: str, rse_expression: Optional[str] = None) -> Response:
         """
         ---
         summary: Get local account usage
@@ -1024,18 +1024,18 @@ class GlobalUsage(ErrorHandlingMethodView):
             description: Not acceptable
         """
         try:
-            def generate(vo, issuer):
+            def generate(vo: str, issuer: str) -> "Iterator[str]":
                 for usage in get_global_account_usage(account=account, rse_expression=rse_expression, issuer=issuer, vo=vo):
                     yield dumps(usage, cls=APIEncoder) + '\n'
 
-            return try_stream(generate(vo=request.environ.get('vo'), issuer=request.environ.get('issuer')))
+            return try_stream(generate(vo=request.environ.get('vo', 'def'), issuer=request.environ.get('issuer')))  # type: ignore (request.environ.get('issuer') could be None)
         except (AccountNotFound, RSENotFound) as error:
             return generate_http_error_flask(404, error)
         except AccessDenied as error:
             return generate_http_error_flask(401, error)
 
 
-def blueprint(with_doc=False):
+def blueprint(with_doc: bool = False) -> AuthenticatedBlueprint:
     bp = AuthenticatedBlueprint('accounts', __name__, url_prefix='/accounts')
 
     attributes_view = Attributes.as_view('attributes')
@@ -1082,7 +1082,7 @@ def blueprint(with_doc=False):
     return bp
 
 
-def make_doc():
+def make_doc() -> Flask:
     """ Only used for sphinx documentation """
     doc_app = Flask(__name__)
     doc_app.register_blueprint(blueprint(with_doc=True))

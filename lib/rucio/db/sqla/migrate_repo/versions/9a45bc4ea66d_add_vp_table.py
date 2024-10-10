@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +15,8 @@
 ''' add VP table '''
 
 import sqlalchemy as sa
-
 from alembic import context
-from alembic.op import create_primary_key, create_table, create_foreign_key, drop_table
+from alembic.op import create_foreign_key, create_primary_key, create_table, drop_table
 
 from rucio.common.schema import get_schema_value
 from rucio.db.sqla.types import JSON

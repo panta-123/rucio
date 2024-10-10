@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from flask import Flask, Blueprint
-from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView
+from flask import Blueprint, Flask
+
 from rucio.core.monitor import generate_prometheus_metrics
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView
 
 
 class Metrics(ErrorHandlingMethodView):

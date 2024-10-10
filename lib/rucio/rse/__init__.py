@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,8 +46,8 @@ def get_signed_url_server(rse, service, op, url, vo='def'):
     '''
     get_signed_url_server
     '''
-    from rucio.core.rse import get_rse_id
     from rucio.core.credential import get_signed_url
+    from rucio.core.rse import get_rse_id
 
     rse_id = get_rse_id(rse=rse, vo=vo)
     return get_signed_url(rse_id, service, op, url)
@@ -78,9 +77,9 @@ if rsemanager.CLIENT_MODE:   # pylint:disable=no-member
 
 
 if rsemanager.SERVER_MODE:   # pylint:disable=no-member
-    from rucio.core.rse import get_rse_protocols, get_rse_id
+    from rucio.common.cache import MemcacheRegion
+    from rucio.core.rse import get_rse_id, get_rse_protocols
     from rucio.core.vo import map_vo
-    from rucio.common.cache import make_region_memcached
 
     def tmp_rse_info(rse=None, vo='def', rse_id=None, session=None):
         if rse_id is None:
@@ -93,5 +92,5 @@ if rsemanager.SERVER_MODE:   # pylint:disable=no-member
 
     setattr(rsemanager, '__request_rse_info', tmp_rse_info)
     setattr(rsemanager, '__get_signed_url', get_signed_url_server)
-    RSE_REGION = make_region_memcached(expiration_time=900)
+    RSE_REGION = MemcacheRegion(expiration_time=900)
     setattr(rsemanager, 'RSE_REGION', RSE_REGION)

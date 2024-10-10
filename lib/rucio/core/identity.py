@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +15,9 @@
 import hashlib
 import os
 from re import match
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import asc
+from sqlalchemy import select, true
 from sqlalchemy.exc import IntegrityError
 
 from rucio.common import exception
@@ -26,15 +25,18 @@ from rucio.core.account import account_exists
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import IdentityType
 from rucio.db.sqla.session import read_session, transactional_session
-from rucio.common.types import InternalAccount
-from typing import Union
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy import Row
     from sqlalchemy.orm import Session
+
+    from rucio.common.types import InternalAccount
 
 
 @transactional_session
-def add_identity(identity: str, type_: IdentityType, email: str, password: Union[str, None] = None, *, session: "Session"):
+def add_identity(identity: str, type_: IdentityType, email: str, password: Optional[str] = None, *, session: "Session") -> None:
     """
     Creates a user identity.
 
@@ -65,7 +67,7 @@ def add_identity(identity: str, type_: IdentityType, email: str, password: Union
 
 
 @read_session
-def verify_identity(identity: str, type_: IdentityType, password: Union[str, None] = None, *, session: "Session") -> bool:
+def verify_identity(identity: str, type_: IdentityType, password: Optional[str] = None, *, session: "Session") -> bool:
     """
     Verifies a user identity.
     :param identity: The identity key name. For example x509 DN, or a username.
@@ -81,10 +83,18 @@ def verify_identity(identity: str, type_: IdentityType, password: Union[str, Non
     if type_ == IdentityType.USERPASS and password is None:
         raise exception.IdentityError('You must provide a password!')
 
-    id_ = session.query(models.Identity).filter_by(identity=identity, identity_type=type_).first()
+    query = select(
+        models.Identity
+    ).where(
+        models.Identity.identity == identity,
+        models.Identity.identity_type == type_
+    )
+    id_ = session.execute(query).scalar()
     if id_ is None:
-        raise exception.IdentityError('Identity pair \'%s\',\'%s\' does not exist!' % (identity, type_))
-    if type_ == IdentityType.USERPASS:
+        raise exception.IdentityError('Identity \'%s\' of type \'%s\' does not exist!' % (identity, type_))
+    if type_ == IdentityType.X509:
+        return True
+    elif type_ == IdentityType.USERPASS:
         salted_password = id_.salt + password.encode()
         password = hashlib.sha256(salted_password).hexdigest()
         if password != id_.password:
@@ -95,7 +105,7 @@ def verify_identity(identity: str, type_: IdentityType, password: Union[str, Non
 
 
 @transactional_session
-def del_identity(identity: str, type_: IdentityType, *, session: "Session"):
+def del_identity(identity: str, type_: IdentityType, *, session: "Session") -> None:
     """
     Deletes a user identity.
 
@@ -104,14 +114,29 @@ def del_identity(identity: str, type_: IdentityType, *, session: "Session"):
     :param session: The database session in use.
     """
 
-    id_ = session.query(models.Identity).filter_by(identity=identity, identity_type=type_).first()
+    query = select(
+        models.Identity
+    ).where(
+        models.Identity.identity == identity,
+        models.Identity.identity_type == type_
+    )
+    id_ = session.execute(query).scalar()
     if id_ is None:
         raise exception.IdentityError('Identity (\'%s\',\'%s\') does not exist!' % (identity, type_))
     id_.delete(session=session)
 
 
 @transactional_session
-def add_account_identity(identity: str, type_: IdentityType, account: InternalAccount, email: str, default: bool = False, password: str = None, *, session: "Session"):
+def add_account_identity(
+    identity: str,
+    type_: IdentityType,
+    account: "InternalAccount",
+    email: str,
+    default: bool = False,
+    password: Optional[str] = None,
+    *,
+    session: "Session"
+) -> None:
     """
     Adds a membership association between identity and account.
 
@@ -126,10 +151,16 @@ def add_account_identity(identity: str, type_: IdentityType, account: InternalAc
     if not account_exists(account, session=session):
         raise exception.AccountNotFound('Account \'%s\' does not exist.' % account)
 
-    id_ = session.query(models.Identity).filter_by(identity=identity, identity_type=type_).first()
+    query = select(
+        models.Identity
+    ).where(
+        models.Identity.identity == identity,
+        models.Identity.identity_type == type_
+    )
+    id_ = session.execute(query).scalar()
     if id_ is None:
         add_identity(identity=identity, type_=type_, email=email, password=password, session=session)
-        id_ = session.query(models.Identity).filter_by(identity=identity, identity_type=type_).first()
+        id_ = session.execute(query).scalar()
 
     iaa = models.IdentityAccountAssociation(identity=id_.identity, identity_type=id_.identity_type, account=account,
                                             is_default=default)
@@ -147,7 +178,7 @@ def add_account_identity(identity: str, type_: IdentityType, account: InternalAc
 
 
 @read_session
-def exist_identity_account(identity: str, type_: IdentityType, account: InternalAccount, *, session: "Session"):
+def exist_identity_account(identity: str, type_: IdentityType, account: "InternalAccount", *, session: "Session") -> bool:
     """
     Check if an identity is mapped to an account.
 
@@ -158,33 +189,49 @@ def exist_identity_account(identity: str, type_: IdentityType, account: Internal
 
     :returns: True if identity is mapped to account, otherwise False
     """
-    return session.query(models.IdentityAccountAssociation).filter_by(identity=identity,
-                                                                      identity_type=type_,
-                                                                      account=account).first() is not None
+    query = select(
+        models.IdentityAccountAssociation
+    ).where(
+        models.IdentityAccountAssociation.identity == identity,
+        models.IdentityAccountAssociation.identity_type == type_,
+        models.IdentityAccountAssociation.account == account
+    )
+    return session.execute(query).scalar() is not None
 
 
 @read_session
-def get_default_account(identity: str, type_: IdentityType, oldest_if_none: bool = False, *, session: "Session"):
+def get_default_account(identity: str, type_: IdentityType, oldest_if_none: bool = False, *, session: "Session") -> Optional["InternalAccount"]:
     """
     Retrieves the default account mapped to an identity.
 
     :param identity: The identity key name. For example, x509DN, or a username.
     :param type_: The type of the authentication (x509, gss, userpass, saml, oidc).
-    :param oldest_if_none: If True and no default account it found the oldes known
+    :param oldest_if_none: If True and no default account it found the oldest known
                            account of that identity will be chosen, if False and
                            no default account is found, exception will be raised.
     :param session: The database session to use.
     :returns: The default account name, None otherwise.
     """
 
-    tmp = session.query(models.IdentityAccountAssociation).filter_by(identity=identity,
-                                                                     identity_type=type_,
-                                                                     is_default=True).first()
+    query = select(
+        models.IdentityAccountAssociation
+    ).where(
+        models.IdentityAccountAssociation.identity == identity,
+        models.IdentityAccountAssociation.identity_type == type_,
+        models.IdentityAccountAssociation.is_default == true()
+    )
+    tmp = session.execute(query).scalar()
     if tmp is None:
         if oldest_if_none:
-            tmp = session.query(models.IdentityAccountAssociation)\
-                         .filter_by(identity=identity, identity_type=type_)\
-                         .order_by(asc(models.IdentityAccountAssociation.created_at)).first()
+            query = select(
+                models.IdentityAccountAssociation
+            ).where(
+                models.IdentityAccountAssociation.identity == identity,
+                models.IdentityAccountAssociation.identity_type == type_
+            ).order_by(
+                models.IdentityAccountAssociation.created_at
+            )
+            tmp = session.execute(query).scalar()
             if tmp is None:
                 raise exception.IdentityError('There is no account for identity (%s, %s)' % (identity, type_))
         else:
@@ -194,7 +241,7 @@ def get_default_account(identity: str, type_: IdentityType, oldest_if_none: bool
 
 
 @transactional_session
-def del_account_identity(identity: str, type_: IdentityType, account: InternalAccount, *, session: "Session"):
+def del_account_identity(identity: str, type_: IdentityType, account: "InternalAccount", *, session: "Session") -> None:
     """
     Removes a membership association between identity and account.
 
@@ -203,14 +250,21 @@ def del_account_identity(identity: str, type_: IdentityType, account: InternalAc
     :param account: The account name.
     :param session: The database session in use.
     """
-    aid = session.query(models.IdentityAccountAssociation).filter_by(identity=identity, identity_type=type_, account=account).first()
+    query = select(
+        models.IdentityAccountAssociation
+    ).where(
+        models.IdentityAccountAssociation.identity == identity,
+        models.IdentityAccountAssociation.identity_type == type_,
+        models.IdentityAccountAssociation.account == account
+    )
+    aid = session.execute(query).scalar()
     if aid is None:
         raise exception.IdentityError('Identity (\'%s\',\'%s\') does not exist!' % (identity, type_))
     aid.delete(session=session)
 
 
 @read_session
-def list_identities(*, session: "Session", **kwargs):
+def list_identities(*, session: "Session", **kwargs) -> "Sequence[Row[tuple[str, IdentityType]]]":
     """
     Returns a list of all identities.
 
@@ -218,17 +272,17 @@ def list_identities(*, session: "Session", **kwargs):
 
     returns: A list of all identities.
     """
-
-    id_list = []
-
-    for id_ in session.query(models.Identity).order_by(models.Identity.identity):
-        id_list.append((id_.identity, id_.identity_type))
-
-    return id_list
+    query = select(
+        models.Identity.identity,
+        models.Identity.identity_type
+    ).order_by(
+        models.Identity.identity
+    )
+    return session.execute(query).all()
 
 
 @read_session
-def list_accounts_for_identity(identity: str, type_: IdentityType, *, session: "Session"):
+def list_accounts_for_identity(identity: str, type_: IdentityType, *, session: "Session") -> "Sequence[InternalAccount]":
     """
     Returns a list of all accounts for an identity.
 
@@ -238,10 +292,10 @@ def list_accounts_for_identity(identity: str, type_: IdentityType, *, session: "
 
     returns: A list of all accounts for the identity.
     """
-
-    account_list = []
-
-    for account, in session.query(models.IdentityAccountAssociation.account).filter_by(identity=identity, identity_type=type_):
-        account_list.append(account)
-
-    return account_list
+    query = select(
+        models.IdentityAccountAssociation.account
+    ).where(
+        models.IdentityAccountAssociation.identity == identity,
+        models.IdentityAccountAssociation.identity_type == type_
+    )
+    return session.execute(query).scalars().all()

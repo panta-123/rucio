@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +21,7 @@ to let the user know about a possible change. A general file type, defining
 which files should get headers, has to be a class inherited from the
 `HeaderTemplate` abstract class. The class gets registered automatically and is
 accessible through the `header_template_factory` function. The implementation
-for each file get's selected by the `is_file_suitable` method provided by the
+for each file gets selected by the `is_file_suitable` method provided by the
 template. Other methods to get information about the currently used header and
 the new header have to be provided too.
 """
@@ -32,8 +31,9 @@ import logging
 import os
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, ValuesView
 from enum import Enum, auto
-from typing import Dict, Iterator, List, Optional, Type, ValuesView
+from typing import Optional
 
 try:
     from tqdm import tqdm
@@ -43,7 +43,7 @@ except ImportError:
 
 class Arguments:
     """ All arguments for the executable. """
-    files: Optional[List[str]]
+    files: Optional[list[str]]
     dry_run: bool
     disable_progress_bar: bool
 
@@ -87,9 +87,9 @@ def exit_code_from_result_states(states: ValuesView[ResultStates]) -> int:
     return max(map(lambda state: ResultStates.get_exit_code(state), states))
 
 
-def print_result_states(states: Dict[str, ResultStates]) -> None:
+def print_result_states(states: dict[str, ResultStates]) -> None:
     """
-    Prints the result states in a redable format for the user.
+    Prints the result states in a readable format for the user.
 
     :param states: A dict with a file name as key and the corresponding ResultState.
     """
@@ -121,7 +121,7 @@ class HeaderTemplateNotFoundException(Exception):
 
 class HeaderTemplate(ABC):
     """ Abstract class representing a header generator for a type of files. """
-    subtemplates: List[Type] = []
+    subtemplates: list[type] = []
 
     def __init_subclass__(cls, **kwargs):
         """
@@ -306,8 +306,7 @@ class PythonHeaderTemplate(HeaderTemplate):
         shebag_string = PythonHeaderTemplate._get_file_shebag(self.file_path) or ""
 
         return shebag_string \
-            + """# -*- coding: utf-8 -*-
-# Copyright European Organization for Nuclear Research (CERN) since 2012
+            + """# Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -418,7 +417,7 @@ def process_file(file_path: str, dry_run: bool) -> ResultStates:
     Processes one file. Modifies the file if necessary.
 
     :param file_path: Path to the file.
-    :param dry_run: If True, the header wont be changed.
+    :param dry_run: If True, the header won't be changed.
     :returns: A ResultState corresponding to the action performed on or the
               state of the file.
     """
@@ -440,17 +439,17 @@ def process_file(file_path: str, dry_run: bool) -> ResultStates:
     return ResultStates.HeaderModified
 
 
-def process_files(files: List[str], dry_run: bool, disable_progress_bar: bool) -> Dict[str, ResultStates]:
+def process_files(files: list[str], dry_run: bool, disable_progress_bar: bool) -> dict[str, ResultStates]:
     """
     Processes all files and prints the result.
 
     :param files: The files to process.
-    :param dry_run: If True, the headers wont be changed.
+    :param dry_run: If True, the headers won't be changed.
     :param disable_progress_bar: If True, disables the progress bar.
     :returns: A dictionary mapping the files to the corresponding ResultStates
               they are in.
     """
-    result_states: Dict[str, ResultStates] = dict()
+    result_states: dict[str, ResultStates] = dict()
 
     if not disable_progress_bar and 'tqdm' in sys.modules:
         # Print a progress bar if tqdm is installed

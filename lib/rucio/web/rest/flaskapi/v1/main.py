@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,12 +14,14 @@
 # limitations under the License.
 
 import importlib
+import logging
 
 from flask import Flask
-from rucio.web.rest.flaskapi.v1.common import CORSMiddleware
+
 from rucio.common.config import config_get
 from rucio.common.exception import ConfigurationError
 from rucio.common.logging import setup_logging
+from rucio.web.rest.flaskapi.v1.common import CORSMiddleware
 
 DEFAULT_ENDPOINTS = [
     'accountlimits',
@@ -36,7 +37,7 @@ DEFAULT_ENDPOINTS = [
     'import',
     'lifetime_exceptions',
     'locks',
-    'meta',
+    'meta_conventions',
     'ping',
     'redirect',
     'replicas',
@@ -50,6 +51,10 @@ DEFAULT_ENDPOINTS = [
 
 def apply_endpoints(app, modules):
     for blueprint_module in modules:
+        # Legacy patch - TODO Remove in 38.0.0
+        if blueprint_module == "meta":
+            logging.log(logging.WARNING, "Endpoint `meta` is depreciated and will be removed in future releases")
+            blueprint_module = "meta_conventions"
         try:
             # searches for module names locally
             blueprint_module = importlib.import_module('.' + blueprint_module,
@@ -59,6 +64,10 @@ def apply_endpoints(app, modules):
 
         if hasattr(blueprint_module, 'blueprint'):
             app.register_blueprint(blueprint_module.blueprint())
+
+            if hasattr(blueprint_module, "blueprint_legacy"):
+                app.register_blueprint(blueprint_module.blueprint_legacy())
+
         else:
             raise ConfigurationError(f'"{blueprint_module}" from the endpoints configuration value did not have a blueprint')
 

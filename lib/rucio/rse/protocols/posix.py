@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,7 +47,7 @@ class Default(protocol.RSEProtocol):
         """
             Establishes the actual connection to the referred RSE.
 
-            :param credentials: needed to establish a connection with the stroage.
+            :param credentials: needed to establish a connection with the storage.
 
             :raises RSEAccessDenied: if no connection could be established.
         """
@@ -66,17 +65,17 @@ class Default(protocol.RSEProtocol):
             :param transfer_timeout Transfer timeout (in seconds) - dummy
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
          """
         try:
             shutil.copy(self.pfn2path(pfn), dest)
-        except IOError as e:
-            try:  # To check if the error happend local or remote
+        except OSError as e:
+            try:  # To check if the error happened local or remote
                 with open(dest, 'wb'):
                     pass
-                call(['rm', '-rf', dest])
-            except IOError as e:
+                call(['rm', '-rf', dest])  # noqa: S607
+            except OSError as e:
                 if e.errno == 2:
                     raise exception.DestinationNotAccessible(e)
                 else:
@@ -96,7 +95,7 @@ class Default(protocol.RSEProtocol):
             :param transfer_timeout Transfer timeout (in seconds) - dummy
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         target = self.pfn2path(target)
@@ -110,7 +109,7 @@ class Default(protocol.RSEProtocol):
             if not os.path.exists(dirs):
                 os.makedirs(dirs)
             shutil.copy(sf, target)
-        except IOError as e:
+        except OSError as e:
             if e.errno == 2:
                 raise exception.SourceNotFound(e)
             elif not self.exists(self.rse['prefix']):
@@ -127,7 +126,7 @@ class Default(protocol.RSEProtocol):
 
             :param pfn: pfn to the to be deleted file
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         try:
@@ -143,7 +142,7 @@ class Default(protocol.RSEProtocol):
             :param new_path: path to the new file on the storage
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         path = self.pfn2path(pfn)
@@ -152,7 +151,7 @@ class Default(protocol.RSEProtocol):
             if not os.path.exists(os.path.dirname(new_path)):
                 os.makedirs(os.path.dirname(new_path))
             os.rename(path, new_path)
-        except IOError as e:
+        except OSError as e:
             if e.errno == 2:
                 if self.exists(self.pfn2path(path)):
                     raise exception.SourceNotFound(e)
@@ -224,7 +223,7 @@ class Symlink(Default):
             :param dest: Name and path of the files when stored at the client
             :param transfer_timeout Transfer timeout (in seconds) - dummy
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
          """
         path = self.pfn2path(pfn)

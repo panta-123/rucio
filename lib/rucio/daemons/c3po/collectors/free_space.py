@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,15 +16,22 @@
 Collector to get the SRM free and used information for DATADISK RSEs.
 """
 
-from rucio.db.sqla.models import RSEUsage, RSEAttrAssociation
+from typing import TYPE_CHECKING, Optional
+
+from sqlalchemy import and_, select
+
+from rucio.db.sqla.models import RSEAttrAssociation, RSEUsage
 from rucio.db.sqla.session import read_session
 
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
-class FreeSpaceCollector(object):
+
+class FreeSpaceCollector:
     """
     Collector to get the SRM free and used information for DATADISK RSEs.
     """
-    class _FreeSpaceCollector(object):
+    class _FreeSpaceCollector:
         """
         Hidden implementation
         """
@@ -33,14 +39,27 @@ class FreeSpaceCollector(object):
             self.rses = {}
 
         @read_session
-        def _collect_free_space(self, *, session=None):
+        def _collect_free_space(
+            self,
+            *,
+            session: Optional["Session"] = None
+        ) -> None:
             """
             Retrieve free space from database
             """
-            query = session.query(RSEUsage.rse_id, RSEUsage.free, RSEUsage.used).\
-                join(RSEAttrAssociation, RSEUsage.rse_id == RSEAttrAssociation.rse_id).\
-                filter(RSEUsage.source == 'storage').filter(RSEAttrAssociation.key == 'type', RSEAttrAssociation.value == 'DATADISK')
-            for rse_id, free, used in query:
+            stmt = select(
+                RSEUsage.rse_id,
+                RSEUsage.free,
+                RSEUsage.used
+            ).join(
+                RSEAttrAssociation,
+                RSEAttrAssociation.rse_id == RSEUsage.rse_id
+            ).where(
+                and_(RSEUsage.source == 'storage',
+                     RSEAttrAssociation.key == 'type',
+                     RSEAttrAssociation.value == 'DATADISK'),
+            )
+            for rse_id, free, used in session.execute(stmt).all():  # type: ignore (session could be None)
                 self.rses[rse_id] = {'total': used + free, 'used': used, 'free': free}
 
     instance = None
@@ -49,14 +68,14 @@ class FreeSpaceCollector(object):
         if not FreeSpaceCollector.instance:
             FreeSpaceCollector.instance = FreeSpaceCollector._FreeSpaceCollector()
 
-    def collect_free_space(self):
+    def collect_free_space(self) -> None:
         """
         Execute the free space collector
         """
-        self.instance._collect_free_space()
+        self.instance._collect_free_space()  # type: ignore
 
-    def get_rse_space(self):
+    def get_rse_space(self) -> dict[str, dict[str, int]]:
         """
         Return the RSE space
         """
-        return self.instance.rses
+        return self.instance.rses  # type: ignore

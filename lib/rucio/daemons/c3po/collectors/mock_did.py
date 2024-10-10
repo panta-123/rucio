@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,19 +16,25 @@
 Mock DID collector
 """
 
-from random import choice
+from secrets import choice
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from multiprocessing import Queue
+
+    from _typeshed import FileDescriptorOrPath
 
 
-class MockDIDCollector(object):
+class MockDIDCollector:
     """
     Simple collector that reads dids from a file. Used to
     test the interface.
     """
-    def __init__(self, queue):
+    def __init__(self, queue: "Queue"):
         self._queue = queue
         self._read_file('/opt/rucio/etc/dids_mc15_13TeV.csv')
 
-    def _read_file(self, infile):
+    def _read_file(self, infile: "FileDescriptorOrPath") -> None:
         dids = []
         with open(infile, 'r') as f:
             f.readline()
@@ -41,6 +46,6 @@ class MockDIDCollector(object):
 
         self._dids = tuple(dids)
 
-    def get_dids(self):
+    def get_dids(self) -> None:
         did = choice(self._dids)
         self._queue.put(did)

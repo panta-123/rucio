@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,33 +19,44 @@ Abacus-RSE is a daemon to update RSE counters.
 import logging
 import threading
 import time
+from typing import TYPE_CHECKING
 
 import rucio.db.sqla.util
 from rucio.common import exception
 from rucio.common.logging import setup_logging
 from rucio.common.utils import get_thread_with_periodic_running_function
-from rucio.core.rse_counter import get_updated_rse_counters, update_rse_counter, fill_rse_counter_history_table
-from rucio.daemons.common import run_daemon
+from rucio.core.rse_counter import fill_rse_counter_history_table, get_updated_rse_counters, update_rse_counter
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+
+if TYPE_CHECKING:
+    from types import FrameType
+    from typing import Optional
 
 graceful_stop = threading.Event()
+DAEMON_NAME = 'abacus-rse'
 
 
-def rse_update(once=False, sleep_time=10):
+def rse_update(
+        once: bool = False,
+        sleep_time: int = 10
+) -> None:
     """
     Main loop to check and update the RSE Counters.
     """
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable='abacus-rse',
-        logger_prefix='rse_update',
+        executable=DAEMON_NAME,
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=run_once,
     )
 
 
-def run_once(heartbeat_handler, **_kwargs):
+def run_once(
+        heartbeat_handler: HeartbeatHandler,
+        **_kwargs
+) -> None:
     worker_number, total_workers, logger = heartbeat_handler.live()
 
     # Select a bunch of rses for to update for this worker
@@ -69,7 +79,7 @@ def run_once(heartbeat_handler, **_kwargs):
         logger(logging.DEBUG, 'update of rse "%s" took %f' % (rse_id, time.time() - start_time))
 
 
-def stop(signum=None, frame=None):
+def stop(signum: "Optional[int]" = None, frame: "Optional[FrameType]" = None) -> None:
     """
     Graceful exit.
     """
@@ -77,11 +87,16 @@ def stop(signum=None, frame=None):
     graceful_stop.set()
 
 
-def run(once=False, threads=1, fill_history_table=False, sleep_time=10):
+def run(
+        once: bool = False,
+        threads: int = 1,
+        fill_history_table: bool = False,
+        sleep_time: int = 10
+) -> None:
     """
     Starts up the Abacus-RSE threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise exception.DatabaseException('Database was not updated, daemon won\'t start')
@@ -91,12 +106,12 @@ def run(once=False, threads=1, fill_history_table=False, sleep_time=10):
         rse_update(once)
     else:
         logging.info('main: starting threads')
-        threads = [threading.Thread(target=rse_update, kwargs={'once': once, 'sleep_time': sleep_time}) for i in
-                   range(0, threads)]
+        thread_list = [threading.Thread(target=rse_update, kwargs={'once': once, 'sleep_time': sleep_time}) for i in
+                       range(0, threads)]
         if fill_history_table:
-            threads.append(get_thread_with_periodic_running_function(3600, fill_rse_counter_history_table, graceful_stop))
-        [t.start() for t in threads]
+            thread_list.append(get_thread_with_periodic_running_function(3600, fill_rse_counter_history_table, graceful_stop))
+        [t.start() for t in thread_list]
         logging.info('main: waiting for interrupts')
         # Interruptible joins require a timeout.
-        while threads[0].is_alive():
-            [t.join(timeout=3.14) for t in threads]
+        while thread_list[0].is_alive():
+            [t.join(timeout=3.14) for t in thread_list]

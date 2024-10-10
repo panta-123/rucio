@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +13,7 @@
 # limitations under the License.
 
 """
-OAuth Manager is a daemon which is reponsible for:
+OAuth Manager is a daemon which is responsible for:
 - deletion of expired access tokens (in case there is a valid refresh token,
   expired access tokens will be kept until refresh_token expires as well.)
 - deletion of expired OAuth session parameters
@@ -31,6 +30,7 @@ import logging
 import threading
 import traceback
 from re import match
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import DatabaseError
 
@@ -41,11 +41,16 @@ from rucio.common.stopwatch import Stopwatch
 from rucio.core.authentication import delete_expired_tokens
 from rucio.core.monitor import MetricManager
 from rucio.core.oidc import delete_expired_oauthrequests, refresh_jwt_tokens
-from rucio.daemons.common import run_daemon
-from rucio.daemons.common import HeartbeatHandler
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+from rucio.db.sqla.constants import ORACLE_CONNECTION_LOST_CONTACT_REGEX
+
+if TYPE_CHECKING:
+    from types import FrameType
+    from typing import Optional
 
 METRICS = MetricManager(module=__name__)
 graceful_stop = threading.Event()
+DAEMON_NAME = 'oauth-manager'
 
 
 def OAuthManager(once: bool = False, max_rows: int = 100, sleep_time: int = 300) -> None:
@@ -64,8 +69,7 @@ def OAuthManager(once: bool = False, max_rows: int = 100, sleep_time: int = 300)
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
-        executable='oauth-manager',
-        logger_prefix='oauth-manager',
+        executable=DAEMON_NAME,
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -102,7 +106,7 @@ def run_once(heartbeat_handler: HeartbeatHandler, max_rows: int, sleep_time: int
         if match('.*QueuePool.*', str(err.args[0])):
             logger(logging.WARNING, traceback.format_exc())
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
-        elif match('.*ORA-03135.*', str(err.args[0])):
+        elif match(ORACLE_CONNECTION_LOST_CONTACT_REGEX, str(err.args[0])):
             logger(logging.WARNING, traceback.format_exc())
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
         else:
@@ -110,7 +114,7 @@ def run_once(heartbeat_handler: HeartbeatHandler, max_rows: int, sleep_time: int
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
 
     try:
-        # waiting 1 sec as DBs does not store milisecond and tokens
+        # waiting 1 sec as DBs does not store millisecond and tokens
         # eligible for deletion after refresh might not get deleted otherwise
         graceful_stop.wait(1)
 
@@ -129,7 +133,7 @@ def run_once(heartbeat_handler: HeartbeatHandler, max_rows: int, sleep_time: int
         if match('.*QueuePool.*', str(err.args[0])):
             logger(logging.WARNING, traceback.format_exc())
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
-        elif match('.*ORA-03135.*', str(err.args[0])):
+        elif match(ORACLE_CONNECTION_LOST_CONTACT_REGEX, str(err.args[0])):
             logger(logging.WARNING, traceback.format_exc())
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
         else:
@@ -152,7 +156,7 @@ def run_once(heartbeat_handler: HeartbeatHandler, max_rows: int, sleep_time: int
         if match('.*QueuePool.*', str(err.args[0])):
             logger(logging.WARNING, traceback.format_exc())
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
-        elif match('.*ORA-03135.*', str(err.args[0])):
+        elif match(ORACLE_CONNECTION_LOST_CONTACT_REGEX, str(err.args[0])):
             logger(logging.WARNING, traceback.format_exc())
             METRICS.counter('exceptions.{exception}').labels(exception=err.__class__.__name__).inc()
         else:
@@ -168,7 +172,7 @@ def run(once: bool = False, threads: int = 1, max_rows: int = 100, sleep_time: i
     """
     Starts up the OAuth Manager threads.
     """
-    setup_logging()
+    setup_logging(process_name=DAEMON_NAME)
 
     if rucio.db.sqla.util.is_old_db():
         raise DatabaseException('Database was not updated, daemon won\'t start')
@@ -187,7 +191,7 @@ def run(once: bool = False, threads: int = 1, max_rows: int = 100, sleep_time: i
             _ = [t.join(timeout=3.14) for t in threads]
 
 
-def stop() -> None:
+def stop(signum: "Optional[int]" = None, frame: "Optional[FrameType]" = None) -> None:
     """
     Graceful exit.
     """

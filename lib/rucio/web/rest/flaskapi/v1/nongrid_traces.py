@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,15 +15,16 @@
 import time
 from typing import TYPE_CHECKING
 
-from flask import Flask, Blueprint, request
+from flask import Blueprint, Flask, request
 from werkzeug.datastructures import Headers
 
 from rucio.core.nongrid_trace import trace
-from rucio.web.rest.flaskapi.v1.common import response_headers, ErrorHandlingMethodView, json_parameters
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, json_parameters, response_headers
 
 if TYPE_CHECKING:
     from typing import Optional
-    from rucio.web.rest.flaskapi.v1.common import HeadersType
+
+    from rucio.web.rest.flaskapi.v1.types import HeadersType
 
 
 class XAODTrace(ErrorHandlingMethodView):

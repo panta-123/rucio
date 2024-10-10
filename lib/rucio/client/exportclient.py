@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+
 from requests.status_codes import codes
 
-from rucio.client.baseclient import BaseClient
-from rucio.client.baseclient import choice
+from rucio.client.baseclient import BaseClient, choice
 from rucio.common.utils import build_url, parse_response
 
 
@@ -25,7 +25,7 @@ class ExportClient(BaseClient):
 
     EXPORT_BASEURL = 'export'
 
-    def export_data(self, distance=True):
+    def export_data(self, distance: bool = True) -> dict[str, Any]:
         """
         Export RSE data (RSE, settings, attributes and distance).
         :param distance: To include the distance.

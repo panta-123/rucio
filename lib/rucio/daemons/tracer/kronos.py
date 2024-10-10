@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,32 +16,39 @@
 This daemon consumes tracer messages from ActiveMQ and updates the atime for replicas.
 """
 
+import functools
 import logging
 import re
 from configparser import NoOptionError, NoSectionError
 from datetime import datetime
-import functools
-from json import loads as jloads, dumps as jdumps
+from json import dumps as jdumps
+from json import loads as jloads
+from queue import Queue
 from threading import Event, Thread
 from time import time
-from typing import Dict
+from typing import TYPE_CHECKING, Optional
 
 import rucio.db.sqla.util
-from rucio.daemons.common import HeartbeatHandler, run_daemon
-from rucio.common.config import config_get, config_get_bool, config_get_int
-from rucio.common.exception import RSENotFound, DatabaseException
+from rucio.common.config import config_get, config_get_bool, config_get_int, config_get_list
+from rucio.common.exception import DatabaseException, RSENotFound
 from rucio.common.logging import setup_logging
-from rucio.common.stomp_utils import get_stomp_brokers
+from rucio.common.stomp_utils import StompConnectionManager
 from rucio.common.stopwatch import Stopwatch
-from rucio.common.types import InternalAccount, InternalScope
-from rucio.core.did import touch_dids, list_parent_dids
+from rucio.common.types import InternalAccount, InternalScope, LoggerFunction
+from rucio.core.did import list_parent_dids, touch_dids
 from rucio.core.lock import touch_dataset_locks
 from rucio.core.monitor import MetricManager
-from rucio.core.replica import touch_replica, touch_collection_replicas, declare_bad_file_replicas
+from rucio.core.replica import declare_bad_file_replicas, touch_collection_replicas, touch_replica
 from rucio.core.rse import get_rse_id
-from rucio.db.sqla.constants import DIDType, BadFilesStatus
+from rucio.daemons.common import HeartbeatHandler, run_daemon
+from rucio.db.sqla.constants import BadFilesStatus, DIDType
 
-from queue import Queue
+if TYPE_CHECKING:
+    from collections.abc import Set
+    from types import FrameType
+
+    from stomp import Connection
+    from stomp.utils import Frame
 
 
 logging.getLogger("stomp").setLevel(logging.CRITICAL)
@@ -51,10 +57,21 @@ METRICS = MetricManager(module=__name__)
 graceful_stop = Event()
 
 
-class AMQConsumer(object):
+class AMQConsumer:
     """ActiveMQ message consumer"""
 
-    def __init__(self, broker, conn, queue, chunksize, subscription_id, excluded_usrdns, dataset_queue, bad_files_patterns, logger=logging.log):
+    def __init__(
+            self,
+            broker: str,
+            conn: "Connection",
+            queue: str,
+            chunksize: int,
+            subscription_id: str,
+            excluded_usrdns: "Set[str]",
+            dataset_queue: Queue,
+            bad_files_patterns: list[re.Pattern],
+            logger: LoggerFunction = logging.log
+    ):
         self.__broker = broker
         self.__conn = conn
         self.__queue = queue
@@ -71,15 +88,15 @@ class AMQConsumer(object):
         self.__logger = logger
 
     @METRICS.count_it
-    def on_heartbeat_timeout(self):
+    def on_heartbeat_timeout(self) -> None:
         self.__conn.disconnect()
 
     @METRICS.count_it
-    def on_error(self, frame):
+    def on_error(self, frame: "Frame") -> None:
         self.__logger(logging.ERROR, 'Message receive error: [%s] %s' % (self.__broker, frame.body))
 
     @METRICS.count_it
-    def on_message(self, frame):
+    def on_message(self, frame: "Frame") -> None:
         appversion = 'dq2'
         msg_id = frame.headers['message-id']
         if 'appversion' in frame.headers:
@@ -93,7 +110,7 @@ class AMQConsumer(object):
                 self.__conn.ack(msg_id, self.__subscription_id)
                 return
             else:
-                report = jloads(frame.body)
+                report = jloads(frame.body)  # type: ignore
         except Exception:
             # message is corrupt, not much to do here
             # send count to graphite, send ack to broker and return
@@ -118,7 +135,7 @@ class AMQConsumer(object):
             self.__reports = []
             self.__ids = []
 
-    def __update_atime(self):
+    def __update_atime(self) -> None:
         """
         Bulk update atime.
         """
@@ -139,8 +156,8 @@ class AMQConsumer(object):
                                     self.__logger(logging.ERROR, 'Missing url in the following trace : ' + str(report))
                                 else:
                                     try:
-                                        surl = report['url']
-                                        declare_bad_file_replicas([surl, ], reason=reason, issuer=InternalAccount('root', vo=report['vo']), status=BadFilesStatus.SUSPICIOUS)
+                                        pfn = report['url']
+                                        declare_bad_file_replicas([pfn, ], reason=reason, issuer=InternalAccount('root', vo=report['vo']), status=BadFilesStatus.SUSPICIOUS)
                                         self.__logger(logging.INFO, 'Declare suspicious file %s with reason %s' % (report['url'], reason))
                                     except Exception as error:
                                         self.__logger(logging.ERROR, 'Failed to declare suspicious file' + str(error))
@@ -294,33 +311,32 @@ class AMQConsumer(object):
         METRICS.counter('updated_replicas').inc()
 
 
-def kronos_file(once: bool = False, dataset_queue: Queue = None, sleep_time: int = 60):
+def kronos_file(
+        once: bool = False,
+        dataset_queue: Optional[Queue] = None,
+        sleep_time: int = 60
+) -> None:
     """
     Main loop to consume tracer reports.
     """
-    return_values = {}
+    stomp_conn_mngr = StompConnectionManager()
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
         executable='kronos-file',
-        logger_prefix='kronos-file',
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
             run_once_kronos_file,
-            return_values=return_values,
-            dataset_queue=dataset_queue,
+            stomp_conn_mngr=stomp_conn_mngr,
+            dataset_queue=dataset_queue,  # type: ignore
             sleep_time=sleep_time,
         )
     )
-    for conn in return_values['conns']:
-        try:
-            conn.disconnect()
-        except Exception:
-            pass
+    stomp_conn_mngr.disconnect()
 
 
-def run_once_kronos_file(heartbeat_handler: HeartbeatHandler, return_values: Dict, dataset_queue: Queue, sleep_time: int, **kwargs):
+def run_once_kronos_file(heartbeat_handler: HeartbeatHandler, stomp_conn_mngr: StompConnectionManager, dataset_queue: Queue, sleep_time: int, **kwargs) -> None:
     """
     Run the amq consumer once.
     """
@@ -342,10 +358,8 @@ def run_once_kronos_file(heartbeat_handler: HeartbeatHandler, return_values: Dic
     except Exception as error:
         logger.error(f'Failed to get bad_file_patterns {str(error)}')
         bad_files_patterns = []
-    try:
-        use_ssl = config_get_bool('tracer-kronos', 'use_ssl')
-    except Exception:
-        pass
+
+    use_ssl = config_get_bool('tracer-kronos', 'use_ssl', default=True, raise_exception=False)
     if not use_ssl:
         username = config_get('tracer-kronos', 'username')
         password = config_get('tracer-kronos', 'password')
@@ -353,12 +367,13 @@ def run_once_kronos_file(heartbeat_handler: HeartbeatHandler, return_values: Dic
     excluded_usrdns = set(config_get('tracer-kronos', 'excluded_usrdns').split(','))
     vhost = config_get('tracer-kronos', 'broker_virtual_host', raise_exception=False)
 
-    brokers_alias = [b.strip() for b in config_get('tracer-kronos', 'brokers').split(',')]
+    brokers_alias = config_get_list('tracer-kronos', 'brokers')
     port = config_get_int('tracer-kronos', 'port')
     reconnect_attempts = config_get_int('tracer-kronos', 'reconnect_attempts')
     ssl_key_file = config_get('tracer-kronos', 'ssl_key_file', raise_exception=False)
     ssl_cert_file = config_get('tracer-kronos', 'ssl_cert_file', raise_exception=False)
-    conns = return_values['conns'] = get_stomp_brokers(
+
+    created_conns, _ = stomp_conn_mngr.re_configure(
         brokers=brokers_alias,
         port=port,
         use_ssl=use_ssl,
@@ -367,10 +382,11 @@ def run_once_kronos_file(heartbeat_handler: HeartbeatHandler, return_values: Dic
         ssl_key_file=ssl_key_file,
         ssl_cert_file=ssl_cert_file,
         timeout=sleep_time,
-        logger=logger
+        heartbeats=(0, 5000),
+        logger=logger,
     )
 
-    for conn in conns:
+    for conn in created_conns:
         if not conn.is_connected():
             logger(logging.INFO, 'connecting to %s' % str(conn.transport._Transport__host_and_ports[0]))
             METRICS.counter('reconnect.{host}').labels(host=conn.transport._Transport__host_and_ports[0][0]).inc()
@@ -390,13 +406,12 @@ def run_once_kronos_file(heartbeat_handler: HeartbeatHandler, return_values: Dic
             conn.subscribe(destination=config_get('tracer-kronos', 'queue'), ack='client-individual', id=subscription_id, headers={'activemq.prefetchSize': prefetch_size})
 
 
-def kronos_dataset(dataset_queue: Queue, once: bool = False, sleep_time: int = 60):
+def kronos_dataset(dataset_queue: Queue, once: bool = False, sleep_time: int = 60) -> None:
     return_values = {'heartbeat_handler': HeartbeatHandler("kronos-dataset", 10)}
     run_daemon(
         once=once,
         graceful_stop=graceful_stop,
         executable='kronos-dataset',
-        logger_prefix='kronos-dataset',
         partition_wait_time=1,
         sleep_time=sleep_time,
         run_once_fnc=functools.partial(
@@ -410,7 +425,7 @@ def kronos_dataset(dataset_queue: Queue, once: bool = False, sleep_time: int = 6
     run_once_kronos_dataset(dataset_queue=dataset_queue, return_values=return_values, heartbeat_handler=return_values['heartbeat_handler'], sleep_time=sleep_time)
 
 
-def run_once_kronos_dataset(dataset_queue: Queue, return_values: dict, heartbeat_handler: HeartbeatHandler, **kwargs):
+def run_once_kronos_dataset(dataset_queue: Queue, return_values: dict, heartbeat_handler: HeartbeatHandler, **kwargs) -> None:
     if heartbeat_handler is None:
         if "heartbeat_handler" not in return_values.keys():
             return_values["heartbeat_handler"] = HeartbeatHandler("kronos-dataset", 10)
@@ -480,18 +495,23 @@ def run_once_kronos_dataset(dataset_queue: Queue, return_values: dict, heartbeat
     logger(logging.INFO, 'update done for %d collection replicas, %d failed (%ds)' % (total, failed, time() - start))
 
 
-def stop(signum=None, frame=None):
+def stop(signum: Optional[int] = None, frame: Optional["FrameType"] = None) -> None:
     """
     Graceful exit.
     """
     graceful_stop.set()
 
 
-def run(once=False, threads=1, sleep_time_datasets=60, sleep_time_files=60):
+def run(
+        once: bool = False,
+        threads: int = 1,
+        sleep_time_datasets: int = 60,
+        sleep_time_files: int = 60
+) -> None:
     """
     Starts up the consumer threads
     """
-    setup_logging()
+    setup_logging(process_name='tracer-kronos')
 
     if rucio.db.sqla.util.is_old_db():
         raise DatabaseException('Database was not updated, daemon won\'t start')

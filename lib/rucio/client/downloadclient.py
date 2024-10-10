@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,24 +18,30 @@ import itertools
 import logging
 import os
 import random
+import secrets
 import shutil
 import signal
-import time
 import subprocess
-
-from queue import Queue, Empty, deque
+import time
+from queue import Empty, Queue, deque
 from threading import Thread
+from typing import TYPE_CHECKING, Any, Optional
 
+from rucio import version
 from rucio.client.client import Client
 from rucio.common.config import config_get
-from rucio.common.exception import (InputValidationError, NoFilesDownloaded, NotAllFilesDownloaded, RucioException)
 from rucio.common.didtype import DID
+from rucio.common.exception import InputValidationError, NoFilesDownloaded, NotAllFilesDownloaded, RucioException
 from rucio.common.pcache import Pcache
-from rucio.common.utils import adler32, detect_client_location, generate_uuid, parse_replicas_from_string, \
-    send_trace, sizefmt, execute, parse_replicas_from_file, extract_scope
-from rucio.common.utils import GLOBALLY_SUPPORTED_CHECKSUMS, CHECKSUM_ALGO_DICT, PREFERRED_CHECKSUM
+from rucio.common.utils import CHECKSUM_ALGO_DICT, GLOBALLY_SUPPORTED_CHECKSUMS, PREFERRED_CHECKSUM, adler32, detect_client_location, execute, extract_scope, generate_uuid, parse_replicas_from_file, parse_replicas_from_string, send_trace, sizefmt
 from rucio.rse import rsemanager as rsemgr
-from rucio import version
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+    from xmlrpc.client import ServerProxy as RPCServerProxy
+
+    from rucio.common.constants import SORTING_ALGORITHMS_LITERAL
+    from rucio.common.types import LoggerFunction
 
 
 @enum.unique
@@ -56,7 +61,13 @@ class FileDownloadState(str, enum.Enum):
 
 class BaseExtractionTool:
 
-    def __init__(self, program_name, useability_check_args, extract_args, logger=logging.log):
+    def __init__(
+            self,
+            program_name: str,
+            useability_check_args: str,
+            extract_args: str,
+            logger: "LoggerFunction" = logging.log
+    ):
         """
         Initialises a extraction tool object
 
@@ -71,7 +82,7 @@ class BaseExtractionTool:
         self.logger = logger
         self.is_useable_result = None
 
-    def is_useable(self):
+    def is_useable(self) -> bool:
         """
         Checks if the extraction tool is installed and usable
 
@@ -91,7 +102,12 @@ class BaseExtractionTool:
             self.logger(logging.DEBUG, error)
         return self.is_usable_result
 
-    def try_extraction(self, archive_file_path, file_to_extract, dest_dir_path):
+    def try_extraction(
+            self,
+            archive_file_path: str,
+            file_to_extract: str,
+            dest_dir_path: str
+    ) -> bool:
         """
         Calls the extraction program to extract a file from an archive
 
@@ -121,7 +137,14 @@ class BaseExtractionTool:
 
 class DownloadClient:
 
-    def __init__(self, client=None, logger=None, tracing=True, check_admin=False, check_pcache=False):
+    def __init__(
+            self,
+            client: Optional[Client] = None,
+            logger: Optional["LoggerFunction"] = None,
+            tracing: bool = True,
+            check_admin: bool = False,
+            check_pcache: bool = False
+    ):
         """
         Initialises the basic settings for an DownloadClient object
 
@@ -130,13 +153,19 @@ class DownloadClient:
         :param logger:           Optional: logging.Logger object. If None, default logger will be used.
         """
         self.check_pcache = check_pcache
-        if not logger:
+        if logger is None:
             self.logger = logging.log
         else:
-            self.logger = logger.log
+            if hasattr(logger, "debug"):
+                self.logger = logger.log
+            else:
+                self.logger = logger
+
         self.tracing = tracing
+
         if not self.tracing:
-            logger(logging.DEBUG, 'Tracing is turned off.')
+            self.logger(logging.DEBUG, 'Tracing is turned off.')
+
         self.is_human_readable = True
         self.client = client if client else Client()
         # if token should be used, use only JWT tokens
@@ -154,7 +183,7 @@ class DownloadClient:
                     break
         if self.is_admin:
             self.is_tape_excluded = False
-            logger(logging.DEBUG, 'Admin mode enabled')
+            self.logger(logging.DEBUG, 'Admin mode enabled')
 
         self.trace_tpl = {}
         self.trace_tpl['hostname'] = self.client_location['fqdn']
@@ -177,7 +206,14 @@ class DownloadClient:
         self.extraction_tools.append(BaseExtractionTool('tar', '--version', extract_args, logger=self.logger))
         self.extract_scope_convention = config_get('common', 'extract_scope', False, None)
 
-    def download_pfns(self, items, num_threads=2, trace_custom_fields={}, traces_copy_out=None, deactivate_file_download_exceptions=False):
+    def download_pfns(
+        self,
+        items: list[dict[str, Any]],
+        num_threads: int = 2,
+        trace_custom_fields: Optional[dict[str, Any]] = None,
+        traces_copy_out: Optional[list[dict[str, Any]]] = None,
+        deactivate_file_download_exceptions: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Download items with a given PFN. This function can only download files, no datasets.
 
@@ -205,6 +241,7 @@ class DownloadClient:
         :raises NotAllFilesDownloaded: if not all files could be downloaded
         :raises RucioException: if something unexpected went wrong during the download
         """
+        trace_custom_fields = trace_custom_fields or {}
         logger = self.logger
         trace_custom_fields['uuid'] = generate_uuid()
 
@@ -253,8 +290,15 @@ class DownloadClient:
 
         return self._check_output(output_items, deactivate_file_download_exceptions=deactivate_file_download_exceptions)
 
-    def download_dids(self, items, num_threads=2, trace_custom_fields={}, traces_copy_out=None,
-                      deactivate_file_download_exceptions=False, sort=None):
+    def download_dids(
+        self,
+        items: list[dict[str, Any]],
+        num_threads: int = 2,
+        trace_custom_fields: Optional[dict[str, Any]] = None,
+        traces_copy_out: Optional[list[dict[str, Any]]] = None,
+        deactivate_file_download_exceptions: bool = False,
+        sort: Optional["SORTING_ALGORITHMS_LITERAL"] = None
+    ) -> list[dict[str, Any]]:
         """
         Download items with given DIDs. This function can also download datasets and wildcarded DIDs.
 
@@ -268,7 +312,7 @@ class DownloadClient:
             force_scheme                   - Optional: force a specific scheme to download this item. (Default: None)
             base_dir                       - Optional: base directory where the downloaded files will be stored. (Default: '.')
             no_subdir                      - Optional: If true, files are written directly into base_dir. (Default: False)
-            nrandom                        - Optional: if the DID addresses a dataset, nrandom files will be randomly choosen for download from the dataset
+            nrandom                        - Optional: if the DID addresses a dataset, nrandom files will be randomly chosen for download from the dataset
             ignore_checksum                - Optional: If true, skips the checksum validation between the downloaded file and the rucio catalouge. (Default: False)
             transfer_timeout               - Optional: Timeout time for the download protocols. (Default: None)
             transfer_speed_timeout         - Optional: Minimum allowed transfer speed (in KBps). Ignored if transfer_timeout set. Otherwise, used to compute default timeout (Default: 500)
@@ -289,6 +333,7 @@ class DownloadClient:
         :raises NotAllFilesDownloaded: if not all files could be downloaded
         :raises RucioException: if something unexpected went wrong during the download
         """
+        trace_custom_fields = trace_custom_fields or {}
         logger = self.logger
         trace_custom_fields['uuid'] = generate_uuid()
 
@@ -307,7 +352,15 @@ class DownloadClient:
 
         return self._check_output(output_items, deactivate_file_download_exceptions=deactivate_file_download_exceptions)
 
-    def download_from_metalink_file(self, item, metalink_file_path, num_threads=2, trace_custom_fields={}, traces_copy_out=None, deactivate_file_download_exceptions=False):
+    def download_from_metalink_file(
+        self,
+        item: dict[str, Any],
+        metalink_file_path: str,
+        num_threads: int = 2,
+        trace_custom_fields: Optional[dict[str, Any]] = None,
+        traces_copy_out: Optional[list[dict[str, Any]]] = None,
+        deactivate_file_download_exceptions: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Download items using a given metalink file.
 
@@ -330,6 +383,7 @@ class DownloadClient:
         :raises NotAllFilesDownloaded: if not all files could be downloaded
         :raises RucioException: if something unexpected went wrong during the download
         """
+        trace_custom_fields = trace_custom_fields or {}
         logger = self.logger
 
         logger(logging.INFO, 'Getting sources from metalink file')
@@ -354,7 +408,13 @@ class DownloadClient:
 
         return self._check_output(output_items, deactivate_file_download_exceptions=deactivate_file_download_exceptions)
 
-    def _download_multithreaded(self, input_items, num_threads, trace_custom_fields={}, traces_copy_out=None):
+    def _download_multithreaded(
+        self,
+        input_items: list[dict[str, Any]],
+        num_threads: int,
+        trace_custom_fields: Optional[dict[str, Any]] = None,
+        traces_copy_out: Optional[list[dict[str, Any]]] = None
+    ) -> list[dict[str, Any]]:
         """
         Starts an appropriate number of threads to download items from the input list.
         (This function is meant to be used as class internal only)
@@ -366,6 +426,7 @@ class DownloadClient:
 
         :returns: list with output items as dictionaries
         """
+        trace_custom_fields = trace_custom_fields or {}
         logger = self.logger
 
         num_files = len(input_items)
@@ -409,7 +470,14 @@ class DownloadClient:
                 thread.kill_received = True
         return list(output_queue.queue)
 
-    def _download_worker(self, input_queue, output_queue, trace_custom_fields, traces_copy_out, log_prefix):
+    def _download_worker(
+            self,
+            input_queue: Queue,
+            output_queue: Queue,
+            trace_custom_fields: dict[str, Any],
+            traces_copy_out: Optional[list[dict[str, Any]]],
+            log_prefix: str
+    ) -> None:
         """
         This function runs as long as there are items in the input queue,
         downloads them and stores the output in the output queue.
@@ -445,7 +513,7 @@ class DownloadClient:
                 output_queue.put(item)
 
     @staticmethod
-    def _compute_actual_transfer_timeout(item):
+    def _compute_actual_transfer_timeout(item: dict[str, Any]) -> int:
         """
         Merge the two options related to timeout into the value which will be used for protocol download.
         :param item: dictionary that describes the item to download
@@ -457,11 +525,11 @@ class DownloadClient:
         # establishing connections and download of small files
         transfer_speed_timeout_static_increment = 60
 
-        transfer_timeout = item.get('merged_options', {}).get('transfer_timeout')
+        transfer_timeout: Optional[int] = item.get('merged_options', {}).get('transfer_timeout')
         if transfer_timeout is not None:
             return transfer_timeout
 
-        transfer_speed_timeout = item.get('merged_options', {}).get('transfer_speed_timeout')
+        transfer_speed_timeout: Optional[int] = item.get('merged_options', {}).get('transfer_speed_timeout')
         bytes_ = item.get('bytes')
         if not bytes_ or transfer_speed_timeout is None:
             return default_transfer_timeout
@@ -474,7 +542,13 @@ class DownloadClient:
         timeout = bytes_ // transfer_speed_timeout + transfer_speed_timeout_static_increment
         return timeout
 
-    def _download_item(self, item, trace, traces_copy_out, log_prefix=''):
+    def _download_item(
+            self,
+            item: dict[str, Any],
+            trace: dict[str, Any],
+            traces_copy_out: Optional[list[dict[str, Any]]],
+            log_prefix: str = ''
+    ) -> dict[str, Any]:
         """
         Downloads the given item and sends traces for success/failure.
         (This function is meant to be used as class internal only)
@@ -674,10 +748,10 @@ class DownloadClient:
 
         # if the file was downloaded with success, it can be linked to pcache
         if pcache:
-            logger(logging.INFO, 'File %s is going to be registerred into pcache.' % dest_file_path)
+            logger(logging.INFO, 'File %s is going to be registered into pcache.' % dest_file_path)
             try:
                 pcache_state, hardlink_state = pcache.check_and_link(src=pfn, storage_root=storage_prefix, local_src=first_dest_file_path)
-                logger(logging.INFO, 'File %s is now registerred into pcache.' % first_dest_file_path)
+                logger(logging.INFO, 'File %s is now registered into pcache.' % first_dest_file_path)
             except Exception as e:
                 logger(logging.WARNING, 'Failed to load file to pcache: %s' % str(e))
 
@@ -733,7 +807,14 @@ class DownloadClient:
 
         return item
 
-    def download_aria2c(self, items, trace_custom_fields={}, filters={}, deactivate_file_download_exceptions=False, sort=None):
+    def download_aria2c(
+        self,
+        items: list[dict[str, Any]],
+        trace_custom_fields: Optional[dict[str, Any]] = None,
+        filters: Optional[dict[str, Any]] = None,
+        deactivate_file_download_exceptions: bool = False,
+        sort: Optional["SORTING_ALGORITHMS_LITERAL"] = None
+    ) -> list[dict[str, Any]]:
         """
         Uses aria2c to download the items with given DIDs. This function can also download datasets and wildcarded DIDs.
         It only can download files that are available via https/davs.
@@ -744,7 +825,7 @@ class DownloadClient:
             rse                            - Optional: rse name (e.g. 'CERN-PROD_DATADISK') or rse expression from where to download
             base_dir                       - Optional: base directory where the downloaded files will be stored. (Default: '.')
             no_subdir                      - Optional: If true, files are written directly into base_dir. (Default: False)
-            nrandom                        - Optional: if the DID addresses a dataset, nrandom files will be randomly choosen for download from the dataset
+            nrandom                        - Optional: if the DID addresses a dataset, nrandom files will be randomly chosen for download from the dataset
             ignore_checksum                - Optional: If true, skips the checksum validation between the downloaded file and the rucio catalouge. (Default: False)
             check_local_with_filesize_only - Optional: If true, already downloaded files will not be validated by checksum.
 
@@ -763,10 +844,12 @@ class DownloadClient:
         :raises NotAllFilesDownloaded: if not all files could be downloaded
         :raises RucioException: if something went wrong during the download (e.g. aria2c could not be started)
         """
+        trace_custom_fields = trace_custom_fields or {}
+        filters = filters or {}
         logger = self.logger
         trace_custom_fields['uuid'] = generate_uuid()
 
-        rpc_secret = '%x' % (random.getrandbits(64))
+        rpc_secret = '%x' % (secrets.randbits(64))
         rpc_auth = 'token:%s' % rpc_secret
         rpcproc, aria_rpc = self._start_aria2c_rpc(rpc_secret)
 
@@ -793,7 +876,7 @@ class DownloadClient:
 
         return self._check_output(output_items, deactivate_file_download_exceptions=deactivate_file_download_exceptions)
 
-    def _start_aria2c_rpc(self, rpc_secret):
+    def _start_aria2c_rpc(self, rpc_secret: str) -> tuple[subprocess.Popen, "RPCServerProxy"]:
         """
         Starts aria2c in RPC mode as a subprocess. Also creates
         the RPC proxy instance.
@@ -801,7 +884,7 @@ class DownloadClient:
 
         :param rpc_secret: the secret for the RPC proxy
 
-        :returns: a tupel with the process and the rpc proxy objects
+        :returns: a tuple with the process and the rpc proxy objects
 
         :raises RucioException: if the process or the proxy could not be created
         """
@@ -827,7 +910,7 @@ class DownloadClient:
 
         # trying up to 3 random ports
         for attempt in range(3):
-            port = random.randint(1024, 65534)
+            port = random.randint(1024, 65534)  # noqa: S311
             logger(logging.DEBUG, 'Trying to start rpc server on port: %d' % port)
             try:
                 to_exec = cmd % (os.getpid(), rpc_secret, port)
@@ -863,7 +946,13 @@ class DownloadClient:
             raise RucioException('Failed to initialise rpc proxy!', error)
         return (rpcproc, aria_rpc)
 
-    def _download_items_aria2c(self, items, aria_rpc, rpc_auth, trace_custom_fields={}):
+    def _download_items_aria2c(
+        self,
+        items: list[dict[str, Any]],
+        aria_rpc: Any,
+        rpc_auth: str,
+        trace_custom_fields: Optional[dict[str, Any]] = None
+    ) -> list[dict[str, Any]]:
         """
         Uses aria2c to download the given items. Aria2c needs to be started
         as RPC background process first and a RPC proxy is needed.
@@ -876,6 +965,7 @@ class DownloadClient:
 
         :returns: a list of dictionaries with an entry for each file, containing the input options, the did, and the clientState
         """
+        trace_custom_fields = trace_custom_fields or {}
         logger = self.logger
 
         gid_to_item = {}  # maps an aria2c download id (gid) to the download item
@@ -961,7 +1051,7 @@ class DownloadClient:
                 # workaround: only consider first dest file path for aria2c download
                 dest_file_path = next(iter(item['dest_file_paths']))
 
-                # ensure we didnt miss the active state (e.g. a very fast download)
+                # ensure we didn't miss the active state (e.g. a very fast download)
                 start_time = item.setdefault('transferStart', time.time())
                 end_time = item.setdefault('transferEnd', time.time())
 
@@ -1020,7 +1110,7 @@ class DownloadClient:
 
         return items
 
-    def _resolve_one_item_dids(self, item):
+    def _resolve_one_item_dids(self, item: dict[str, Any]) -> "Iterator[dict[str, Any]]":
         """
         Resolve scopes or wildcard DIDs to lists of full did names:
         :param item: One input item
@@ -1053,7 +1143,11 @@ class DownloadClient:
             if not any_did_resolved and '*' not in did_name:
                 yield {'scope': scope, 'name': did_name}
 
-    def _resolve_and_merge_input_items(self, input_items, sort=None):
+    def _resolve_and_merge_input_items(
+            self,
+            input_items: list[dict[str, Any]],
+            sort: Optional["SORTING_ALGORITHMS_LITERAL"] = None
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """
         This function takes the input items given to download_dids etc.
         and resolves the sources.
@@ -1096,7 +1190,7 @@ class DownloadClient:
             self.extraction_tools = [tool for tool in self.extraction_tools if tool.is_useable()]
             if len(self.extraction_tools) < 1:
                 logger(logging.WARNING, 'Archive resolution is enabled but no extraction tool is available. '
-                                        'Sources whose protocol doesnt support extraction wont be considered for download.')
+                                        'Sources whose protocol does not support extraction will not be considered for download.')
 
         # if excluding tapes, we need to list them first
         tape_rses = []
@@ -1113,7 +1207,7 @@ class DownloadClient:
         for item in input_items:
             resolved_dids = list(self._resolve_one_item_dids(item))
             if not resolved_dids:
-                logger(logging.WARNING, 'An item didnt have any DIDs after resolving the input: %s.' % item.get('did', item))
+                logger(logging.WARNING, 'An item did not have any DIDs after resolving the input: %s.' % item.get('did', item))
             item['dids'] = resolved_dids
             for did in resolved_dids:
                 did_to_input_items.setdefault(DID(did), []).append(item)
@@ -1185,7 +1279,7 @@ class DownloadClient:
                                                      resolve_parents=True,
                                                      nrandom=nrandom,
                                                      metalink=True)
-            file_items = parse_replicas_from_string(metalink_str)
+            file_items = parse_replicas_from_string(metalink_str)  # type: ignore
             for file in file_items:
                 if impl:
                     file['impl'] = impl
@@ -1230,7 +1324,7 @@ class DownloadClient:
 
         return did_to_input_items, merged_items_with_sources
 
-    def _options_from_input_items(self, input_items):
+    def _options_from_input_items(self, input_items: "Iterable[dict[str, Any]]") -> dict[str, Any]:
         """
         Best-effort generation of download options from multiple input items which resolve to the same file DID.
         This is done to download each file DID only once, even if it is requested multiple times via overlapping
@@ -1271,7 +1365,11 @@ class DownloadClient:
                 options['transfer_speed_timeout'] = float(new_transfer_speed_timeout)
         return options
 
-    def _prepare_items_for_download(self, did_to_input_items, file_items):
+    def _prepare_items_for_download(
+            self,
+            did_to_input_items: dict[str, Any],
+            file_items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Optimises the amount of files to download
         (This function is meant to be used as class internal only)
@@ -1345,7 +1443,7 @@ class DownloadClient:
             file_item['dest_file_paths'] = list(dest_file_paths)
             file_item['temp_file_path'] = '%s.part' % file_item['dest_file_paths'][0]
 
-            # the file did str ist not an unique key for this dict because multiple calls of list_replicas
+            # the file did str is not an unique key for this dict because multiple calls of list_replicas
             # could result in the same DID multiple times. So we're using the id of the dictionary objects
             fiid = id(file_item)
             fiid_to_file_item[fiid] = file_item
@@ -1498,12 +1596,12 @@ class DownloadClient:
                 download_packs.append(file_item)
         return download_packs
 
-    def _split_did_str(self, did_str):
+    def _split_did_str(self, did_str: str) -> tuple[str, str]:
         """
         Splits a given DID string (e.g. 'scope1:name.file') into its scope and name part
         (This function is meant to be used as class internal only)
 
-        :param did_str: the DID string that will be splitted
+        :param did_str: the DID string that will be split
 
         :returns: the scope- and name part of the given DID
 
@@ -1531,7 +1629,12 @@ class DownloadClient:
 
         return did_scope, did_name
 
-    def _prepare_dest_dir(self, base_dir, dest_dir_name, no_subdir):
+    def _prepare_dest_dir(
+            self,
+            base_dir: str,
+            dest_dir_name: str,
+            no_subdir: Optional[bool]
+    ) -> str:
         """
         Builds the final destination path for a file and creates the
         destination directory if it's not existent.
@@ -1541,7 +1644,7 @@ class DownloadClient:
         :param dest_dir_name: name of the destination directory
         :param no_subdir: if no subdirectory should be created
 
-        :returns: the absolut path of the destination directory
+        :returns: the absolute path of the destination directory
         """
         # append dest_dir_name, if subdir should be used
         if dest_dir_name.startswith('/'):
@@ -1553,7 +1656,11 @@ class DownloadClient:
 
         return dest_dir_path
 
-    def _check_output(self, output_items, deactivate_file_download_exceptions=False):
+    def _check_output(
+            self,
+            output_items: list[dict[str, Any]],
+            deactivate_file_download_exceptions: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Checks if all files were successfully downloaded
         (This function is meant to be used as class internal only)
@@ -1583,7 +1690,7 @@ class DownloadClient:
 
         return output_items
 
-    def _send_trace(self, trace):
+    def _send_trace(self, trace: dict[str, Any]) -> None:
         """
         Checks if sending trace is allowed and send the trace.
 
@@ -1592,7 +1699,7 @@ class DownloadClient:
         if self.tracing:
             send_trace(trace, self.client.trace_host, self.client.user_agent)
 
-    def preferred_impl(self, sources):
+    def preferred_impl(self, sources: list[dict[str, Any]]) -> Optional[str]:
         """
             Finds the optimum protocol impl preferred by the client and
             supported by the remote RSE.
@@ -1656,7 +1763,10 @@ class DownloadClient:
         return supported_impl
 
 
-def _verify_checksum(item, path):
+def _verify_checksum(
+        item: dict[str, Any],
+        path: str
+) -> tuple[bool, Optional[str], Optional[str]]:
     rucio_checksum = item.get(PREFERRED_CHECKSUM)
     local_checksum = None
     checksum_algo = CHECKSUM_ALGO_DICT.get(PREFERRED_CHECKSUM)

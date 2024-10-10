@@ -203,8 +203,7 @@ BEGIN
         VALUES (u.rse_id, 'rucio', u.bytes, u.files, u.updated_at, u.updated_at);
 
          FOR usage IN (SELECT /*+ INDEX(R REPLICAS_STATE_IDX ) */ rse_id, SUM(bytes) AS bytes , COUNT(*) AS files
-                FROM replicas r WHERE (CASE WHEN state != 'A' THEN rse_id END) IS NOT NULL
-                AND (state='U' or state='C') AND tombstone IS NULL GROUP BY rse_id)
+                FROM replicas r WHERE (state='U' or state='C') AND tombstone IS NULL GROUP BY rse_id)
          LOOP
               MERGE INTO rse_usage USING DUAL ON (RSE_USAGE.rse_id = usage.rse_id and source = 'unavailable')
               WHEN MATCHED THEN UPDATE SET used=usage.bytes, files=usage.files, updated_at=sysdate
@@ -479,7 +478,7 @@ EXECUTE IMMEDIATE 'ALTER SESSION SET hash_area_size=2100000000';
 -- rep_type = 1 if non locked rule with no expiration data. Permanent data
 -- rep_type = 0 if non locked rule with expiration date. Temporary data
 -- 28th May 2018, version 1.6, added check for the number or rows when the CURRTIME is null
--- 10th Oct 2017, version 1.5, The CURRTIME is populated only at the end of the work because of the Monit Flume JDBC sorce
+-- 10th Oct 2017, version 1.5, The CURRTIME is populated only at the end of the work because of the Monit Flume JDBC source
 -- Direct select - insert instead of passing data via collection.
 -- Added 3 more metrics (columns to the RUCIO_ACCOUNTING_TAB and HIST tables) on which is based the computation TIER, SPACETOKEN, GRP_DATATYPE
 

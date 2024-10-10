@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright European Organization for Nuclear Research (CERN) since 2012
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +13,12 @@
 # limitations under the License.
 
 import json
-import os
 import logging
+import os
 
 from rucio.common import exception
 from rucio.common.config import get_config_dirs
-from rucio.common.utils import execute, PREFERRED_CHECKSUM
+from rucio.common.utils import PREFERRED_CHECKSUM, execute
 from rucio.rse.protocols import protocol
 
 
@@ -169,7 +168,7 @@ class Default(protocol.RSEProtocol):
 
         :param path: path to file
 
-        :raises ServiceUnavailable: if some generic error occured in the library.
+        :raises ServiceUnavailable: if some generic error occurred in the library.
 
         :returns: a dict with two keys, filesize and an element of GLOBALLY_SUPPORTED_CHECKSUMS.
         """
@@ -242,7 +241,7 @@ class Default(protocol.RSEProtocol):
         if not prefix.endswith('/'):
             prefix = ''.join([prefix, '/'])
 
-        lfns = [lfns] if type(lfns) == dict else lfns
+        lfns = [lfns] if isinstance(lfns, dict) else lfns
         for lfn in lfns:
             scope, name = lfn['scope'], lfn['name']
             if 'path' in lfn and lfn['path'] is not None:
@@ -299,7 +298,7 @@ class Default(protocol.RSEProtocol):
             :param transfer_timeout: Transfer timeout (in seconds) - dummy
 
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'rclone.put: filename: {} target: {}'.format(filename, target))
@@ -325,7 +324,7 @@ class Default(protocol.RSEProtocol):
 
             :param pfn: Physical file name
 
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'rclone.delete: pfn: {}'.format(pfn))
@@ -347,7 +346,7 @@ class Default(protocol.RSEProtocol):
             :param pfn:      Current physical file name
             :param new_pfn  New physical file name
             :raises DestinationNotAccessible: if the destination storage was not accessible.
-            :raises ServiceUnavailable: if some generic error occured in the library.
+            :raises ServiceUnavailable: if some generic error occurred in the library.
             :raises SourceNotFound: if the source file was not found on the referred storage.
         """
         self.logger(logging.DEBUG, 'rclone.rename: pfn: {}'.format(pfn))

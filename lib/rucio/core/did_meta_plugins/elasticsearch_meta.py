@@ -33,8 +33,6 @@ from elasticsearch.exceptions import (
         RequestError,
     )
 
-from elasticsearch_dsl import Search, Q, A
-
 from rucio.common import config
 from rucio.common import exception
 from rucio.common.types import InternalScope
@@ -63,57 +61,46 @@ class ElasticDidMeta(DidMetaPlugin):
         password: Optional[str] = None,
         index: Optional[str] = None,
         archive_index: Optional[str] = None,
-        use_ssl: bool = False,
+        use_ssl: Optional[bool] = False,
         verify_certs: bool = True,
         ca_certs: Optional[str] = None,
         client_cert: Optional[str] = None,
         client_key: Optional[str] = None,
-        _timeout: int = 30,
+        request_timeout: int = 30,
         max_retries: int = 3,
         retry_on_timeout: bool = False
     ):
         super(ElasticDidMeta, self).__init__()
-        self.config = self._load_config()
-        self.hosts = hosts or [self.config.get('elastic_service_host', 'localhost')]
-        self.port = port or self.config.get('elastic_service_port', 9200)
-        self.user = user or self.config.get('elastic_user')
-        self.password = password or self.config.get('elastic_password')
-        self.index = index or self.config.get('metaIndex', 'rucio_did_meta')
-        self.archive_index = archive_index or self.config.get('metaIndex', 'archive_meta')'
+        self.hosts = hosts or [config.config_get('metadata', 'elastic_service_host')]
+        self.port = port or config.config_get('metadata', 'elastic_service_port', False, 9200)
+        self.user = user or config.config_get('metadata', 'elastic_user', False, '')
+        self.password = password or config.config_get('metadata', 'elastic_password', False, '')
+        self.index = index or config.config_get('metadata', 'meta_index', False, 'rucio_did_meta')
+        self.archive_index = archive_index or config.config_get('metadata', 'archive_index', False, 'archive_meta')
 
         self.es_config: Dict[str, Any] = {
             'hosts': self.hosts,
             'port': self.port,
-            'timeout': _timeout,
+            'timeout': request_timeout,
             'max_retries': max_retries,
             'retry_on_timeout': retry_on_timeout
         }
+        if self.user and self.password:
+            self.es_config['basic_auth'] = (self.user, self.password)
 
         if use_ssl:
             self.es_config.update({
-                'use_ssl': True,
-                'verify_certs': verify_certs,
                 'ca_certs': ca_certs,
+                'verify_certs': verify_certs,
+                })
+            if client_cert and client_key:
+                self.es_config.update({
                 'client_cert': client_cert,
                 'client_key': client_key
-            })
-
-        if self.user and self.password:
-            # new param 'basic_auth'
-            self.es_config['http_auth'] = (self.user, self.password)
+                })
 
         self.client = Elasticsearch(**self.es_config)
         self.plugin_name = "ELASTIC"
-
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from Rucio config."""
-        return {
-            'elastic_service_host': config.config_get('metadata', 'elastic_service_host', False, ''),
-            'elastic_service_port': config.config_get('metadata', 'elastic_service_port', False, 9200),
-            'elastic_user': config.config_get('metadata', 'elastic_user', False, ''),
-            'elastic_password': config.config_get('metadata', 'elastic_password', False, ''),
-            'metaIndex': config.config_get('metadata', 'metaIndex', False, 'rucio_did_meta')
-        }
 
     def drop_index(self):
         self.client.indices.delete(index=self.index, ignore=[400, 404])
@@ -128,10 +115,13 @@ class ElasticDidMeta(DidMetaPlugin):
         :returns: The metadata for the did
         """
 
-        docID = "{}{}".format(str(scope.internal), str(name))
-        doc = self.client.get(index=self.index, id=docID)["_source"]
-        if not doc:
-            raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))
+        doc_id = f"{scope.internal}{name}"
+        try:
+            doc = self.client.get(index=self.index, id=doc_id)["_source"]
+        except NotFoundError as not_found_error:
+            raise exception.DataIdentifierNotFound(
+                f"No metadata found for DID '{scope}:{name}'"
+            ) from not_found_error
         return doc
 
     def set_metadata(self, scope, name, key, value, recursive=False, *, session: "Optional[Session]" = None):
@@ -157,30 +147,25 @@ class ElasticDidMeta(DidMetaPlugin):
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
         """
-        docID = "{}{}".format(str(scope.internal), str(name))
+        doc_id = f"{scope.internal}{name}"
         for key in IMMUTABLE_KEYS:
             if key in meta:
                 meta.pop(key)
         try:
             doc = self.get_metadata(scope, name)
             doc.update(meta)
+            print(meta)
             try:
-                self.client.index(index=self.index, document=meta, id=docID)
+                self.client.index(index=self.index, document=doc, id=doc_id, refresh="true")
             except Exception as e:
                 raise e
-        except Exception as e:
+        except NotFoundError:
             meta['scope'] = str(scope.external)
             meta['name'] = str(name)
             meta['vo'] = str(scope.vo)
             _doc = {}
-            for key, value in meta.items():
-                _doc[str(key)] = value
-            try:
-                # opt_type=create , so that if a document with the specified _id already exists, the indexing operation will fail
-                # referesh=true, so that the value is imediately available of search
-                self.client.index(index=self.index, document=_doc, id=docID, op_type="create", refresh="true")
-            except Exception as e:
-                raise e
+            _doc.update(meta)
+            self.client.index(index=self.index, document=meta, id=doc_id)
 
     
     def delete_metadata(self, scope, name, key, *, session: "Optional[Session]" = None):
@@ -191,12 +176,11 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: the name of the did
         :param key: the key to be deleted
         """
-        docID = f"{str(scope.internal)}{str(name)}"
-        
+        doc_id = f"{scope.internal}{name}"
         try:
             # First, get the current document
-            doc = self.client.get(index=self.index, id=docID)
-            
+            doc = self.client.get(index=self.index, id=doc_id)
+  
             # Check if the key exists in the document
             if key in doc['_source']:
                 # Use script to remove the field
@@ -206,13 +190,9 @@ class ElasticDidMeta(DidMetaPlugin):
                         "lang": "painless"
                     }
                 }
-                
-                self.client.update(index=self.index, id=docID, body=script)
-        
-        except NotFoundError:
-            raise exception.DataIdentifierNotFound(f"Key not found for data identifier '{scope}:{name}'")
-        except Exception as e:
-            raise
+                self.client.update(index=self.index, id=doc_id, body=script)
+        except Exception as err:
+            raise exception.DataIdentifierNotFound(err)
 
 
     def list_dids(self, scope, filters, did_type='collection', ignore_case=False, limit=None,
@@ -248,23 +228,20 @@ class ElasticDidMeta(DidMetaPlugin):
             query["from"] = offset
         size = limit if limit else 10000
         query["size"] = size
-    
-        
         search_after = None
         total_processed = 0
-        
         try:
             while True:
                 if search_after:
                     query["search_after"] = search_after
                     query.pop("from", None)
-        
+
                 # Execute search
                 results = self.client.search(body=query)
                 hits = results['hits']['hits']
                 if not hits:
                     break
-        
+
                 for hit in hits:
                     did_full = f"{hit['_source']['scope']}:{hit['_source']['name']}"
                     if did_full not in ignore_dids:
@@ -279,42 +256,21 @@ class ElasticDidMeta(DidMetaPlugin):
                             }
                         else:
                             yield hit['_source']['name']
-        
+
                     total_processed += 1
                     if limit and total_processed >= limit:
                         break
-        
+
                 # Update search_after for the next iteration
                 search_after = hits[-1]["sort"]
-        
+
         finally:
             # Always delete the point in time when done
             self.client.close_point_in_time(body={"id": pit_id})
-        
+
         if recursive:
             raise exception.UnsupportedOperation(f"'{self.plugin_name.lower()}' metadata module does not currently support recursive searches")
 
-    
-    def get_metadata_archived(self, scope, name, *,  session: "Optional[Session]" = None):
-        """
-        Get archived did metadata.
-        :param scope: The scope name.
-        :param name: The data identifier name.
-        :param session: The database session in use.
-        """
-        raise NotImplementedError
-
-    def manages_key(self, key, *, session: "Optional[Session]" = None):
-        return True
-
-    def get_plugin_name(self):
-        """
-        Returns a unique identifier for this plugin. This can be later used for filtering down results to this plugin only.
-
-        :returns: The name of the plugin
-        """
-        return self.plugin_name
-    
     def on_delete(self, scope: "InternalScope", name: str, archive: bool = False, session: "Optional[Session]" = None) -> None:
         """
         Delete a document and optionally archive it.
@@ -323,29 +279,29 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: The name of the document
         :param archive: Whether to archive the document before deletion
         """
-        did = f"{scope}:{name}"
-        
+        doc_id = f"{scope}{name}"
+
         try:
             # Get the current document
-            doc = self.client.get(index=self.index, id=did)
-            
+            doc = self.client.get(index=self.index, id=doc_id)
+
             if archive:
                 # Archive the document
                 archived_doc = doc['_source']
-                archived_doc['deleted_at'] = datetime.datetime.utcnow().isoformat()
-                self.client.index(index=self.archive_index, id=did, body=archived_doc)
-                print(f"Archived document: {did}")
-            
-            # Delete the document from the main index
-            self.client.delete(index=self.index, id=did)
-            print(f"Deleted document: {did}")
-            
-        except NotFoundError:
-            print(f"Document not found: {did}")
-        except Exception as e:
-            print(f"Error processing document {did}: {str(e)}")
+                archived_doc['deleted_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                self.client.index(index=self.archive_index, id=doc_id, body=archived_doc)
+                print(f"Archived document: {doc_id}")
 
-    def get_metadata_archive(self, scope: "InternalScope", name: str, session: "Optional[Session]" = None) -> None:
+            # Delete the document from the main index
+            self.client.delete(index=self.index, id=doc_id)
+            print(f"Deleted document: {doc_id}")
+
+        except NotFoundError  as err:
+            raise exception.DataIdentifierNotFound(err)
+        except Exception as e:
+            raise e
+
+    def get_metadata_archived(self, scope: "InternalScope", name: str, session: "Optional[Session]" = None) -> None:
         """
         Retrieve archived metadata for a given scope and name.
         
@@ -353,12 +309,21 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: The name of the document
         :return: The archived metadata or None if not found
         """
-        did = f"{scope}:{name}"
-        
+        doc_id = f"{scope}{name}"
+
         try:
-            doc = self.client.get(index=self.archive_index, id=did)
-            docID = "{}{}".format(str(scope.internal), str(name))
-            doc = self.client.get(index=self.index, id=docID)["_source"]
+            doc = self.client.get(index=self.archive_index, id=doc_id)["_source"]
             return doc
         except NotFoundError:
             raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))
+
+    def manages_key(self, key, *, session: "Optional[Session]" = None) -> bool:
+        return True
+
+    def get_plugin_name(self) -> str:
+        """
+        Returns a unique identifier for this plugin. This can be later used for filtering down results to this plugin only.
+
+        :returns: The name of the plugin
+        """
+        return self.plugin_name

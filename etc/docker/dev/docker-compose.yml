@@ -306,6 +306,16 @@ services:
       - POSTGRES_DB=metadata
       - POSTGRES_PASSWORD=secret
     command: ["-p", "5433"]
+  elasticsearch_meta:
+    image: docker.io/elasticsearch/elasticsearch:8.15.0
+    platform: linux/amd64
+    profiles:
+      - externalmetadata
+    environment:
+      - ELASTIC_PASSWORD=rucio
+      - xpack.security.transport.ssl.enabled=false
+      # - xpack.security.transport.ssl.verification_mode=certificate
+      # - xpack.security.transport.ssl.certificate_authorities=/usr/share/elasticsearch/config/certs/ca.crt
   logstash:
     image: docker.elastic.co/logstash/logstash-oss:7.3.2
     platform: linux/amd64

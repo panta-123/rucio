@@ -23,7 +23,6 @@ import sqlalchemy
 from sqlalchemy import Select, and_, cast, or_, select
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.expression import text
-from elasticsearch_dsl import Search, Q, A
 
 from rucio.common import exception
 from rucio.common.utils import parse_did_filter_from_string_fe

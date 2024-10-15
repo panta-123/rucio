@@ -307,7 +307,7 @@ services:
       - POSTGRES_PASSWORD=secret
     command: ["-p", "5433"]
   elasticsearch_meta:
-    image: docker.io/elasticsearch/elasticsearch:8.15.0
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
     platform: linux/amd64
     profiles:
       - externalmetadata

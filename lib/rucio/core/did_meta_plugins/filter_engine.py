@@ -358,7 +358,10 @@ class FilterEngine:
 
         return query_str
 
-    def create_elastic_query(self, additional_filters={}):
+    def create_elastic_query(
+        self,
+        additional_filters: Optional["Iterable[FilterTuple]"] = None
+    ) -> dict[str, Any]:
         """
         Returns a single elastic query describing the filters expression.
 
@@ -372,44 +375,43 @@ class FilterEngine:
         #[{'key1': 'value1', 'key2.lte': 'value2'}, {'key3.gte, 'value3'}].
 
         #Keypairs in the same dictionary are AND'ed together, dictionaries are OR'ed together
+        additional_filters = additional_filters or []
         for or_group in self._filters:
-            for filter in additional_filters:
-                or_group.append(list(filter))
+            for _filter in additional_filters:
+                or_group.append(list(_filter))  # type: ignore
+
         should = []
         for or_group in self._filters:
-            musts = []
-            must_not = []
+            bool_query = {
+                "must": [],
+                "must_not": []
+            }
+
             for and_group in or_group:
                 key, oper, value = and_group
                 key = str(key)
-                if isinstance(value, str) and any([char in value for char in ['*', '%']]):
-                    if value in ('*', '%', u'*', u'%'):                                      # match wildcard exactly == no filtering on key
-                        q = Q('wildcard', **{key: value})
-                        musts.append(q)
-                    else:                                                                    # partial match with wildcard == like || notlike
+
+                if isinstance(value, str) and any(char in value for char in ['*', '%']):
+                    if value in ('*', '%', u'*', u'%'):
+                        bool_query["must"].append({"wildcard": {key: value}})
+                    else:
+                        wildcard_query = {"wildcard": {key: value}}
                         if oper == operator.eq:
-                            q = Q('wildcard', **{key: value})
-                            musts.append(q)
-                        if oper == operator.ne:
-                            q = Q('wildcard', **{key: value})
-                            must_not.append(q)
-
+                            bool_query["must"].append(wildcard_query)
+                        elif oper == operator.ne:
+                            bool_query["must_not"].append(wildcard_query)
                 else:
-                    if oper in [operator.lt, operator.gt,operator.ge, operator.le]:  # range query
+                    if oper in [operator.lt, operator.gt, operator.ge, operator.le]:
                         elsop = ELASTIC_OP_MAP[oper]
-                        q = Q('range', **{key: {elsop: value }})
-                        musts.append(q)
+                        bool_query["must"].append({"range": {key: {elsop: value}}})
+                    elif oper == operator.eq:
+                        bool_query["must"].append({"term": {key: value}})
+                    elif oper == operator.ne:
+                        bool_query["must_not"].append({"term": {key: value}})
 
-                    if oper == operator.eq:
-                        q = Q('term', **{key: value})
-                        musts.append(q)
-                    if oper == operator.ne:
-                        q = Q('term', **{key: value})
-                        must_not.append(q)
-            q1 = Q('bool', must=musts, must_not=must_not)
-            should.append(q1)
+            should.append({"bool": bool_query})
 
-        q = Q('bool', should=should)
+        q = {"query": {"bool": {"should": should}}}
         return q
 
     def create_postgres_query(

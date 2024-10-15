@@ -20,13 +20,11 @@
 '''
  Elasticsearch based metadata plugin.
 '''
-
 import operator
 from typing import TYPE_CHECKING
-import hashlib
+import datetime
 
 from elasticsearch import Elasticsearch
-from elasticsearch.exceptions import ConnectionError as ElasticConnectionError
 from elasticsearch.helpers import BulkIndexError, bulk
 from elasticsearch.exceptions import (
         ConnectionError as ElasticConnectionError,
@@ -37,12 +35,17 @@ from elasticsearch.exceptions import (
 
 from elasticsearch_dsl import Search, Q, A
 
-
 from rucio.common import config
 from rucio.common import exception
 from rucio.common.types import InternalScope
 from rucio.core.did_meta_plugins.did_meta_plugin_interface import DidMetaPlugin
 from rucio.core.did_meta_plugins.filter_engine import FilterEngine
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+    from typing import Optional, Dict, Any
+    from rucio.common.types import InternalScope
+
 
 timeout = 100  # sec
 IMMUTABLE_KEYS = [
@@ -52,41 +55,65 @@ IMMUTABLE_KEYS = [
 ]
 
 class ElasticDidMeta(DidMetaPlugin):
-
-
-    def __init__(self, host=None, port=None, user=None, password=None, index=None):
+    def __init__(
+        self,
+        hosts: Optional[list[str]] = None,
+        port: Optional[int] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        index: Optional[str] = None,
+        archive_index: Optional[str] = None,
+        use_ssl: bool = False,
+        verify_certs: bool = True,
+        ca_certs: Optional[str] = None,
+        client_cert: Optional[str] = None,
+        client_key: Optional[str] = None,
+        _timeout: int = 30,
+        max_retries: int = 3,
+        retry_on_timeout: bool = False
+    ):
         super(ElasticDidMeta, self).__init__()
-        #if host is None:
-        #    host = config.config_get('metadata', 'elastic_service_host')
-        #if port is None:
-        #    port = config.config_get('metadata', 'elastic_service_port')
-        #if user is None:
-        #    user = config.config_get('metadata', 'elastic_user')
-        #if password is None:
-        #    password = config.config_get('metadata', 'elastic_password')
-        if index is None:
-            self.index = 'test_myelastic'#config.config_get('metadata', 'metaIndex')
-        else:
-            self.index = index
-        #if mapping is None:
-        #    mapping = config_get('metadata', 'mapping')
-        #self.__url = "http://{user}:{password}@{host}:{port}"
-        #self.__url = "http://{host}:{port}"
-        #self.__url = "http://172.21.0.5:9200/"
-        #self.client = Elasticsearch(self.__url, timeout = timeout)
-        self.client = Elasticsearch([host], scheme="http",port=port,timeout = timeout)
-        
-        try:
-            self.client.indices.exists(index=self.index)
-        except Exception as e: #  TransportError as e:
-            try:
-                self.client.indices.create(index=self.index, body={"mappings": None})  # ES7
-            except Exception as e:  # pylint: disable=broad-except
-                raise e
+        self.config = self._load_config()
+        self.hosts = hosts or [self.config.get('elastic_service_host', 'localhost')]
+        self.port = port or self.config.get('elastic_service_port', 9200)
+        self.user = user or self.config.get('elastic_user')
+        self.password = password or self.config.get('elastic_password')
+        self.index = index or self.config.get('metaIndex', 'rucio_did_meta')
+        self.archive_index = archive_index or self.config.get('metaIndex', 'archive_meta')'
+
+        self.es_config: Dict[str, Any] = {
+            'hosts': self.hosts,
+            'port': self.port,
+            'timeout': _timeout,
+            'max_retries': max_retries,
+            'retry_on_timeout': retry_on_timeout
+        }
+
+        if use_ssl:
+            self.es_config.update({
+                'use_ssl': True,
+                'verify_certs': verify_certs,
+                'ca_certs': ca_certs,
+                'client_cert': client_cert,
+                'client_key': client_key
+            })
+
+        if self.user and self.password:
+            # new param 'basic_auth'
+            self.es_config['http_auth'] = (self.user, self.password)
+
+        self.client = Elasticsearch(**self.es_config)
         self.plugin_name = "ELASTIC"
 
-    #def sclient(self):
-    #    return self.client
+    def _load_config(self) -> Dict[str, Any]:
+        """Load configuration from Rucio config."""
+        return {
+            'elastic_service_host': config.config_get('metadata', 'elastic_service_host', False, ''),
+            'elastic_service_port': config.config_get('metadata', 'elastic_service_port', False, 9200),
+            'elastic_user': config.config_get('metadata', 'elastic_user', False, ''),
+            'elastic_password': config.config_get('metadata', 'elastic_password', False, ''),
+            'metaIndex': config.config_get('metadata', 'metaIndex', False, 'rucio_did_meta')
+        }
 
     def drop_index(self):
         self.client.indices.delete(index=self.index, ignore=[400, 404])
@@ -131,13 +158,12 @@ class ElasticDidMeta(DidMetaPlugin):
         :param session: The database session in use
         """
         docID = "{}{}".format(str(scope.internal), str(name))
-        op_type = 'create'
         for key in IMMUTABLE_KEYS:
             if key in meta:
                 meta.pop(key)
         try:
             doc = self.get_metadata(scope, name)
-            meta.update(doc)
+            doc.update(meta)
             try:
                 self.client.index(index=self.index, document=meta, id=docID)
             except Exception as e:
@@ -146,14 +172,17 @@ class ElasticDidMeta(DidMetaPlugin):
             meta['scope'] = str(scope.external)
             meta['name'] = str(name)
             meta['vo'] = str(scope.vo)
-            meta2 = {}
+            _doc = {}
             for key, value in meta.items():
-                meta2[str(key)] = value
+                _doc[str(key)] = value
             try:
-                self.client.index(index=self.index, document=meta2, id=docID)  # , params={"op_type": op_type})
+                # opt_type=create , so that if a document with the specified _id already exists, the indexing operation will fail
+                # referesh=true, so that the value is imediately available of search
+                self.client.index(index=self.index, document=_doc, id=docID, op_type="create", refresh="true")
             except Exception as e:
                 raise e
 
+    
     def delete_metadata(self, scope, name, key, *, session: "Optional[Session]" = None):
         """
         Delete a key from metadata.
@@ -162,12 +191,29 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: the name of the did
         :param key: the key to be deleted
         """
-        docID = "{}{}".format(str(scope.internal), str(name))
-        meta = {"doc": {key: "" }}
+        docID = f"{str(scope.internal)}{str(name)}"
+        
         try:
-            self.client.update(index=self.index, id=docID, body=meta)
+            # First, get the current document
+            doc = self.client.get(index=self.index, id=docID)
+            
+            # Check if the key exists in the document
+            if key in doc['_source']:
+                # Use script to remove the field
+                script = {
+                    "script": {
+                        "source": f"ctx._source.remove('{key}')",
+                        "lang": "painless"
+                    }
+                }
+                
+                self.client.update(index=self.index, id=docID, body=script)
+        
+        except NotFoundError:
+            raise exception.DataIdentifierNotFound(f"Key not found for data identifier '{scope}:{name}'")
         except Exception as e:
-            raise e
+            raise
+
 
     def list_dids(self, scope, filters, did_type='collection', ignore_case=False, limit=None,
                   offset=None, long=False, recursive=False, ignore_dids=None, *, session: "Optional[Session]" = None):
@@ -178,7 +224,7 @@ class ElasticDidMeta(DidMetaPlugin):
         if isinstance(filters, dict):
             filters = [filters]
 
-        # instantiate fe and create mongo query
+        # Create Elasticsearch query
         fe = FilterEngine(filters, model_class=None, strict_coerce=False)
         elastic_query_str = fe.create_elastic_query(
             additional_filters=[
@@ -186,41 +232,77 @@ class ElasticDidMeta(DidMetaPlugin):
                 ('vo', operator.eq, str(scope.vo))
             ]
         )
+        pit = self.client.open_point_in_time(index=self.index, keep_alive="2m")
+        pit_id = pit["id"]
+        # Base query with point in time(pit) paramter.
+        # sort is needed for search_after, so we use scope sort (random choice)
+        query = {
+            "query": elastic_query_str,
+            "sort": [{"scope": "asc"}],
+            "_source": ["scope", "name"] if not long else ["scope", "name", "did_type", "bytes", "length"],
+            "pit": {"id": pit_id, "keep_alive": "2m"}
+        }
 
-        s = Search(using=self.client, index=self.index)
-        s = s.query(elastic_query_str)
+        # Add sorting and pagination
+        if offset:
+            query["from"] = offset
+        size = limit if limit else 10000
+        query["size"] = size
+    
+        
+        search_after = None
+        total_processed = 0
+        
+        try:
+            while True:
+                if search_after:
+                    query["search_after"] = search_after
+                    query.pop("from", None)
+        
+                # Execute search
+                results = self.client.search(body=query)
+                hits = results['hits']['hits']
+                if not hits:
+                    break
+        
+                for hit in hits:
+                    did_full = f"{hit['_source']['scope']}:{hit['_source']['name']}"
+                    if did_full not in ignore_dids:
+                        ignore_dids.add(did_full)
+                        if long:
+                            yield {
+                                'scope': (hit['_source']['scope']),
+                                'name': hit['_source']['name'],
+                                'did_type': hit['_source'].get('did_type', 'N/A'),
+                                'bytes': hit['_source'].get('bytes', 'N/A'),
+                                'length': hit['_source'].get('length', 'N/A')
+                            }
+                        else:
+                            yield hit['_source']['name']
+        
+                    total_processed += 1
+                    if limit and total_processed >= limit:
+                        break
+        
+                # Update search_after for the next iteration
+                search_after = hits[-1]["sort"]
+        
+        finally:
+            # Always delete the point in time when done
+            self.client.close_point_in_time(body={"id": pit_id})
+        
         if recursive:
-            # TODO: possible, but requires retrieving the results of a concurrent sqla query to call list_content on for datasets and containers
-            raise exception.UnsupportedOperation("'{}' metadata module does not currently support recursive searches".format(
-                self.plugin_name.lower()
-            ))
+            raise exception.UnsupportedOperation(f"'{self.plugin_name.lower()}' metadata module does not currently support recursive searches")
 
-        if long:
-            if limit:
-                # default 10,000 in es
-                s = s[:limit]
-            query_result =s.scan()  #  s.execute()
-            for did in query_result:
-                did_full = "{}:{}".format(str(did.scope), str(did.name))
-                if did_full not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
-                    ignore_dids.add(did_full)
-                    yield {
-                        'scope': InternalScope(did.scope),
-                        'name': str(did.name),
-                        'did_type': "N/A",
-                        'bytes': "N/A",
-                        'length': "N/A"
-                    }
-        else:
-            if limit:
-                # default 10,000 in es
-                s = s[:limit]
-            query_result = s.scan()  #  s.execute()
-            for did in query_result:
-                did_full = "{}:{}".format(str(did.scope), str(did.name))
-                if did_full not in ignore_dids:         #  aggregating recursive queries may contain duplicate DIDs
-                    ignore_dids.add(did_full)
-                    yield did.name
+    
+    def get_metadata_archived(self, scope, name, *,  session: "Optional[Session]" = None):
+        """
+        Get archived did metadata.
+        :param scope: The scope name.
+        :param name: The data identifier name.
+        :param session: The database session in use.
+        """
+        raise NotImplementedError
 
     def manages_key(self, key, *, session: "Optional[Session]" = None):
         return True
@@ -232,3 +314,51 @@ class ElasticDidMeta(DidMetaPlugin):
         :returns: The name of the plugin
         """
         return self.plugin_name
+    
+    def on_delete(self, scope: "InternalScope", name: str, archive: bool = False, session: "Optional[Session]" = None) -> None:
+        """
+        Delete a document and optionally archive it.
+        
+        :param scope: The scope of the document
+        :param name: The name of the document
+        :param archive: Whether to archive the document before deletion
+        """
+        did = f"{scope}:{name}"
+        
+        try:
+            # Get the current document
+            doc = self.client.get(index=self.index, id=did)
+            
+            if archive:
+                # Archive the document
+                archived_doc = doc['_source']
+                archived_doc['deleted_at'] = datetime.datetime.utcnow().isoformat()
+                self.client.index(index=self.archive_index, id=did, body=archived_doc)
+                print(f"Archived document: {did}")
+            
+            # Delete the document from the main index
+            self.client.delete(index=self.index, id=did)
+            print(f"Deleted document: {did}")
+            
+        except NotFoundError:
+            print(f"Document not found: {did}")
+        except Exception as e:
+            print(f"Error processing document {did}: {str(e)}")
+
+    def get_metadata_archive(self, scope: "InternalScope", name: str, session: "Optional[Session]" = None) -> None:
+        """
+        Retrieve archived metadata for a given scope and name.
+        
+        :param scope: The scope of the document
+        :param name: The name of the document
+        :return: The archived metadata or None if not found
+        """
+        did = f"{scope}:{name}"
+        
+        try:
+            doc = self.client.get(index=self.archive_index, id=did)
+            docID = "{}{}".format(str(scope.internal), str(name))
+            doc = self.client.get(index=self.index, id=docID)["_source"]
+            return doc
+        except NotFoundError:
+            raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))

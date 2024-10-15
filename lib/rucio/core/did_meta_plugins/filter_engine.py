@@ -410,7 +410,7 @@ class FilterEngine:
 
             should.append({"bool": bool_query})
 
-        q = {"query": {"bool": {"should": should}}}
+        q = {"bool": {"should": should}}
         return q
 
     def create_postgres_query(

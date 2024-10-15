@@ -55,38 +55,39 @@ IMMUTABLE_KEYS = [
 class ElasticDidMeta(DidMetaPlugin):
     def __init__(
         self,
-        hosts: Optional[list[str]] = None,
-        port: Optional[int] = None,
-        user: Optional[str] = None,
-        password: Optional[str] = None,
-        index: Optional[str] = None,
-        archive_index: Optional[str] = None,
-        use_ssl: Optional[bool] = False,
+        hosts: "Optional[list[str]]" = None,
+        user: "Optional[str]" = None,
+        password: "Optional[str]" = None,
+        index: "Optional[str]" = None,
+        archive_index: "Optional[str]" = None,
+        use_ssl: "Optional[bool]" = False,
         verify_certs: bool = True,
-        ca_certs: Optional[str] = None,
-        client_cert: Optional[str] = None,
-        client_key: Optional[str] = None,
+        ca_certs: "Optional[str]" = None,
+        client_cert: "Optional[str]" = None,
+        client_key: "Optional[str]" = None,
         request_timeout: int = 30,
         max_retries: int = 3,
         retry_on_timeout: bool = False
     ):
         super(ElasticDidMeta, self).__init__()
-        self.hosts = hosts or [config.config_get('metadata', 'elastic_service_host')]
-        self.port = port or config.config_get('metadata', 'elastic_service_port', False, 9200)
-        self.user = user or config.config_get('metadata', 'elastic_user', False, '')
-        self.password = password or config.config_get('metadata', 'elastic_password', False, '')
+        hosts = hosts or [config.config_get('metadata', 'elastic_service_host')]
+        user = user or config.config_get('metadata', 'elastic_user', False, None)
+        password = password or config.config_get('metadata', 'elastic_password', False, None)
         self.index = index or config.config_get('metadata', 'meta_index', False, 'rucio_did_meta')
         self.archive_index = archive_index or config.config_get('metadata', 'archive_index', False, 'archive_meta')
+        use_ssl = use_ssl or  bool(config.config_get('metadata', 'use_ssl', False, False))
+        ca_certs = ca_certs or config.config_get('metadata', 'ca_certs', False, None)
+        client_cert = client_cert or config.config_get('metadata', 'client_cert', False, None)
+        client_key = client_key or config.config_get('metadata', 'client_key', False, None)
 
         self.es_config: Dict[str, Any] = {
-            'hosts': self.hosts,
-            'port': self.port,
+            'hosts': hosts,
             'timeout': request_timeout,
             'max_retries': max_retries,
             'retry_on_timeout': retry_on_timeout
         }
-        if self.user and self.password:
-            self.es_config['basic_auth'] = (self.user, self.password)
+        if user and password:
+            self.es_config['basic_auth'] = (user, password)
 
         if use_ssl:
             self.es_config.update({
@@ -148,26 +149,25 @@ class ElasticDidMeta(DidMetaPlugin):
         :param session: The database session in use
         """
         doc_id = f"{scope.internal}{name}"
-        for key in IMMUTABLE_KEYS:
-            if key in meta:
-                meta.pop(key)
         try:
-            doc = self.get_metadata(scope, name)
-            doc.update(meta)
-            print(meta)
-            try:
-                self.client.index(index=self.index, document=doc, id=doc_id, refresh="true")
-            except Exception as e:
-                raise e
-        except NotFoundError:
-            meta['scope'] = str(scope.external)
-            meta['name'] = str(name)
-            meta['vo'] = str(scope.vo)
-            _doc = {}
-            _doc.update(meta)
-            self.client.index(index=self.index, document=meta, id=doc_id)
+            # Try to get existing metadata
+            existing_meta = self.get_metadata(scope, name)
+        except exception.DataIdentifierNotFound:
+            existing_meta = {
+                'scope': str(scope.external),
+                'name': str(name),
+                'vo': str(scope.vo)
+            }
+        for key, value in meta.items():
+            if key not in IMMUTABLE_KEYS:
+                existing_meta[key] = value
 
-    
+        try:
+            response = self.client.index(index=self.index, body=existing_meta, id=doc_id, refresh="true")
+            return response
+        except Exception as err:
+            raise err
+
     def delete_metadata(self, scope, name, key, *, session: "Optional[Session]" = None):
         """
         Delete a key from metadata.
@@ -180,7 +180,7 @@ class ElasticDidMeta(DidMetaPlugin):
         try:
             # First, get the current document
             doc = self.client.get(index=self.index, id=doc_id)
-  
+
             # Check if the key exists in the document
             if key in doc['_source']:
                 # Use script to remove the field

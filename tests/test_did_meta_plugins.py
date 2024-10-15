@@ -361,7 +361,7 @@ class TestDidMetaElastic:
         for d in dids:
             results.append(d)
         assert len(results) == 1
-        assert [tmp_dsn4] == results   
+        assert [tmp_dsn4] == results
 
 
 @pytest.fixture

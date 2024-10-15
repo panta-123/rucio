@@ -313,9 +313,8 @@ services:
       - externalmetadata
     environment:
       - ELASTIC_PASSWORD=rucio
+      - discovery.type=single-node
       - xpack.security.transport.ssl.enabled=false
-      # - xpack.security.transport.ssl.verification_mode=certificate
-      # - xpack.security.transport.ssl.certificate_authorities=/usr/share/elasticsearch/config/certs/ca.crt
   logstash:
     image: docker.elastic.co/logstash/logstash-oss:7.3.2
     platform: linux/amd64

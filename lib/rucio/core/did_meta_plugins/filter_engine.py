@@ -367,13 +367,7 @@ class FilterEngine:
         :param additional_filters: additional filters to be applied to all clauses.
         :returns: a elastic query string describing the filters expression.
         """
-        # {'lte', 'gte', 'gt', 'lt', 'ne' or ''}
-        # {gt , gte , lt , lte}
 
-        # Add additional filters, applied as AND clauses to each OR group.
-        #[{'key1': 'value1', 'key2.lte': 'value2'}, {'key3.gte, 'value3'}].
-
-        #Keypairs in the same dictionary are AND'ed together, dictionaries are OR'ed together
         additional_filters = additional_filters or []
         for or_group in self._filters:
             for _filter in additional_filters:

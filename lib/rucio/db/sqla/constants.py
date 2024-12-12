@@ -199,3 +199,17 @@ class SubscriptionState(Enum):
 class TransferLimitDirection(Enum):
     SOURCE = 'S'
     DESTINATION = 'D'
+
+
+class GrantType(Enum):
+    TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
+    REFRESH_TOKEN = "refresh_token"
+
+
+class AllowedScope(Enum):
+    """Enum for different OAuth2 allowed scopes."""
+    STORAGE_READ = "storage.read"
+    STORAGE_WRITE = "storage.write"
+    STORAGE_STAGE = "storage.stage"
+    STORAGE_MODIFY = "storage.modify"
+    OFFLINE_ACCESS = "offline_access"

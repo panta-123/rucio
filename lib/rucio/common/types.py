@@ -459,3 +459,55 @@ class FilterDict(TypedDict):
     request_id: str
     older_than: 'datetime'
     activities: Union[list[str], str]
+
+class SupportedScopes(TypedDict):
+    storage_read: str
+    storage_modify: str
+    storage_create: str
+    storage_stage: str
+    offline_access: str
+
+class GrantTypes(TypedDict):
+    token_exchange: str
+    token_refresh: str
+
+class WLCGPayload(TypedDict):
+    sub: str
+    exp: 'datetime'
+    iss: str
+    wlcg_ver: str
+    #wlcggroups: Optional[str]
+    aud: str
+    iat: 'datetime'
+    nbf: 'datetime'
+    jti: str
+    scope: str
+
+class TokenExchangeRequest(TypedDict):
+    grant_type: str
+    subject_token: str
+    subject_token_type: str
+    requested_token_type: Optional[str]  # default value can be provided later
+    scope: Optional[str]  # scopes could also be part of the request, but it's not mandatory
+    audience: Optional[str]
+    resource: Optional[str]
+
+class TokenExchangeResponse(TypedDict):
+    access_token: str
+    issued_token_type: str
+    token_type: str
+    expires_in: int
+    refresh_token: Optional[str]
+    scope: Optional[str]
+
+class RefreshTokenRequest(TypedDict):
+    grant_type: str
+    refresh_token: str
+    scope: Optional[str]  # Optional, as per the refresh token flow spec
+
+class RefreshTokenResponse(TypedDict):
+    access_token: str
+    token_type: str
+    expires_in: int
+    refresh_token: Optional[str]
+    scope: Optional[str] 

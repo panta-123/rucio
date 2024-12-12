@@ -46,6 +46,8 @@ DEFAULT_ENDPOINTS = [
     'rules',
     'scopes',
     'subscriptions',
+    'token_issuer',
+    'oidc_client',
 ]
 
 

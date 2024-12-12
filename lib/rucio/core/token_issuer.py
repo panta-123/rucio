@@ -1,94 +1,118 @@
+""" token_issuer """
+import base64
 import datetime
+import os
 import uuid
-from typing import Any, Optional, TypedDict
+from typing import Any, Optional, Union
 
 import jwt
+from cryptography.hazmat.primitives import serialization
 
-from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
-
-SUPPORTED_ALGORITHMS = ["HS256"]
+from rucio.common.exception import InvalidGrantError, InvalidOIDCRequestError, UnauthorizedOIDCClientError, UnsupportedGrantTypeError
+from rucio.common.types import (
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    TokenExchangeRequest,
+    TokenExchangeResponse,
+)
+from rucio.core.oidc_client import validate_client
+from rucio.db.sqla import constants
+from rucio.db.sqla.session import read_session
 
 ISSUER = "myruciohome"
 SECRET_KEY = "your_secret_key"
 SUPPORTED_ALGORITHMS = ["HS256", "RS256"]
 
+PRIVATE_KEY_PATH = os.getenv("PRIVATE_KEY_PATH")
+PUBLIC_KEY_PATH = os.getenv("PUBLIC_KEY_PATH")
+
+if not PRIVATE_KEY_PATH:
+    raise ValueError("Environment variable 'PRIVATE_KEY_PATH' is not set or empty.")
+
+if not PUBLIC_KEY_PATH:
+    raise ValueError("Environment variable 'PUBLIC_KEY_PATH' is not set or empty.")
+
 # RSA Keys (Load from files or environment variables)
-with open("private.key", "r") as private_key_file:
+with open(PRIVATE_KEY_PATH, "r") as private_key_file:
     PRIVATE_KEY_RS256 = private_key_file.read()
 
-with open("public.key", "r") as public_key_file:
+with open(PUBLIC_KEY_PATH, "r") as public_key_file:
     PUBLIC_KEY_RS256 = public_key_file.read()
 
 ACCESS_TOKEN_LIFETIME = 21600
 REFRESH_TOKEN_LIFETIME = 864000
 DEFAULT_AUDIENCE = "https://rucio.jlab.org"
+SUBJECT_TOKEN_TYPE_SUPPORTED = ["urn:ietf:params:oauth:token-type:access_token"]
+REQUESTED_TOKEN_TYPE_SUPPORTED = ["urn:ietf:params:oauth:token-type:refresh_token", "urn:ietf:params:oauth:token-type:access_token"]
+SUB = "rucio-service"
 
-class SupportedScopes(TypedDict):
-    storage_read: str
-    storage_modify: str
-    storage_create: str
-    storage_stage: str
-    offline_access: str
-
-class GrantTypes(TypedDict):
-    token_exchange: str
-    token_refresh: str
-
-class WLCGPayload(TypedDict):
-    sub: str
-    exp: 'datetime'
-    iss: str
-    wlcg_ver: str
-    #wlcggroups: Optional[str]
-    aud: str
-    iat: 'datetime'
-    nbf: 'datetime'
-    jti: str
-    scope: str  
-
-SUPPORTED_SCOPES: SupportedScopes = {
-    "storage_read": "storage.read",
-    "storage_modify": "storage.modify",
-    "storage_create": "storage.create",
-    "storage_stage": "storage.stage",
-    "offline_access": "offline_access"
-}
-
-GRANT_TYPES_SUPPORTED: GrantTypes = {
-    "token_exchange": "urn:ietf:params:oauth:grant-type:token-exchange",
-    "token_refresh": "refresh_token"
-}
-
-def is_scope_allowed(requested_scope: str) -> bool:
-    """ Check allowed scopes
-    """
+def validate_scopes(requested_scope: str) -> None:
+    """ Check allowed scopes. """
     # Split the requested scope into action and path
     action, _ = requested_scope.split(':', 1) if ':' in requested_scope else (requested_scope, '')
-    # Check if the action part of the requested scope matches any allowed scope
-    return any(action == allowed_scope for allowed_scope in SUPPORTED_SCOPES.values())
+    # Check if the action part of the requested scope matches any allowed scope in the enum
+    res = any(action == scope.name.lower() for scope in constants.AllowedScope)
+    if not res:
+        raise ValueError("One or more requested scopes were not originally granted")
 
-def create_access_token(sub: str, scope: str, audience: Optional[str] = DEFAULT_AUDIENCE, algorithm: str = "RS256"):
-    if not is_scope_allowed(scope):
-        raise ValueError(f"Requested scope '{scope}' is not allowed")
+def validate_expiration(decoded_token: dict[str, Any]) -> None:
+    """
+    Raises an error if the token has expired.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    exp = datetime.datetime.fromtimestamp(decoded_token.get("exp"), datetime.timezone.utc)
+    if exp <= now:
+        raise jwt.ExpiredSignatureError("Token has expired")
+
+def decode_token(token: str, algorithm: str = "RS256", verify_aud=False) -> dict[str, Any]:
+    """
+    Decodes a JWT token using the specified algorithm.
+    """
+    if algorithm == "HS256":
+        return jwt.decode(token, SECRET_KEY, algorithms=[algorithm])
+    else:
+        return jwt.decode(token, PUBLIC_KEY_RS256, algorithms=[algorithm], options={"verify_aud": verify_aud})
+
+
+def create_jwt_token(sub: str,
+                     scope: str,
+                     audience: Optional[str] = DEFAULT_AUDIENCE,
+                     algorithm: str = "RS256"
+) -> str:
+    """
+    Creates a JWT token with the specified parameters and optional expiration offset.
+    The function combines the payload creation and token encoding steps into one.
+
+    Parameters:
+    - sub (str): Subject (usually the user identifier).
+    - scope (str): Scope of the token.
+    - audience (Optional[str]): Audience for the token. Defaults to the system's default if not provided.
+    - exp_offset (int): Expiration offset in seconds (default is the access token lifetime).
+    - algorithm (str): The algorithm to use for signing the token (default is "RS256").
+    
+    Returns:
+    - str: The generated JWT token.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
         "sub": sub,
         "iss": ISSUER,
-        "exp": datetime.datetime.now(datetime.timezone.utc)  + datetime.timedelta(seconds=ACCESS_TOKEN_LIFETIME),
-        "iat": datetime.datetime.now(datetime.timezone.utc) ,
-        "nbf": datetime.datetime.now(datetime.timezone.utc) ,
+        "exp": now + datetime.timedelta(seconds=int(ACCESS_TOKEN_LIFETIME)),
+        "iat": now,
+        "nbf": now,
         "jti": str(uuid.uuid4()),
         "wlcg.ver": "1.0",
         "scope": scope,
-        "aud": audience if audience else DEFAULT_AUDIENCE
+        "aud": audience,
     }
+    
     if algorithm == "HS256":
-        return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        return jwt.encode(payload, SECRET_KEY, algorithm=algorithm)
     else:
         return jwt.encode(payload, PRIVATE_KEY_RS256, algorithm=algorithm)
 
 
 def issue_access_token(
-    sub: str,
     scope: str,
     audience: Optional[str]= DEFAULT_AUDIENCE,
     algorithm: str = "RS256"
@@ -104,42 +128,26 @@ def issue_access_token(
     :param algorithm: The algorithm to use for token signing. Default is RS256.
     :return: A dictionary containing the access token response.
     """
-
+    sub = SUB
     scopes = scope.split()
-    if not all(is_scope_allowed(s) for s in scopes):
-        raise ValueError(f"One or more requested scopes are not allowed")
+    scope_base_list = []
+    for sc in scopes:
+        scope_base = sc.split(":")[0]
+        scope_base_list.append(scope_base)
+    required_scopes_enum = [constants.AllowedScope(sc) for sc in scope_base_list]
 
     # Validate and create the access token
-    access_token = create_access_token(sub, scope, audience, algorithm)
+    access_token = create_jwt_token(sub, scope, audience, algorithm)
 
     response = {
         "access_token": access_token,
         "token_type": "Bearer",  # Token type as per RFC 6749 Section 7.1
         "expires_in": ACCESS_TOKEN_LIFETIME,
     }
-    # Include refresh token if required
-    if "offline_access" in scopes:
-        refresh_token = create_access_token(sub, scope, audience, algorithm)
-        response["refresh_token"] = refresh_token
 
-    # Include the scope if it differs from the requested scope
-    granted_scope = scope
-    if granted_scope != scope:
-        response["scope"] = granted_scope
-
-    # Add HTTP headers to prevent caching
-    headers = {
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-    }
-
-    return response, 200, headers
+    return response
 
 def create_refresh_token(sub: str, scope: str, audience: Optional[str]= DEFAULT_AUDIENCE, algorithm: str = "RS256"):
-    scopes = scope.split()
-    if not all(is_scope_allowed(s) for s in scopes):
-        raise ValueError(f"One or more requested scopes are not allowed")
-
     payload = {
         "sub": sub,
         "jti": str(uuid.uuid4()),
@@ -152,57 +160,79 @@ def create_refresh_token(sub: str, scope: str, audience: Optional[str]= DEFAULT_
     else:
         return jwt.encode(payload, PRIVATE_KEY_RS256, algorithm=algorithm)
 
-def handle_token_exchange(data: dict[str, Any], algorithm: str = "RS256") -> dict[str, Any]:
+@read_session
+def handle_token_exchange(data: TokenExchangeRequest, client_id: str, client_secret: str, algorithm: str = "RS256", *, session = "Session") -> TokenExchangeResponse:
     """
     Handle token exchange according to https://datatracker.ietf.org/doc/html/rfc8693#name-token-exchange-request-and-
 
+    # Step 1: Validate the algorithm
+    # Step 2: check grant_type, subject_token_type, requested_token_type
+    # Step 4: Decode the subject token
+    # Step 5: Validate token expiration
+    # Step 6: Ensure requested scopes are within the granted scopes.
+    # Step 7: Generate and return the refresh token along with access token details
     """
+
     if algorithm not in SUPPORTED_ALGORITHMS:
         raise ValueError(f"Algorithm '{algorithm}' is not supported")
 
-    # Extract required fields
+    grant_type = data.get("grant_type")
+    if grant_type != constants.GrantType.TOKEN_EXCHANGE.value:
+        raise UnsupportedGrantTypeError(f"grant_type must be {constants.GrantType.TOKEN_EXCHANGE.value}")
     subject_token = data.get("subject_token")
     subject_token_type = data.get("subject_token_type")
-    grant_type = data.get("grant_type")
-    if not subject_token or not subject_token_type or not grant_type:
-        raise ValueError("Required fields 'subject_token', 'subject_token_type', and 'grant_type' are missing")
+    if subject_token_type not in SUBJECT_TOKEN_TYPE_SUPPORTED:
+        raise InvalidOIDCRequestError("subject_token_type requested is not allowed")
+    
+    requested_token_type = data.get("requested_token_type", None)
+    if requested_token_type:
+        if str(requested_token_type) not in REQUESTED_TOKEN_TYPE_SUPPORTED:
+             raise InvalidOIDCRequestError("requested_token_type is not allowed")
+    else:
+        requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
+    requested_scopes = data.get("scope", "")
+    check_client_allowed_scopes = requested_scopes.split()
+    if not validate_client(client_id, client_secret, required_scopes=check_client_allowed_scopes, required_grant_types=[grant_type], session=session):
+        #raise UnauthorizedOIDCClientError
+        #raise InvalidOIDCRequestError
+        raise UnsupportedGrantTypeError("Invalid client credentials or insufficient scope/grant type for the client")
 
-    if grant_type != GRANT_TYPES_SUPPORTED["token_exchange"]:
-        raise ValueError("Invalid grant type")
-
-
-    requested_token_type = data.get("requested_token_type", "urn:ietf:params:oauth:token-type:access_token")
-
-    # Decode the subject token
     try:
-        if algorithm == "HS256":
-            decoded_token = jwt.decode(subject_token, SECRET_KEY, algorithms=[algorithm])
-        else:
-            decoded_token = jwt.decode(subject_token, PUBLIC_KEY_RS256, algorithms=[algorithm], options={"verify_aud": False})
+        decoded_token = decode_token(subject_token, algorithm)
     except jwt.InvalidTokenError:
-        return {"error": "Invalid subject token"}, 401
+        raise InvalidGrantError("Invalid subject token")
 
-    # Ensure requested scopes are within the granted scopes
+    validate_expiration(decoded_token)
+    response = {}
+    # Ensure requested scopes is subset of the scopes in subject_token
     granted_scopes = str(decoded_token.get("scope", ""))
     granted_scopes_list = granted_scopes.split()
+    if check_client_allowed_scopes:
+        if granted_scopes_list.issubset(check_client_allowed_scopes):
+            raise InvalidOIDCRequestError("One or more requested scopes is beyond what your subject_token have.")
 
-    if not all(is_scope_allowed(s) for s in granted_scopes_list):
-        raise ValueError("One or more requested scopes are not allowed")
-    if "offline_access" not in granted_scopes_list:
-        raise ValueError("The 'offline_access' scope is required for token exchange")
+    if requested_token_type == "urn:ietf:params:oauth:token-type:refresh_token":
+        if not "offline_access" in granted_scopes_list:
+            raise InvalidOIDCRequestError("subjetc_token doesn't have offline_access scope to request urn:ietf:params:oauth:token-type:referesh_token")
+        refresh_token = create_refresh_token(decoded_token["sub"], granted_scopes)
+        response["refresh_token"] = refresh_token
 
-    # Generate refresh token
-    refresh_token = create_refresh_token(decoded_token["sub"], granted_scopes)
-    print(jwt.get_unverified_header(subject_token))
-    return {
-        "access_token": subject_token,
-        "issued_token_type": requested_token_type,
-        "token_type": "Bearer",
-        "expires_in": ACCESS_TOKEN_LIFETIME,
-        "refresh_token": refresh_token,
-    }
+    # Generate new access token
+    new_access_token = issue_access_token(
+                        scope=granted_scopes,
+                        audience=data.get("audience"),
+                        algorithm=algorithm,
+    )
 
-def handle_refresh_token(data: dict[str, str], algorithm: str = "RS256"):
+    response["access_token"] = new_access_token["access_token"]
+    response["issued_token_type"] = requested_token_type
+    response["token_type"] =  "Bearer"
+    response["expires_in"] = ACCESS_TOKEN_LIFETIME
+
+    return response
+
+@read_session
+def handle_refresh_token(data: RefreshTokenRequest, client_id: str, client_secret: str, algorithm: str = "RS256", *, session = "Session") -> RefreshTokenResponse:
     """
     Handle the refresh token flow to generate a new access token.
     https://datatracker.ietf.org/doc/html/rfc6749#section-6
@@ -210,62 +240,103 @@ def handle_refresh_token(data: dict[str, str], algorithm: str = "RS256"):
     :param algorithm: The JWT algorithm used to sign/verify the tokens. Default is RS256.
     :return: A dictionary containing the new access token and other response parameters.
     """
-    if data.get("grant_type") != GRANT_TYPES_SUPPORTED["token_refresh"]:
-        raise CannotAuthenticate("error :Invalid grant type. Expected 'refresh_token'")
+
+    grant_type = data.get("grant_type")
+    if grant_type != constants.GrantType.REFRESH_TOKEN.value:
+        raise UnsupportedGrantTypeError(f"grant_type must be {constants.GrantType.REFRESH_TOKEN.value}")
+
+    requested_scopes = data.get("scope", "")
+    check_client_allowed_scopes = requested_scopes.split()
+    if not validate_client(client_id, client_secret, required_scopes=check_client_allowed_scopes, required_grant_types=[grant_type], session=session):
+        raise UnsupportedGrantTypeError("Invalid client credentials or insufficient scope/grant type for the client")
 
     refresh_token = data.get("refresh_token")
-    requested_scopes = data.get("scope", "")  # Scope is optional in refresh requests
-    requested_scopes_list = requested_scopes.split()
     try:
-        if algorithm == "HS256":
-            decoded_refresh_token = jwt.decode(refresh_token, SECRET_KEY, algorithms=[algorithm])
-        else:
-            decoded_refresh_token = jwt.decode(refresh_token, PUBLIC_KEY_RS256, algorithms=[algorithm],  options={"verify_aud": False})
-    except jwt.ExpiredSignatureError:
-        return {"error": "Refresh token has expired"}, 401
+        decoded_refresh_token = decode_token(refresh_token, algorithm)
     except jwt.InvalidTokenError:
-        return {"error": "Invalid refresh token"}, 401
+        raise InvalidOIDCRequestError("Invalid refresh token")
+    except jwt.ExpiredSignatureError:
+        raise InvalidOIDCRequestError("Refresh token has expired")
 
-    # Extract granted scopes from the refresh token
-    granted_scopes = str(decoded_refresh_token.get("scope"))
-    granted_scopes_list = granted_scopes.split()
-    # Validate requested scopes
-    if requested_scopes_list:
-        if not set(requested_scopes_list).issubset(set(granted_scopes_list)):
-            return {"error": "One or more requested scopes were not originally granted"}, 400
-    else:
-        # If no scope is requested, use the originally granted scope
-        requested_scopes= granted_scopes
+    validate_expiration(decoded_refresh_token)
+    granted_scopes_list = str(decoded_refresh_token.get("scope", "")).split()
+    if check_client_allowed_scopes:
+        if granted_scopes_list.issubset(check_client_allowed_scopes):
+            raise InvalidOIDCRequestError("One or more requested scopes is beyond what your subject_token have.")
+
     # Create a new access token with the validated scopes
-    new_access_token = create_access_token(
-                        sub=decoded_refresh_token["sub"],
+    new_access_token = issue_access_token(
                         scope=requested_scopes,
                         audience=data.get("audience"),
                         algorithm=algorithm,
                         )
 
     return {
-        "access_token": new_access_token,
+        "access_token": new_access_token["access_token"],
         "token_type": "Bearer",
         "expires_in": ACCESS_TOKEN_LIFETIME,
     }
 
+@read_session
+def handle_token(
+    data: Union[TokenExchangeRequest, RefreshTokenRequest], 
+    client_id: str, 
+    client_secret: str, 
+    algorithm: str = "RS256", 
+    *, 
+    session="Session"
+) -> Union[TokenExchangeResponse, RefreshTokenResponse]:
+    """
+    Handle token requests for both token exchange and refresh token flows.
+    """
+    grant_type = data.get("grant_type")
+
+    if grant_type == constants.GrantType.TOKEN_EXCHANGE.value:
+        # Handle token exchange
+        return handle_token_exchange(
+            data=data,
+            client_id=client_id,
+            client_secret=client_secret,
+            algorithm=algorithm,
+            session=session
+        )
+    elif grant_type == constants.GrantType.REFRESH_TOKEN.value:
+        # Handle refresh token
+        return handle_refresh_token(
+            data=data,
+            client_id=client_id,
+            client_secret=client_secret,
+            algorithm=algorithm,
+            session=session
+        )
+    else:
+        raise UnsupportedGrantTypeError(f"Unsupported grant_type: {grant_type}")
+
+
 
 def openid_config_resource():
+    """ OpenID discovery """
     res = {
             "issuer": ISSUER,
-            "authorization_endpoint": f"{ISSUER}/authorize",
             "token_endpoint": f"{ISSUER}/token",
-            "jwks_uri": f"{ISSUER}/.well-known/jwks.json",
-            "scopes_supported": ["offline_access"],
+            "jwks_uri": f"{ISSUER}/jwks",
+            "scopes_supported": ["storage.read", "storage.write", "storage.modify", "storage.stage", "offline_access"],
             "response_types_supported": ["token"],
-            "grant_types_supported": list(GRANT_TYPES_SUPPORTED.values()),
+            "grant_types_supported": [constants.GrantType.TOKEN_EXCHANGE.value ,constants.GrantType.REFRESH_TOKEN.value],
             "claims_supported": ["sub", "iss", "exp", "iat", "nbf", "jti", "wlcg.ver", "wlcg.groups", "scope"],
         }
     return res
 
 def jwks():
     """Return JWKS configuration for public key discovery."""
+
+    def load_public_key(key_path):
+        with open(key_path, 'rb') as key_file:
+            public_key = serialization.load_pem_public_key(key_file.read())
+        return public_key
+
+    public_key = load_public_key(PUBLIC_KEY_PATH)
+    numbers = public_key.public_numbers()
     return {
         "keys": [
             {
@@ -273,28 +344,9 @@ def jwks():
                 "kid": "RS256-1",
                 "use": "sig",
                 "kty": "RSA",
-                "n": jwt.algorithms.RSAAlgorithm.from_jwk(PUBLIC_KEY_RS256).public_numbers().n,
-                "e": jwt.algorithms.RSAAlgorithm.from_jwk(PUBLIC_KEY_RS256).public_numbers().e
+                "n": base64.urlsafe_b64encode(numbers.n.to_bytes((numbers.n.bit_length() + 7) // 8, 'big')).decode('utf-8').rstrip('='),
+                "e": "AQAB", #base64.urlsafe_b64encode(numbers.e.to_bytes((numbers.e.bit_length() + 7) // 8, 'big')).decode('utf-8').rstrip('='),
             },
         ]
     }
 
-
-res = create_access_token("12345", scope= "storage.read:/myfile/myfile.txt offline_access")
-
-data = {
-        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-        "requested_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
-        "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
-        "subject_token": str(res),
-    }
-result = handle_token_exchange(data=data)
-print(result)
-
-
-data = {
-        "grant_type": "refresh_token",
-        "refresh_token": result["refresh_token"],
-    }
-
-refresh_res = handle_refresh_token(data=data)

@@ -33,11 +33,13 @@ from rucio.common.types import InternalAccount, InternalScope  # noqa: TCH001 (t
 from rucio.db.sqla.constants import (
     AccountStatus,
     AccountType,
+    AllowedScope,
     BadFilesStatus,
     BadPFNStatus,
     DIDAvailability,
     DIDReEvaluation,
     DIDType,
+    GrantType,
     IdentityType,
     KeyType,
     LifetimeExceptionsState,
@@ -1718,6 +1720,45 @@ class FollowEvent(BASE, ModelBase):
                    ForeignKeyConstraint(['account'], ['accounts.account'], name='DIDS_FOLLOWED_EVENTS_ACC_FK'),
                    Index('DIDS_FOLLOWED_EVENTS_ACC_IDX', 'account'))
 
+class OIDCClient(BASE, ModelBase):
+    """Represents a client in the OAuth2 system."""
+    __tablename__ = 'oidc_clients'
+
+    client_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    client_secret: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Storing allowed scopes as a list of enum values
+    allowed_scopes: Mapped[str] = mapped_column(String, nullable=False)
+    grant_types: Mapped[str] = mapped_column(String, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint('client_id IS NOT NULL', name='CLIENTS_CLIENT_ID_NN'),
+        CheckConstraint('client_secret IS NOT NULL', name='CLIENTS_SECRET_NN'),
+        CheckConstraint('allowed_scopes IS NOT NULL', name='CLIENTS_ALLOWED_SCOPES_NN'),
+        CheckConstraint('grant_types IS NOT NULL', name='CLIENTS_GRANT_TYPES_NN'),
+    )
+    @property
+    def allowed_scopes_list(self) -> list:
+        """ Convert the stored comma-separated string back into a list of enum values """
+        return [AllowedScope(scope) for scope in self.allowed_scopes.split(',')]
+
+    @allowed_scopes_list.setter
+    def allowed_scopes_list(self, value: list):
+        """Ensure the list contains valid AllowedScope enum values"""
+        if not all(isinstance(scope, AllowedScope) for scope in value):
+            raise ValueError("All values in allowed_scopes_list must be of type AllowedScope enum")
+        self.allowed_scopes = ','.join(scope.value for scope in value)
+
+    @property
+    def grant_types_list(self) -> list:
+        """ Convert the stored comma-separated string back into a list of enum values """
+        return [GrantType(grant) for grant in self.grant_types.split(',')]
+
+    @grant_types_list.setter
+    def grant_types_list(self, value: list):
+        """ Ensure the list contains valid GrantType enum values """
+        if not all(isinstance(grant, GrantType) for grant in value):
+            raise ValueError("All values in grant_types_list must be of type GrantType enum")
+        self.grant_types = ','.join(grant.value for grant in value)
 
 def register_models(engine: Engine) -> None:
     """

@@ -46,9 +46,10 @@ from rucio.core.message import add_message
 from rucio.core.monitor import MetricManager
 from rucio.core.oidc import request_token
 from rucio.core.replica import delete_replicas, list_and_mark_unlocked_replicas
-from rucio.core.rse import RseData, determine_audience_for_rse, determine_scope_for_rse, list_rses
+from rucio.core.rse import RseData, determine_audience_for_rse, determine_file_scope_for_path, determine_scope_for_rse, list_rses
 from rucio.core.rse_expression_parser import parse_expression
 from rucio.core.rule import get_evaluation_backlog
+from rucio.core.token_issuer import issue_access_token
 from rucio.core.vo import list_vos
 from rucio.daemons.common import run_daemon
 from rucio.rse import rsemanager as rsemgr
@@ -619,7 +620,13 @@ def _run_once(
                 audience = determine_audience_for_rse(rse.id)
                 # FIXME: At the time of writing, StoRM requires `storage.read`
                 # in order to perform a stat operation.
-                scope = determine_scope_for_rse(rse.id, scopes=['storage.modify', 'storage.read'])
+                if config_get_bool("oidc", "rucio_token_issuer", raise_exception=False, default=False):
+                    # file path empty because we are still using rse level token for bulk delete
+                    scope = determine_file_scope_for_path(rse.id, src_file_path="",scopes=['storage.modify', 'storage.read'])
+                    token_payload = issue_access_token(scope=scope, audience= audience)
+                    auth_token = token_payload["access_token"]
+                else:
+                    scope = determine_scope_for_rse(rse.id, scopes=['storage.modify', 'storage.read'])
                 auth_token = request_token(audience, scope)
                 if auth_token:
                     logger(logging.INFO, 'Using a token to delete on RSE %s', rse.name)

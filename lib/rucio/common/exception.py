@@ -1168,6 +1168,7 @@ class ChecksumCalculationError(RucioException):
         self._message = 'An error occurred while calculating the %s checksum of file %s.' % (self.algorithm_name, self.filepath)
         self.error_code = 111
 
+
 class InvalidGrantError(RucioException):
     def __init__(self, description: str):
         self._message = "invalid_grant"
@@ -1175,9 +1176,26 @@ class InvalidGrantError(RucioException):
         self.description = description
         super().__init__(description)
 
+
 class UnsupportedGrantTypeError(RucioException):
     def __init__(self, description: str):
         self._message = "unsupported_grant_type"
         self.error_code = 400
+        self.description = description
+        super().__init__(description)
+
+
+class InvalidOIDCRequestError(RucioException):
+    def __init__(self, description: str):
+        self._message = "invalid_request"
+        self.error_code = 400
+        self.description = description
+        super().__init__(description)
+
+
+class UnauthorizedOIDCClientError(RucioException):
+    def __init__(self, description: str):
+        self._message = "unauthorized_client"
+        self.error_code = 401
         self.description = description
         super().__init__(description)

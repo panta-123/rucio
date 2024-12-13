@@ -31,8 +31,14 @@ def create_client(allowed_scopes: list, grant_types: list, *, session: "Session"
     Creates a new OIDC client with a generated client_id and client_secret.
     """
     client_id, client_secret = generate_client_credentials()
-    allowed_scopes_enum = [constants.AllowedScope(scope) if isinstance(scope, str) else scope for scope in allowed_scopes]
-    grant_types_enum = [constants.GrantType(grant) if isinstance(grant, str) else grant for grant in grant_types]
+    try:
+        allowed_scopes_enum = [constants.AllowedScope(scope) if isinstance(scope, str) else scope for scope in allowed_scopes]
+    except ValueError as e:
+        raise ValueError("scope in in allowed scope") from e
+    try:
+        grant_types_enum = [constants.GrantType(grant) if isinstance(grant, str) else grant for grant in grant_types]
+    except ValueError as e:
+        raise ValueError("scope in in allowed scope") from e
 
     new_client = models.OIDCClient(
         client_id=client_id,
@@ -71,11 +77,13 @@ def validate_client(client_id: str, client_secret: str, required_scopes: list, r
         valid_grant_types = set(required_grant_types_enum).issubset(set(client.grant_types_list))
 
         if not valid_scopes:
-            return False
+            raise exception.InvalidOIDCRequestError(f"Client does not have the required scopes: {required_scopes}")
         if not valid_grant_types:
-            return False
+            raise exception.UnsupportedGrantTypeError(f"Client does not support the required grant types: {required_grant_types}")
+
         return True
-    return False
+
+    raise exception.UnauthorizedOIDCClientError(f"Client is not authorized")
 
 @read_session
 def list_all_oidc_clients(*, session: "Session") -> list[dict[str, Any]]:

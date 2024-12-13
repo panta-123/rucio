@@ -8,6 +8,7 @@ from typing import Any, Optional, Union
 import jwt
 from cryptography.hazmat.primitives import serialization
 
+from rucio.common.config import config_get
 from rucio.common.exception import InvalidGrantError, InvalidOIDCRequestError, UnauthorizedOIDCClientError, UnsupportedGrantTypeError
 from rucio.common.types import (
     RefreshTokenRequest,
@@ -19,10 +20,11 @@ from rucio.core.oidc_client import validate_client
 from rucio.db.sqla import constants
 from rucio.db.sqla.session import read_session
 
-ISSUER = "myruciohome"
+ISSUER = config_get('client', 'rucio_host')
 SECRET_KEY = "your_secret_key"
 SUPPORTED_ALGORITHMS = ["HS256", "RS256"]
 
+# TODO: make it get from config as well. and handle logic properly
 PRIVATE_KEY_PATH = os.getenv("PRIVATE_KEY_PATH")
 PUBLIC_KEY_PATH = os.getenv("PUBLIC_KEY_PATH")
 
@@ -32,7 +34,6 @@ if not PRIVATE_KEY_PATH:
 if not PUBLIC_KEY_PATH:
     raise ValueError("Environment variable 'PUBLIC_KEY_PATH' is not set or empty.")
 
-# RSA Keys (Load from files or environment variables)
 with open(PRIVATE_KEY_PATH, "r") as private_key_file:
     PRIVATE_KEY_RS256 = private_key_file.read()
 
@@ -41,19 +42,11 @@ with open(PUBLIC_KEY_PATH, "r") as public_key_file:
 
 ACCESS_TOKEN_LIFETIME = 21600
 REFRESH_TOKEN_LIFETIME = 864000
-DEFAULT_AUDIENCE = "https://rucio.jlab.org"
+DEFAULT_AUDIENCE = config_get('client', 'rucio_host')
 SUBJECT_TOKEN_TYPE_SUPPORTED = ["urn:ietf:params:oauth:token-type:access_token"]
 REQUESTED_TOKEN_TYPE_SUPPORTED = ["urn:ietf:params:oauth:token-type:refresh_token", "urn:ietf:params:oauth:token-type:access_token"]
 SUB = "rucio-service"
 
-def validate_scopes(requested_scope: str) -> None:
-    """ Check allowed scopes. """
-    # Split the requested scope into action and path
-    action, _ = requested_scope.split(':', 1) if ':' in requested_scope else (requested_scope, '')
-    # Check if the action part of the requested scope matches any allowed scope in the enum
-    res = any(action == scope.name.lower() for scope in constants.AllowedScope)
-    if not res:
-        raise ValueError("One or more requested scopes were not originally granted")
 
 def validate_expiration(decoded_token: dict[str, Any]) -> None:
     """
@@ -187,16 +180,12 @@ def handle_token_exchange(data: TokenExchangeRequest, client_id: str, client_sec
     requested_token_type = data.get("requested_token_type", None)
     if requested_token_type:
         if str(requested_token_type) not in REQUESTED_TOKEN_TYPE_SUPPORTED:
-             raise InvalidOIDCRequestError("requested_token_type is not allowed")
+            raise InvalidOIDCRequestError("requested_token_type is not allowed")
     else:
         requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
     requested_scopes = data.get("scope", "")
     check_client_allowed_scopes = requested_scopes.split()
-    if not validate_client(client_id, client_secret, required_scopes=check_client_allowed_scopes, required_grant_types=[grant_type], session=session):
-        #raise UnauthorizedOIDCClientError
-        #raise InvalidOIDCRequestError
-        raise UnsupportedGrantTypeError("Invalid client credentials or insufficient scope/grant type for the client")
-
+    validate_client(client_id, client_secret, required_scopes=check_client_allowed_scopes, required_grant_types=[grant_type], session=session)
     try:
         decoded_token = decode_token(subject_token, algorithm)
     except jwt.InvalidTokenError:
@@ -213,7 +202,7 @@ def handle_token_exchange(data: TokenExchangeRequest, client_id: str, client_sec
 
     if requested_token_type == "urn:ietf:params:oauth:token-type:refresh_token":
         if not "offline_access" in granted_scopes_list:
-            raise InvalidOIDCRequestError("subjetc_token doesn't have offline_access scope to request urn:ietf:params:oauth:token-type:referesh_token")
+            raise InvalidOIDCRequestError("subject doesn't have offline_access scope to request urn:ietf:params:oauth:token-type:referesh_token")
         refresh_token = create_refresh_token(decoded_token["sub"], granted_scopes)
         response["refresh_token"] = refresh_token
 
@@ -247,9 +236,7 @@ def handle_refresh_token(data: RefreshTokenRequest, client_id: str, client_secre
 
     requested_scopes = data.get("scope", "")
     check_client_allowed_scopes = requested_scopes.split()
-    if not validate_client(client_id, client_secret, required_scopes=check_client_allowed_scopes, required_grant_types=[grant_type], session=session):
-        raise UnsupportedGrantTypeError("Invalid client credentials or insufficient scope/grant type for the client")
-
+    validate_client(client_id, client_secret, required_scopes=check_client_allowed_scopes, required_grant_types=[grant_type], session=session)
     refresh_token = data.get("refresh_token")
     try:
         decoded_refresh_token = decode_token(refresh_token, algorithm)
@@ -323,7 +310,7 @@ def openid_config_resource():
             "scopes_supported": ["storage.read", "storage.write", "storage.modify", "storage.stage", "offline_access"],
             "response_types_supported": ["token"],
             "grant_types_supported": [constants.GrantType.TOKEN_EXCHANGE.value ,constants.GrantType.REFRESH_TOKEN.value],
-            "claims_supported": ["sub", "iss", "exp", "iat", "nbf", "jti", "wlcg.ver", "wlcg.groups", "scope"],
+            "claims_supported": ["sub", "iss", "exp", "iat", "nbf", "jti", "wlcg.ver", "scope"],
         }
     return res
 

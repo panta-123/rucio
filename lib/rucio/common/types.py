@@ -460,28 +460,6 @@ class FilterDict(TypedDict):
     older_than: 'datetime'
     activities: Union[list[str], str]
 
-class SupportedScopes(TypedDict):
-    storage_read: str
-    storage_modify: str
-    storage_create: str
-    storage_stage: str
-    offline_access: str
-
-class GrantTypes(TypedDict):
-    token_exchange: str
-    token_refresh: str
-
-class WLCGPayload(TypedDict):
-    sub: str
-    exp: 'datetime'
-    iss: str
-    wlcg_ver: str
-    #wlcggroups: Optional[str]
-    aud: str
-    iat: 'datetime'
-    nbf: 'datetime'
-    jti: str
-    scope: str
 
 class TokenExchangeRequest(TypedDict):
     grant_type: str

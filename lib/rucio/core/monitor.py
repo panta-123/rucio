@@ -446,3 +446,66 @@ class MetricManager:
                 push_to_gateway(server.strip(), job=job, registry=self.registry, grouping_key=grouping_key)
             except:
                 continue
+
+
+
+def instrument_opentelemetry(app):
+    from opentelemetry import _logs, metrics, trace
+    from opentelemetry.exporter.otlp.proto.grpc.metrics_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.flask import FlaskInstrumentor
+    from opentelemetry.instrumentation.logging import LoggingInstrumentor
+    from opentelemetry.instrumentation.logging.constants import DEFAULT_LOGGING_FORMAT
+    from opentelemetry.instrumentation.requests import RequestsInstrumentor
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import (
+        BatchLogRecordProcessor,
+        ConsoleLogExporter,  # Use ConsoleLogExporter
+    )
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+    resource = Resource.create(
+        attributes={
+            "service.name": "flask-app",
+            "service.version": "1.0.0",
+            "deployment.environment": "production",
+        }
+    )
+    trace.set_tracer_provider(TracerProvider(resource=resource))
+
+    tracer_provider = trace.get_tracer_provider()
+    #otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
+    #span_processor = BatchSpanProcessor(otlp_exporter)
+    console_span_exporter = ConsoleSpanExporter()  # Export traces to console
+    span_processor = BatchSpanProcessor(console_span_exporter)
+
+    tracer_provider.add_span_processor(span_processor)
+
+    #metric_exporter = OTLPMetricExporter(endpoint="http://localhost:4317", insecure=True)
+    #metric_reader = PeriodicExportingMetricReader(metric_exporter)
+    console_metric_exporter = ConsoleMetricExporter()  # Export metrics to console
+    metric_reader = PeriodicExportingMetricReader(console_metric_exporter)
+    metric_provider =  MeterProvider(
+            resource=resource,
+            metric_readers=[metric_reader]
+        )
+
+    metrics.set_meter_provider(metric_provider)
+
+    LoggingInstrumentor().instrument(set_logging_format=False)
+    logger_provider = LoggerProvider(resource=resource)
+    _logs.set_logger_provider(logger_provider)
+    console_log_exporter = ConsoleLogExporter()
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(console_log_exporter))
+    handler = LoggingHandler(level=logging.DEBUG, logger_provider=logger_provider)
+    handler.setFormatter(logging.Formatter(DEFAULT_LOGGING_FORMAT))
+
+    FlaskInstrumentor().instrument_app(
+        app,
+        tracer_provider=tracer_provider,
+        meter_provider=metric_provider
+    )

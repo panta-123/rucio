@@ -83,6 +83,9 @@ if not endpoints:
 
 application = Flask(__name__)
 application.wsgi_app = CORSMiddleware(application.wsgi_app)
+from rucio.core.monitor import instrument_opentelemetry
+
+instrument_opentelemetry(application)
 apply_endpoints(application, endpoints)
 setup_logging(application)
 

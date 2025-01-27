@@ -338,11 +338,9 @@ class OIDC(ErrorHandlingMethodView):
         account = request.environ.get('HTTP_X_RUCIO_ACCOUNT', 'webui')
         auth_scope = request.environ.get('HTTP_X_RUCIO_CLIENT_AUTHORIZE_SCOPE', "")
         audience = request.environ.get('HTTP_X_RUCIO_CLIENT_AUTHORIZE_AUDIENCE', "")
-        auto = request.environ.get('HTTP_X_RUCIO_CLIENT_AUTHORIZE_AUTO', False)
         issuer = request.environ.get('HTTP_X_RUCIO_CLIENT_AUTHORIZE_ISSUER', None)
         polling = request.environ.get('HTTP_X_RUCIO_CLIENT_AUTHORIZE_POLLING', False)
         refresh_lifetime = request.environ.get('HTTP_X_RUCIO_CLIENT_AUTHORIZE_REFRESH_LIFETIME', None)
-        auto = (auto == 'True' or auto == 'true')
         polling = (polling == 'True' or polling == 'true')
         if refresh_lifetime == 'None':
             refresh_lifetime = None
@@ -351,7 +349,6 @@ class OIDC(ErrorHandlingMethodView):
             kwargs = {'auth_scope': auth_scope,
                       'audience': audience,
                       'issuer': issuer,
-                      'auto': auto,
                       'polling': polling,
                       'refresh_lifetime': refresh_lifetime,
                       'ip': ip}

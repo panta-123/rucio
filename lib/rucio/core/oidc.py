@@ -20,19 +20,17 @@ import uuid
 from datetime import datetime, timedelta
 from math import floor
 from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Union
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
 import requests
 from dogpile.cache.api import NoValue
-from jwt.exceptions import InvalidTokenError
 from sqlalchemy import delete, null, or_, select, update
 from sqlalchemy.sql.expression import true
 
 from rucio.common.cache import MemcacheRegion
 from rucio.common.config import config_get, config_get_int
 from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
-from rucio.common.stopwatch import Stopwatch
 from rucio.common.utils import all_oidc_req_claims_present, chunks, val_to_space_sep_str
 from rucio.core.account import account_exists
 from rucio.core.identity import exist_identity_account
@@ -56,12 +54,13 @@ METRICS = MetricManager(module=__name__)
 CACHE_REGION: Final = MemcacheRegion(expiration_time=86400)
 # private/protected file containing Rucio Client secrets known to the Identity Provider as well
 IDPSECRETS = config_get('oidc', 'idpsecrets', False)
-ADMIN_ISSUER_ID = config_get('oidc', 'admin_issuer', False)
 EXPECTED_OIDC_AUDIENCE = config_get('oidc', 'expected_audience', False, 'rucio')
 # The 'openid' scope is always required for an ID token to be issued.
 # 'profile' is added as required for extra scope
 DEFAULT_ID_TOKEN_SCOPES = 'openid profile'
+# Extra scopes for id token.
 ID_TOKEN_EXTRA_SCOPES = config_get('oidc', 'id_token_extra_scopes', False, '')
+# Corresponding claim that needs to there for above scopes
 ID_TOKEN_EXTRA_CLAIMS = config_get('oidc', 'id_token_extra_claims', False, '')
 EXPECTED_OIDC_ACCESS_TOKEN_SCOPE = config_get('oidc', 'expected_access_token_scope', False, 'rucio')
 REFRESH_LIFETIME_H = config_get_int('oidc', 'default_jwt_refresh_lifetime', False, 96)
@@ -71,147 +70,70 @@ REFRESH_LIFETIME_H = config_get_int('oidc', 'default_jwt_refresh_lifetime', Fals
 LEEWAY_SECS = 120
 
 class LazyConfigLoad:
-    """
-    A lazy-loading configuration manager for OIDC settings.
-
-    Attributes:
-        config_file (str): Path to the configuration file.
-        _config (OIDCConfig): Loaded configuration.
-
-    Methods:
-        get_admin_issuer_config(vo: str) -> Optional[IdPConfig]:
-            Retrieve the configuration for a VO that contains the key 'ADMIN_ISSUER_ID'.
-    """
-
-    def __init__(self):
-        self.config_file = config_get('oidc', 'idpsecrets', False)
-
-        # Raise an error if the configuration file path is not provided
-        if not self.config_file:
-            raise ValueError("IDPSECRETS configuration is missing. Please specify the path to the IdP secrets.")
-
+    def __init__(self, config_file: str = IDPSECRETS):
+        """Initialize with a JSON configuration file."""
+        self.config_file = config_file
         self._config = {}
-        self._oidc_clients = {}
+        self._load_config()
 
     def _load_config(self) -> None:
+        """Load and validate the configuration file."""
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 self._config = json.load(f)
-        except FileNotFoundError as exc:
-            raise ValueError(f"Configuration file '{self.config_file}' not found.") from exc
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Configuration file '{self.config_file}' is not valid JSON.") from exc
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Error loading '{self.config_file}': {exc}")
 
         self._validate_config()
 
-    def get_vo_config(self, vo: str = "def") -> dict[str, Any]:
-        """_summary_
-
-        :raises ValueError: _description_
-        :return _type_: _description_
-        """
-        if self._config is None:
-            self._load_config()
-        if self._config is None:
-            raise ValueError("Configuration could not be loaded properly.")
+    def get_vo_user_auth_config(self, vo: str = "def") -> dict:
+        """Retrieve the issuer configuration for a VO."""
         config = self._config.get(vo)
-        if config is None:
-            raise ValueError(f"VO '{vo}' not found in the configuration.")
-        return config
-
-    def get_admin_issuer_config(self, vo: str) -> dict[str, Any]:
-        """_summary_
-
-        :param str vo: _description_
-        :raises ValueError: _description_
-        :raises ValueError: _description_
-        :raises ValueError: _description_
-        :return Optional[dict[str, Any]]: _description_
-        """
-        if self._config is None:
-            self._load_config()
-        if self._config is None:
-            raise ValueError("Configuration could not be loaded properly.")
-
-        # Check if the VO exists in the configuration
-        vo_config = self._config.get(vo)
-        if not vo_config:
+        if not config:
             raise ValueError(f"VO '{vo}' not found in the configuration.")
 
-        # Look for 'ADMIN_ISSUER_ID' in the VO's configurations
-        for idp_config in vo_config:
-            if ADMIN_ISSUER_ID in idp_config:
-                return idp_config
+        # Exclude 'client_credential_client' from issuer list
+        vo_user_auth_config = {"issuer": config["issuer"]}
+        vo_user_auth_config.update(config["user_auth_client"])
 
-        # If no matching configuration is found
-        raise ValueError(f"{ADMIN_ISSUER_ID} not found in the configuration for VO '{vo}'.")
+        return vo_user_auth_config
 
+    def get_client_credential_client(self, vo: str = "def") -> dict:
+        """Retrieve client credentials for the specified VO."""
+        config = self._config.get(vo)
+        if not config:
+            raise ValueError(f"VO '{vo}' not found in the configuration.")
 
-    def is_valid_issuer(self, vo: str, issuer_url: str) -> bool:
-        """_summary_
+        vo_client_credential_config = {"issuer": config["issuer"]}
+        vo_client_credential_config.update(config["client_credential_client"])
 
-        :param str vo: _description_
-        :param str issuer_url: _description_
-        :return bool: _description_
-        """
-        vo_config = self.get_vo_config(vo=vo)
-        is_valid = False
-        for idp_data in vo_config:
-            iss = idp_data.get("issuer")
-            if iss:
-                if iss == issuer_url:
-                    is_valid = True
-                else:
-                    is_valid = False
-        return is_valid
+        return vo_client_credential_config
 
+    def is_valid_issuer(self, issuer_url: str, vo: str = "def") -> bool:
+        """Check if the given issuer URL matches the VO's configured issuer."""
+        return self.get_vo_user_auth_config(vo).get("issuer") == issuer_url
 
     def _validate_config(self) -> None:
-        """_summary_
-
-        :raises ValueError: _description_
-        :raises ValueError: _description_
-        :raises ValueError: _description_
-        :raises ValueError: _description_
-        """
+        """Validate the configuration format."""
         if not self._config:
             raise ValueError("Configuration is empty or invalid.")
+
         for vo, details in self._config.items():
-            # Validate that details are in the correct format
-            if not isinstance(details, list):
-                raise ValueError(f"VO '{vo}' must have a list of Identity Providers.")
+            if not isinstance(details, dict):
+                raise ValueError(f"VO '{vo}' must have a dictionary configuration.")
+            if not details.get("issuer", None):
+                ValueError(f"No issuer key in VO '{vo}' config")
 
-            for idp_data in details:
-                # Ensure required keys are present
-                required_keys = ["issuer", "client_id", "client_secret", "redirect_uris"]
-                missing_keys = [key for key in required_keys if key not in idp_data]
-                if missing_keys:
-                    raise ValueError(f"IdP '{idp_data.get('issuer', 'Unknown')}' is missing required keys: {', '.join(missing_keys)}")
+            user_auth_client = details.get("user_auth_client")
+            if not user_auth_client or not all(k in user_auth_client for k in ["client_id", "client_secret"]):
+                raise ValueError(f"VO '{vo}' must have 'client_id' and 'client_secret'.")
+            if not isinstance(user_auth_client.get("redirect_uris", []), list):
+                raise ValueError(f" VO '{vo}' user_auth_client must have a list of 'redirect_uris'.")
 
-                # Validate 'redirect_uris'
-                if not isinstance(idp_data.get("redirect_uris"), list):
-                    raise ValueError(f"'redirect_uris' must be a list in IdP '{idp_data.get('issuer', 'Unknown')}'")
+            client_credential_client = details.get("client_credential_client")
+            if not client_credential_client or not all(k in client_credential_client for k in ["client_id", "client_secret"]):
+                raise ValueError(f"VO '{vo}' client_credential_client must have 'client_id' and 'client_secret'.")
 
-            # Validate optional SCIM configuration
-            self._validate_scim(vo, details)
-
-
-    def _validate_scim(self, vo: str, details: list[dict[str, Any]]) -> None:
-        """_summary_
-
-        :param str vo: _description_
-        :param list[dict[str, Any]] details: _description_
-        :raises ValueError: _description_
-        :raises ValueError: _description_
-        """
-        # Check if SCIM configuration exists and validate its keys
-        scim = next((item.get("SCIM") for item in details if isinstance(item, dict) and "SCIM" in item), None)
-        if scim:
-            if not isinstance(scim, dict):
-                raise ValueError(f"SCIM configuration for VO '{vo}' must be a dictionary.")
-            missing_scim_keys = [key for key in ["client_id", "client_secret"] if key not in scim]
-            if missing_scim_keys:
-                raise ValueError(f"SCIM for VO '{vo}' is missing required keys: {', '.join(missing_scim_keys)}")
 
 
 @METRICS.time_it
@@ -318,7 +240,6 @@ def validate_token(
 
     :return: The decoded token if valid.
     """
-    issuer_url = issuer_url.rstrip("/")
     jwks_content = get_jwks_content(issuer_url=issuer_url)
     headers = jwt.get_unverified_header(token)
     kid = headers.get("kid", None)
@@ -377,20 +298,15 @@ def validate_token(
                 if _claim not in ID_TOKEN_EXTRA_CLAIMS:
                     raise CannotAuthenticate(f"failed to get {_claim} from ID token")
 
-    if token_type == "access_token":
-        for _scope in EXPECTED_OIDC_ACCESS_TOKEN_SCOPE:
-            if _scope not in decoded_token["scopes"]:
-                raise CannotAuthenticate(f"access token scope is missing expected oidc access token scope: {_scope}")
-
     return decoded_token
 
 
 def request_token(
+    scope: str,
     audience: Optional[str] = None,
-    scope: str = '',
+    resource: Optional[str] = None,
     vo: str = 'def',
     use_cache: bool = True,
-    resource: Optional[str] = None  # RFC8707 optional parameter
 ) -> Optional[str]:
     """
     Request a token from the provider.
@@ -398,8 +314,8 @@ def request_token(
     Return ``None`` if the configuration was not loaded properly or the request
     was unsuccessful.
 
-    :param audience: (Optional) Audience for the token.
     :param scope: Scope of the token.
+    :param audience: (Optional) Audience for the token.
     :param vo: Virtual Organization (default: 'def').
     :param use_cache: Whether to use caching for tokens (default: True).
     :param resource: (Optional) Resource for the token as per RFC8707.
@@ -412,17 +328,16 @@ def request_token(
 
     # Load configuration
     config_loader = LazyConfigLoad()
-    vo_config = config_loader.get_admin_issuer_config(vo)
+    client_config = config_loader.get_client_credential_client(vo)
 
-    if vo_config is None:
+    if client_config is None:
         raise ValueError(f"Configuration for VO '{vo}' not found.")
 
     # Access IDP configurations within the VO
-    issuer = vo_config["issuer"]
+    issuer = client_config.get("issuer")
     issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"]
-    idp_config = vo_config["SCIM"]
-    client_id = idp_config.get("client_id")
-    client_secret = idp_config.get("client_secret")
+    client_id = client_config.get("client_id")
+    client_secret = client_config.get("client_secret")
 
     # Create a cache key based on parameters
     cache_key_base = f"scope={scope};vo={vo}"
@@ -450,7 +365,7 @@ def request_token(
     try:
         response = requests.post(
             url=issuer_token_endpoint,
-            auth=(client_id, client_secret),
+            auth=(client_id, client_secret), # type: ignore
             data=data,
             timeout=10  # Add a timeout of 10 seconds
         )
@@ -471,7 +386,6 @@ def request_token(
 def get_auth_oidc(
     account: str,
     vo: str = 'def',
-    issuer_nickname: str = ADMIN_ISSUER_ID,
     *,
     session: "Session",
     **kwargs
@@ -514,12 +428,11 @@ def get_auth_oidc(
     resource = None
 
     config_loader = LazyConfigLoad()
-    idp_config_vo = config_loader.get_vo_config(vo)
-    issuer_id = kwargs.get('issuer', issuer_nickname)
-    issuer_config = idp_config_vo[issuer_id]
-    redirect_url = issuer_config["redirect_url"]
-    client_id = issuer_config["client_id"]
-    authorization_endpoint = get_discovery_metadata(issuer_url=issuer_id)["authorization_endpoint"]
+    idp_config_vo = config_loader.get_vo_user_auth_config(vo)
+    redirect_url = idp_config_vo["redirect_url"]
+    client_id = idp_config_vo["client_id"]
+    issuer = idp_config_vo["issuer"]
+    authorization_endpoint = get_discovery_metadata(issuer_url=issuer)["authorization_endpoint"]
 
     polling = kwargs.get('polling', False)
     refresh_lifetime = kwargs.get('refresh_lifetime', REFRESH_LIFETIME_H)
@@ -578,7 +491,6 @@ def get_auth_oidc(
 @transactional_session
 def get_token_oidc(
     auth_query_string: str,
-    issuer_nickname: str = ADMIN_ISSUER_ID,
     ip: Optional[str] = None,
     vo: str = 'def',
     *,
@@ -617,12 +529,13 @@ def get_token_oidc(
 
     # get info from config
     config_loader = LazyConfigLoad()
-    idp_config_vo =config_loader.get_vo_config(vo)
-    issuer_config = idp_config_vo[issuer_nickname]
+    idp_config_vo =config_loader.get_vo_user_auth_config(vo)
     issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer_url)["token_endpoint"]
-    redirect_url = issuer_config["redirect_url"]
-    client_id = issuer_config["client_id"]
-    client_secret = issuer_config["client_secret"]
+    config_loader = LazyConfigLoad()
+    redirect_url = idp_config_vo["redirect_url"]
+    client_id = idp_config_vo["client_id"]
+    client_secret = idp_config_vo["client_secret"]
+
     req_params = parse_qs(req_url.query)
     client_params = {}
     for key in list(req_params):
@@ -715,7 +628,6 @@ def refresh_cli_auth_token(
     token_string: str,
     account: str,
     vo: str = 'def',
-    issuer_nickname: str = ADMIN_ISSUER_ID,
     *,
     session: "Session"
 ) -> Optional[tuple[str, int]]:
@@ -762,7 +674,7 @@ def refresh_cli_auth_token(
             return new_token_string, epoch_exp
 
         # asking for a refresh of this token
-        new_token = __refresh_token_oidc(account_token, vo=vo, issuer_nickname=issuer_nickname, session=session)
+        new_token = __refresh_token_oidc(account_token, vo=vo, session=session)
         new_token_string = new_token['token']
         epoch_exp = int(floor((new_token['expires_at'] - datetime(1970, 1, 1)).total_seconds()))
         return new_token_string, epoch_exp
@@ -836,9 +748,50 @@ def _delete_oauth_request_by_account_and_expiration(
     # Commit the transaction
     session.commit()
 
+@transactional_session
+def __delete_expired_tokens_account(
+    account: "InternalAccount",
+    *,
+    session: "Session"
+) -> None:
+    """"
+    Deletes expired tokens from the database.
+
+    :param account: Account to delete expired tokens.
+    :param session: The database session in use.
+    """
+    query = select(
+            models.Token.token
+        ).where(
+            models.Token.expired_at <= datetime.utcnow(),
+            models.Token.account == account,
+            or_(
+                models.Token.refresh_expired_at == null(),
+                models.Token.refresh_expired_at <= datetime.utcnow()
+            )
+        ).with_for_update(
+        skip_locked=True
+    )
+    tokens = session.execute(query).scalars().all()
+
+    for chunk in chunks(tokens, 100):
+        delete_query = delete(
+            models.Token
+        ).prefix_with(
+            "/*+ INDEX(TOKENS_ACCOUNT_EXPIRED_AT_IDX) */"
+        ).where(
+            models.Token.token.in_(chunk)
+        )
+        session.execute(delete_query)
 
 @transactional_session
-def __save_validated_token(token, valid_dict, extra_dict=None, *, session: "Session"):
+def __save_validated_token(
+    token: str,
+    valid_dict: dict[str, Any],
+    extra_dict: Optional[dict[str, Any]] = None,
+    *,
+    session: "Session"
+) -> dict[str, Any]:
     """
     Save JWT token to the Rucio DB.
 
@@ -871,7 +824,12 @@ def __save_validated_token(token, valid_dict, extra_dict=None, *, session: "Sess
         raise RucioException(error.args) from error
 
 @transactional_session
-def __change_refresh_state(token: str, refresh: bool = False, *, session: "Session"):
+def __change_refresh_state(
+    token: str,
+    refresh: bool = False,
+    *,
+    session: "Session"
+):
     """
     Changes token refresh state to True/False.
 
@@ -903,7 +861,6 @@ def __change_refresh_state(token: str, refresh: bool = False, *, session: "Sessi
 def __refresh_token_oidc(
     token_object: models.Token,
     vo: str = 'def',
-    issuer_nickname: str = ADMIN_ISSUER_ID,
     *,
     session: "Session"
 ):
@@ -941,11 +898,10 @@ def __refresh_token_oidc(
     decoded_refresh_token = jwt.decode(refresh_token, options={"verify_signature": False})
     issuer_url = decoded_refresh_token.get('iss')
     config_loader = LazyConfigLoad()
-    idp_config_vo =config_loader.get_vo_config(vo)
-    issuer_config = idp_config_vo[issuer_nickname]
+    idp_config_vo =config_loader.get_vo_user_auth_config(vo)
     issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer_url)["token_endpoint"]
-    client_id = issuer_config["client_id"]
-    client_secret = issuer_config["client_secret"]
+    client_id = idp_config_vo["client_id"]
+    client_secret = idp_config_vo["client_secret"]
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
@@ -988,61 +944,17 @@ def __refresh_token_oidc(
         METRICS.counter(name='IdP_authorization.access_token.saved').inc()
         METRICS.counter(name='IdP_authorization.refresh_token.saved').inc()
     else:
-        raise CannotAuthorize("OIDC identity '%s' of the '%s' account is did not " % (token_object.identity, token_object.account)
-                                + "succeed requesting a new access and refresh tokens.")  # NOQA: W503
+        raise CannotAuthorize(f"OIDC identity {token_object.identity} of the {token_object.account} account is did not succeed requesting a new access and refresh tokens.")  # NOQA: W503
     return new_token
 
 
-
-def oidc_identity_string(sub: str, iss: str):
-    """
-    Transform IdP sub claim and issuers url into users identity string.
-    :param sub: users SUB claim from the Identity Provider
-    :param iss: issuer (IdP) https url
-
-    :returns: OIDC identity string "SUB=<usersid>, ISS=https://iam-test.ch/"
-    """
-    return 'SUB=' + str(sub) + ', ISS=' + str(iss)
-
-
-def token_dictionary(token: models.Token):
-    return {'token': token.token, 'expires_at': token.expired_at}
-
-
-@transactional_session
-def __delete_expired_tokens_account(account: "InternalAccount", *, session: "Session") -> None:
-    """"
-    Deletes expired tokens from the database.
-
-    :param account: Account to delete expired tokens.
-    :param session: The database session in use.
-    """
-    query = select(
-            models.Token.token
-        ).where(
-            models.Token.expired_at <= datetime.utcnow(),
-            models.Token.account == account,
-            or_(
-                models.Token.refresh_expired_at == null(),
-                models.Token.refresh_expired_at <= datetime.utcnow()
-            )
-        ).with_for_update(
-        skip_locked=True
-    )
-    tokens = session.execute(query).scalars().all()
-
-    for chunk in chunks(tokens, 100):
-        delete_query = delete(
-            models.Token
-        ).prefix_with(
-            "/*+ INDEX(TOKENS_ACCOUNT_EXPIRED_AT_IDX) */"
-        ).where(
-            models.Token.token.in_(chunk)
-        )
-        session.execute(delete_query)
-
-
-def validate_jwt_and_save_token(token: str, account: Optional[str], vo:str = 'def', *, session: "Session") -> dict[str, Any]:
+def validate_jwt_and_save_token(
+    token: str,
+    account: Optional[str],
+    vo: str = 'def',
+    *,
+    session: "Session"
+) -> dict[str, Any]:
     """_summary_
 
     :raises CannotAuthenticate: _description_
@@ -1053,7 +965,7 @@ def validate_jwt_and_save_token(token: str, account: Optional[str], vo:str = 'de
     config_loader = LazyConfigLoad()
     is_valid_issuer = config_loader.is_valid_issuer(issuer_url=issuer_url, vo=vo)
     if not is_valid_issuer:
-        raise CannotAuthenticate("sss")
+        raise CannotAuthenticate(f"token with issuer {issuer_url} is not from valid issuer")
     token_type = "access_token"
     access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type)
     token_dict = {}
@@ -1062,3 +974,23 @@ def validate_jwt_and_save_token(token: str, account: Optional[str], vo:str = 'de
     token_dict["account"] = account
     __save_validated_token(token, token_dict, session=session)
     return token_dict
+
+
+def oidc_identity_string(sub: str, iss: str) -> str:
+    """
+    Transform IdP sub claim and issuers url into users identity string.
+    :param sub: users SUB claim from the Identity Provider
+    :param iss: issuer (IdP) https url
+
+    :returns: OIDC identity string "SUB=<usersid>, ISS=https://iam-test.ch/"
+    """
+    return f"SUB={sub}, ISS={iss}"
+
+
+def token_dictionary(token: models.Token) -> dict[str, Any]:
+    """_summary_
+
+    :param models.Token token: token as Token model
+    :return _type_: _description_
+    """
+    return {'token': token.token, 'expires_at': token.expired_at}

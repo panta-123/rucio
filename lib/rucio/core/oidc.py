@@ -15,23 +15,17 @@
 import hashlib
 import json
 import logging
-import subprocess
 import traceback
+import uuid
 from datetime import datetime, timedelta
 from math import floor
-from secrets import choice
 from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Union
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import jwt
 import requests
 from dogpile.cache.api import NoValue
-from oic import rndstr
-from oic.oauth2.message import CCAccessTokenRequest
-from oic.oic import REQUEST2ENDPOINT, Client, Grant, Token
-from oic.oic.message import AccessTokenResponse, AuthorizationResponse, Message, RegistrationResponse
-from oic.utils import time_util
-from oic.utils.authn.client import CLIENT_AUTHN_METHOD
+from jwt.exceptions import InvalidTokenError
 from sqlalchemy import delete, null, or_, select, update
 from sqlalchemy.sql.expression import true
 
@@ -39,11 +33,11 @@ from rucio.common.cache import MemcacheRegion
 from rucio.common.config import config_get, config_get_int
 from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
 from rucio.common.stopwatch import Stopwatch
-from rucio.common.utils import all_oidc_req_claims_present, build_url, val_to_space_sep_str
+from rucio.common.utils import all_oidc_req_claims_present, chunks, val_to_space_sep_str
 from rucio.core.account import account_exists
-from rucio.core.identity import exist_identity_account, get_default_account
+from rucio.core.identity import exist_identity_account
 from rucio.core.monitor import MetricManager
-from rucio.db.sqla import filter_thread_work, models
+from rucio.db.sqla import models
 from rucio.db.sqla.constants import IdentityType
 from rucio.db.sqla.session import read_session, transactional_session
 
@@ -60,25 +54,22 @@ TOKEN_MAX_LIFETIME: Final = config_get_int('oidc', 'token_max_lifetime', default
 REGION: Final = MemcacheRegion(expiration_time=TOKEN_MAX_LIFETIME)
 METRICS = MetricManager(module=__name__)
 CACHE_REGION: Final = MemcacheRegion(expiration_time=86400)
-
-# worokaround for a bug in pyoidc (as of Dec 2019)
-REQUEST2ENDPOINT['CCAccessTokenRequest'] = 'token_endpoint'
-
 # private/protected file containing Rucio Client secrets known to the Identity Provider as well
 IDPSECRETS = config_get('oidc', 'idpsecrets', False)
 ADMIN_ISSUER_ID = config_get('oidc', 'admin_issuer', False)
 EXPECTED_OIDC_AUDIENCE = config_get('oidc', 'expected_audience', False, 'rucio')
-EXPECTED_OIDC_SCOPE = config_get('oidc', 'expected_scope', False, 'openid profile')
-EXCHANGE_GRANT_TYPE = config_get('oidc', 'exchange_grant_type', False, 'urn:ietf:params:oauth:grant-type:token-exchange')
+# The 'openid' scope is always required for an ID token to be issued.
+# 'profile' is added as required for extra scope
+DEFAULT_ID_TOKEN_SCOPES = 'openid profile'
+ID_TOKEN_EXTRA_SCOPES = config_get('oidc', 'id_token_extra_scopes', False, '')
+ID_TOKEN_EXTRA_CLAIMS = config_get('oidc', 'id_token_extra_claims', False, '')
+EXPECTED_OIDC_ACCESS_TOKEN_SCOPE = config_get('oidc', 'expected_access_token_scope', False, 'rucio')
 REFRESH_LIFETIME_H = config_get_int('oidc', 'default_jwt_refresh_lifetime', False, 96)
 
 # Allow 2 mins of leeway in case Rucio and IdP server clocks are not perfectly synchronized
 # this affects the token issued time (a token could be issued in the future if IdP clock is ahead)
 LEEWAY_SECS = 120
 
-
-# TO-DO permission layer: if scope == 'wlcg.groups'
-# --> check 'profile' info (requested profile scope)
 class LazyConfigLoad:
     """
     A lazy-loading configuration manager for OIDC settings.
@@ -155,6 +146,26 @@ class LazyConfigLoad:
         # If no matching configuration is found
         raise ValueError(f"{ADMIN_ISSUER_ID} not found in the configuration for VO '{vo}'.")
 
+
+    def is_valid_issuer(self, vo: str, issuer_url: str) -> bool:
+        """_summary_
+
+        :param str vo: _description_
+        :param str issuer_url: _description_
+        :return bool: _description_
+        """
+        vo_config = self.get_vo_config(vo=vo)
+        is_valid = False
+        for idp_data in vo_config:
+            iss = idp_data.get("issuer")
+            if iss:
+                if iss == issuer_url:
+                    is_valid = True
+                else:
+                    is_valid = False
+        return is_valid
+
+
     def _validate_config(self) -> None:
         """_summary_
 
@@ -184,6 +195,7 @@ class LazyConfigLoad:
             # Validate optional SCIM configuration
             self._validate_scim(vo, details)
 
+
     def _validate_scim(self, vo: str, details: list[dict[str, Any]]) -> None:
         """_summary_
 
@@ -200,119 +212,6 @@ class LazyConfigLoad:
             missing_scim_keys = [key for key in ["client_id", "client_secret"] if key not in scim]
             if missing_scim_keys:
                 raise ValueError(f"SCIM for VO '{vo}' is missing required keys: {', '.join(missing_scim_keys)}")
-
-def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
-    """_summary_
-
-    :param str issuer_url: _description_
-    :return dict[str, Any]: _description_
-    """
-    # Check if the JWKS content is already cached
-    cache_key = f"discovery_metadata_{issuer_url}"
-    cached_discovery = CACHE_REGION.get(cache_key)
-    if cached_discovery:
-        return json.loads(cached_discovery)
-    discovery_url = f"{issuer_url}/.well-known/openid-configuration"
-    response = requests.get(discovery_url, timeout=10)
-    response.raise_for_status()
-    metadata = response.json()
-    CACHE_REGION.set(cache_key, json.dumps(metadata))
-    return metadata
-
-def get_jwks_content(issuer_url: str) -> dict[str, Any]:
-    """
-    Discover the JWKS content from the issuer's metadata and cache the response.
-
-    :param issuer_url: The issuer's base URL (e.g., https://example.com).
-    :return: The JWKS content (JSON with public keys).
-    """
-    # Check if the JWKS content is already cached
-    cache_key = f"jwks_content_{issuer_url}"
-    cached_jwks = CACHE_REGION.get(cache_key)
-
-    if cached_jwks:
-        return json.loads(cached_jwks)  # Return the cached JWKS content
-
-    metadata = get_discovery_metadata(issuer_url=issuer_url)
-
-    # Get the jwks_uri from the metadata
-    jwks_url = metadata.get("jwks_uri")
-    if not jwks_url:
-        raise ValueError("No 'jwks_uri' found in the metadata.")
-
-    # Fetch the JWKS content
-    jwks_response = requests.get(jwks_url, timeout=10)
-    jwks_response.raise_for_status()
-    jwks_content = jwks_response.json()
-
-    # Cache the JWKS content
-    CACHE_REGION.set(cache_key, json.dumps(jwks_content))
-    return jwks_content
-
-def validate_token(
-        token: str,
-        issuer_url: str,
-        audience:str,
-        token_type: Literal["id_token", "access_token"],
-        nonce:Optional[str] = None,
-) -> dict[str, Any]:
-    """
-    Validate an ID token or access token.
-
-    :param token: The token to validate (ID token or access token).
-    :param issuer_url: The issuer URL for the token.
-    :param audience: The expected audience (client ID or resource server).
-    :param nonce: The nonce from the original request (for ID token validation).
-    :param token_type: The type of token ("id_token" or "access_token").
-
-    :return: The decoded token if valid.
-    """
-    issuer_url = issuer_url.rstrip("/")
-    jwks_content = get_jwks_content(issuer_url=issuer_url)
-    headers = jwt.get_unverified_header(token)
-    kid = headers.get("kid")
-    # Find the key in the JWKS matching the 'kid'
-    key = next((jwk for jwk in jwks_content.get("keys", []) if jwk["kid"] == kid), None)
-
-    if not key:
-        raise ValueError(f"No matching key found in JWKS for kid: {kid}")
-
-    # Convert the JWK to a PEM-format public key
-    public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
-
-    # Decode and validate the token
-    try:
-        decoded_token = jwt.decode(
-            token,
-            key=public_key,
-            audience=audience,
-            issuer=issuer_url,
-            algorithms=["RS256"],
-            options={"verify_signature": True}
-        )
-    except Exception as e:
-        raise CannotAuthenticate(f"Invalid {token_type}: {e}")
-
-    # Additional validation for ID tokens
-    if token_type == "id_token" and nonce:
-        # openid in scope means sub has to be present in id_token
-        if "sub" not in decoded_token:
-            raise CannotAuthenticate("Failed to get sub from ID token")
-        if "profile" in EXPECTED_OIDC_SCOPE:
-            if not "name" in decoded_token:
-                raise CannotAuthenticate("")
-        if "email" in EXPECTED_OIDC_SCOPE:
-            if not "email" in decoded_token:
-                raise CannotAuthenticate("")
-        # security for replay attack/
-        if decoded_token.get("nonce") != nonce:
-            raise CannotAuthenticate("Invalid nonce in ID token.")
-
-    if token_type == "access_token":
-        if "rucio" not in decoded_token["scopes"]:
-            raise CannotAuthenticate("")
-
-    return decoded_token
 
 
 @METRICS.time_it
@@ -351,9 +250,139 @@ def _token_cache_get(
     return value
 
 
-def _token_cache_set(key: str, value: str) -> None:
-    """Store a token in the cache."""
-    REGION.set(key, value)
+def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
+    """_summary_
+
+    :param str issuer_url: _description_
+    :return dict[str, Any]: _description_
+    """
+    # Check if the JWKS content is already cached
+    cache_key = f"discovery_metadata_{issuer_url}"
+    cached_discovery = CACHE_REGION.get(cache_key)
+    if cached_discovery:
+        return json.loads(cached_discovery)
+    discovery_url = f"{issuer_url}/.well-known/openid-configuration"
+    response = requests.get(discovery_url, timeout=10)
+    response.raise_for_status()
+    metadata = response.json()
+    CACHE_REGION.set(cache_key, json.dumps(metadata))
+    return metadata
+
+
+def get_jwks_content(issuer_url: str) -> dict[str, Any]:
+    """
+    Discover the JWKS content from the issuer's metadata and cache the response.
+
+    :param issuer_url: The issuer's base URL (e.g., https://example.com).
+    :return: The JWKS content (JSON with public keys).
+    """
+    # Check if the JWKS content is already cached
+    cache_key = f"jwks_content_{issuer_url}"
+    cached_jwks = CACHE_REGION.get(cache_key)
+
+    if cached_jwks:
+        return json.loads(cached_jwks)  # Return the cached JWKS content
+
+    metadata = get_discovery_metadata(issuer_url=issuer_url)
+
+    # Get the jwks_uri from the metadata
+    jwks_url = metadata.get("jwks_uri")
+    if not jwks_url:
+        raise ValueError("No 'jwks_uri' found in the metadata.")
+
+    # Fetch the JWKS content
+    jwks_response = requests.get(jwks_url, timeout=10)
+    jwks_response.raise_for_status()
+    jwks_content = jwks_response.json()
+
+    # Cache the JWKS content
+    CACHE_REGION.set(cache_key, json.dumps(jwks_content))
+    return jwks_content
+
+
+def validate_token(
+        token: str,
+        issuer_url: str,
+        audience:str,
+        token_type: Literal["id_token", "access_token"],
+        nonce:Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Validate an ID token or access token.
+
+    :param token: The token to validate (ID token or access token).
+    :param issuer_url: The issuer URL for the token.
+    :param audience: The expected audience (client ID or resource server).
+    :param nonce: The nonce from the original request (for ID token validation).
+    :param token_type: The type of token ("id_token" or "access_token").
+
+    :return: The decoded token if valid.
+    """
+    issuer_url = issuer_url.rstrip("/")
+    jwks_content = get_jwks_content(issuer_url=issuer_url)
+    headers = jwt.get_unverified_header(token)
+    kid = headers.get("kid", None)
+    alg = headers.get("alg")
+    if not alg:
+        raise ValueError("Token header is missing the 'alg' (algorithm) claim.")
+    if not kid:
+        # in this case use the first key
+        keys = jwks_content.get("keys", [])
+        if not keys:
+            raise ValueError("No keys found in JWKS.")
+        key = keys[0]
+    else:
+        # Find the key in the JWKS matching the 'kid'
+        key = next((jwk for jwk in jwks_content.get("keys", []) if jwk.get("kid") == kid), None)
+        if not key:
+            raise ValueError(f"No matching key found in JWKS for kid: {kid}")
+
+    try:
+        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+    except Exception as e:
+        raise ValueError(f"Failed to convert JWK to PEM-format public key: {e}") from e
+
+    # Decode and validate the token
+    try:
+        decoded_token = jwt.decode(
+            token,
+            key=public_key,
+            audience=audience,
+            issuer=issuer_url,
+            algorithms=[alg],
+            options={"verify_signature": True}
+        )
+    except Exception as e:
+        raise CannotAuthenticate(f"Invalid {token_type}: {e}")
+
+    # Additional validation for ID tokens
+    if token_type == "id_token" and nonce:
+        # openid in scope means sub has to be present in id_token
+        if "sub" not in decoded_token:
+            raise CannotAuthenticate("Failed to get sub from ID token. 'openid' scope is needed for oidc client")
+        if "profile" in ID_TOKEN_EXTRA_SCOPES:
+            # according to https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims
+            profile_claims = ["profile","name", "given_name", "family_name"]
+            has_profile_scope = any(claim in decoded_token for claim in profile_claims)
+            if not has_profile_scope:
+                raise CannotAuthenticate("Failed to get name from ID token")
+        if "email" in ID_TOKEN_EXTRA_SCOPES:
+            if not "email" in decoded_token:
+                raise CannotAuthenticate("failed to get email from ID token")
+        # security for replay attack
+        if decoded_token.get("nonce") != nonce:
+            raise CannotAuthenticate("Invalid nonce in ID token.")
+        if ID_TOKEN_EXTRA_CLAIMS:
+            for _claim in ID_TOKEN_EXTRA_CLAIMS:
+                if _claim not in ID_TOKEN_EXTRA_CLAIMS:
+                    raise CannotAuthenticate(f"failed to get {_claim} from ID token")
+
+    if token_type == "access_token":
+        for _scope in EXPECTED_OIDC_ACCESS_TOKEN_SCOPE:
+            if _scope not in decoded_token["scopes"]:
+                raise CannotAuthenticate(f"access token scope is missing expected oidc access token scope: {_scope}")
+
+    return decoded_token
 
 
 def request_token(
@@ -434,9 +463,9 @@ def request_token(
 
     # Cache the token if caching is enabled
     if use_cache:
-        _token_cache_set(key, token)
-
+        REGION.set(key, token)
     return token
+
 
 @transactional_session
 def get_auth_oidc(
@@ -476,11 +505,13 @@ def get_auth_oidc(
     if not account_exists(account, session=session):
         logging.debug("Account %s does not exist.", account)
         return None
-    auth_scope = kwargs.get('auth_scope', EXPECTED_OIDC_SCOPE)
+
+    auth_scope = kwargs.get('auth_scope', None)
+    if not auth_scope:
+        auth_scope = DEFAULT_ID_TOKEN_SCOPES + ID_TOKEN_EXTRA_SCOPES
+
     audience = kwargs.get('audience', EXPECTED_OIDC_AUDIENCE)
-    resource = None if audience else "ddd"
-    if not audience or resource:
-        CannotAuthenticate("")
+    resource = None
 
     config_loader = LazyConfigLoad()
     idp_config_vo = config_loader.get_vo_config(vo)
@@ -495,22 +526,19 @@ def get_auth_oidc(
     ip = kwargs.get('ip', None)
 
     try:
-        stopwatch = Stopwatch()
-        # random strings in order to keep track of responses to outstanding requests (state)
+        # uuid4 string in order to keep track of responses to outstanding requests (state)
         # and to associate a client session with an ID Token and to mitigate replay attacks (nonce).
-        state, nonce = rndstr(50), rndstr(50)
+        state = str(uuid.uuid4())
+        nonce = str(uuid.uuid4())
         auth_url = authorization_endpoint
         # redirect code is put in access_msg and returned to the user
-        access_msg = None
-        access_msg = rndstr(23)
+        access_msg =str(uuid.uuid4())
         if polling:
             access_msg += '_polling'
         # Making sure refresh_lifetime is an integer or None.
         if refresh_lifetime:
             refresh_lifetime = int(refresh_lifetime)
         # Specifying temporarily 5 min lifetime for the authentication session.
-        expired_at = datetime.utcnow()
-        delete_oauth_request_by_account_and_expiration(account, expired_at, session=session)
         expired_at = datetime.utcnow() + timedelta(seconds=300)
         # saving session parameters into the Rucio DB
         oauth_session_params = models.OAuthRequest(account=account,
@@ -522,6 +550,7 @@ def get_auth_oidc(
                                                    refresh_lifetime=refresh_lifetime,
                                                    ip=ip)
         oauth_session_params.save(session=session)
+        _delete_oauth_request_by_account_and_expiration(account, session=session)
         auth_server = urlparse(authorization_endpoint)
 
         # Build the query parameters
@@ -627,8 +656,6 @@ def get_token_oidc(
     scopes =  access_token_decoded['scopes']
     exp_at = access_token_decoded['exp']
     lifetime = datetime.utcnow() + timedelta(seconds=exp_at)
-    if scopes not in EXPECTED_OIDC_SCOPE:
-        CannotAuthenticate("sss")
 
     # assemble OIDC table value
     jwt_row_dict = {
@@ -647,22 +674,41 @@ def get_token_oidc(
         extra_dict['refresh_lifetime'] = REFRESH_LIFETIME_H
         extra_dict['refresh_expired_at'] = datetime.utcnow() + timedelta(hours=REFRESH_LIFETIME_H)
     new_token = __save_validated_token(tokens['access_token'], jwt_row_dict, extra_dict=extra_dict, session=session)
+    __delete_expired_tokens_account(account=account, session=session)
     if oauth_req_params.access_msg:
         if 'http' not in oauth_req_params.access_msg:
-            if '_polling' in oauth_req_params.access_msg:
+            if '_polling' not in oauth_req_params.access_msg:
+                fetchcode = str(uuid.uuid4())
                 query = update(
-                        models.OAuthRequest
-                    ).where(
-                        models.OAuthRequest.state == state
-                    ).values({
-                        models.OAuthRequest.access_msg: oauth_req_params.access_msg,
-                        models.OAuthRequest.redirect_msg: new_token['token']
-                    })
-                session.execute(query)
-                session.commit()
+                    models.OAuthRequest
+                ).where(
+                    models.OAuthRequest.state == state
+                ).values({
+                    models.OAuthRequest.access_msg: fetchcode,
+                    models.OAuthRequest.redirect_msg: new_token['token']
+                })
+                # If Rucio Client was requested to poll the Rucio Auth server
+                # for a token automatically, we save the token under a access_msg.
+            else:
+                query = update(
+                    models.OAuthRequest
+                ).where(
+                    models.OAuthRequest.state == state
+                ).values({
+                    models.OAuthRequest.access_msg: oauth_req_params.access_msg,
+                    models.OAuthRequest.redirect_msg: new_token['token']
+                })
+            session.execute(query)
+            session.commit()
+            if '_polling' in oauth_req_params.access_msg:
                 return {'polling': True}
+            elif 'http' in oauth_req_params.access_msg:
+                return {'webhome': oauth_req_params.access_msg, 'token': new_token}
+            else:
+                return {'fetchcode': fetchcode}
 
     return {'token': new_token}
+
 
 @transactional_session
 def refresh_cli_auth_token(
@@ -751,12 +797,11 @@ def refresh_cli_auth_token(
 
 
 @transactional_session
-def delete_oauth_request_by_account_and_expiration(
+def _delete_oauth_request_by_account_and_expiration(
     account: str,
-    expired_at: datetime,
     *,
     session: "Session"
-) -> int:
+) -> None:
     """
     Delete an OAuth request by its account, and expiration time.
 
@@ -764,22 +809,33 @@ def delete_oauth_request_by_account_and_expiration(
     :param expired_at: The expiration time of the OAuth request.
     :param session: Database session in use.
 
-    :returns: Number of deleted rows (0 or 1).
+    :returns: Number of deleted rows.
     :raises RucioException: If an error occurs during deletion.
     """
-    try:
+    query = select(
+    models.OAuthRequest.state
+    ).where(
+        models.OAuthRequest.expired_at <= datetime.utcnow(),
+        models.OAuthRequest.account == account
+    ).with_for_update(
+        skip_locked=True
+    )
+
+    # Execute the query and fetch all matching states
+    oauth_requests = session.execute(query).scalars().all()
+
+    # Process deletion in chunks
+    for chunk in chunks(oauth_requests, 100):
         delete_query = delete(
             models.OAuthRequest
         ).where(
-            models.OAuthRequest.account == account,
-            models.OAuthRequest.expired_at <= expired_at
+            models.OAuthRequest.state.in_(chunk)
         )
+        session.execute(delete_query)
 
-        result = session.execute(delete_query)
-        return result.rowcount
+    # Commit the transaction
+    session.commit()
 
-    except Exception as error:
-        raise RucioException(f"Failed to delete OAuth request: {error}") from error
 
 @transactional_session
 def __save_validated_token(token, valid_dict, extra_dict=None, *, session: "Session"):
@@ -901,7 +957,7 @@ def __refresh_token_oidc(
     }
 
     # Send the token refresh request
-    response = requests.post(issuer_token_endpoint, headers=headers, data=data)
+    response = requests.post(issuer_token_endpoint, headers=headers, data=data, timeout=10)
     if response.status_code != 200:
         raise CannotAuthorize(f"Failed to refresh token: {response.text}")
 
@@ -913,7 +969,7 @@ def __refresh_token_oidc(
     # save new access and refresh tokens in the DB
     if 'refresh_token' in oidc_tokens and 'access_token' in oidc_tokens:
         token_type = "access_token"
-        validate_token(token=oidc_tokens['access_token'],issuer_url=issuer_url, audience="ss", token_type=token_type)
+        validate_token(token=oidc_tokens['access_token'],issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type)
         # aborting refresh of the original token
         # (keeping it in place until it expires)
         __change_refresh_state(token_object.token, refresh=False, session=session)
@@ -951,3 +1007,58 @@ def oidc_identity_string(sub: str, iss: str):
 
 def token_dictionary(token: models.Token):
     return {'token': token.token, 'expires_at': token.expired_at}
+
+
+@transactional_session
+def __delete_expired_tokens_account(account: "InternalAccount", *, session: "Session") -> None:
+    """"
+    Deletes expired tokens from the database.
+
+    :param account: Account to delete expired tokens.
+    :param session: The database session in use.
+    """
+    query = select(
+            models.Token.token
+        ).where(
+            models.Token.expired_at <= datetime.utcnow(),
+            models.Token.account == account,
+            or_(
+                models.Token.refresh_expired_at == null(),
+                models.Token.refresh_expired_at <= datetime.utcnow()
+            )
+        ).with_for_update(
+        skip_locked=True
+    )
+    tokens = session.execute(query).scalars().all()
+
+    for chunk in chunks(tokens, 100):
+        delete_query = delete(
+            models.Token
+        ).prefix_with(
+            "/*+ INDEX(TOKENS_ACCOUNT_EXPIRED_AT_IDX) */"
+        ).where(
+            models.Token.token.in_(chunk)
+        )
+        session.execute(delete_query)
+
+
+def validate_jwt_and_save_token(token: str, account: Optional[str], vo:str = 'def', *, session: "Session") -> dict[str, Any]:
+    """_summary_
+
+    :raises CannotAuthenticate: _description_
+    :return _type_: _description_
+    """
+    unverified_claims = jwt.get_unverified_claims(token)
+    issuer_url = unverified_claims["iss"]
+    config_loader = LazyConfigLoad()
+    is_valid_issuer = config_loader.is_valid_issuer(issuer_url=issuer_url, vo=vo)
+    if not is_valid_issuer:
+        raise CannotAuthenticate("sss")
+    token_type = "access_token"
+    access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type)
+    token_dict = {}
+    token_dict["audience"] = access_token_decoded["aud"]
+    token_dict['authz_scope'] = access_token_decoded['scope']
+    token_dict["account"] = account
+    __save_validated_token(token, token_dict, session=session)
+    return token_dict

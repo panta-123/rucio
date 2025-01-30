@@ -579,7 +579,6 @@ class BaseClient:
 
         :returns: True if the token was successfully received. False otherwise.
         """
-        oidc_scope = str(self.creds['oidc_scope'])
         headers = {'X-Rucio-Client-Authorize-Polling': str(self.creds['oidc_polling']),
                    'X-Rucio-Client-Authorize-Scope': str(self.creds['oidc_scope']),
                    'X-Rucio-Client-Authorize-Refresh-Lifetime': str(self.creds['oidc_refresh_lifetime'])}

@@ -29,11 +29,11 @@ from sqlalchemy import delete, null, or_, select, update
 from sqlalchemy.sql.expression import true
 
 from rucio.common.cache import MemcacheRegion
-from rucio.common.config import config_get, config_get_int
+from rucio.common.config import config_get, config_get_int, config_get_list
 from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
 from rucio.common.utils import all_oidc_req_claims_present, chunks, val_to_space_sep_str
-from rucio.core.account import account_exists
-from rucio.core.identity import exist_identity_account
+from rucio.core.account import account_exists, get_account
+from rucio.core.identity import exist_identity_account, get_default_account
 from rucio.core.monitor import MetricManager
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import IdentityType
@@ -57,19 +57,19 @@ IDPSECRETS = config_get('oidc', 'idpsecrets', False)
 EXPECTED_OIDC_AUDIENCE = config_get('oidc', 'expected_audience', False, 'rucio')
 # The 'openid' scope is always required for an ID token to be issued.
 # 'profile' is added as required for extra scope
-DEFAULT_ID_TOKEN_SCOPES = 'openid profile'
+DEFAULT_ID_TOKEN_SCOPES = ['openid', 'profile']
 # Extra scopes for id token.
-ID_TOKEN_EXTRA_SCOPES = config_get('oidc', 'id_token_extra_scopes', False, '')
+ID_TOKEN_EXTRA_SCOPES = config_get_list('oidc', 'id_token_extra_scopes', False, [])
 # Corresponding claim that needs to there for above scopes
-ID_TOKEN_EXTRA_CLAIMS = config_get('oidc', 'id_token_extra_claims', False, '')
-EXPECTED_OIDC_ACCESS_TOKEN_SCOPE = config_get('oidc', 'expected_access_token_scope', False, 'rucio')
+ID_TOKEN_EXTRA_CLAIMS = config_get_list('oidc', 'id_token_extra_claims', False, [])
+EXPECTED_OIDC_ACCESS_TOKEN_SCOPE = config_get_list('oidc', 'expected_access_token_scope', False, ['rucio'])
 REFRESH_LIFETIME_H = config_get_int('oidc', 'default_jwt_refresh_lifetime', False, 96)
 
 # Allow 2 mins of leeway in case Rucio and IdP server clocks are not perfectly synchronized
 # this affects the token issued time (a token could be issued in the future if IdP clock is ahead)
 LEEWAY_SECS = 120
 
-class LazyConfigLoad:
+class IDPSecretLoad:
     def __init__(self, config_file: str = IDPSECRETS):
         """Initialize with a JSON configuration file."""
         self.config_file = config_file
@@ -86,7 +86,7 @@ class LazyConfigLoad:
 
         self._validate_config()
 
-    def get_vo_user_auth_config(self, vo: str = "def") -> dict:
+    def get_vo_user_auth_config(self, vo: str = "def") -> dict[str, Union[list, str]]:
         """Retrieve the issuer configuration for a VO."""
         config = self._config.get(vo)
         if not config:
@@ -98,7 +98,7 @@ class LazyConfigLoad:
 
         return vo_user_auth_config
 
-    def get_client_credential_client(self, vo: str = "def") -> dict:
+    def get_client_credential_client(self, vo: str = "def") -> dict[str, str]:
         """Retrieve client credentials for the specified VO."""
         config = self._config.get(vo)
         if not config:
@@ -225,9 +225,10 @@ def get_jwks_content(issuer_url: str) -> dict[str, Any]:
 def validate_token(
         token: str,
         issuer_url: str,
-        audience:str,
+        audience: str,
         token_type: Literal["id_token", "access_token"],
-        nonce:Optional[str] = None,
+        nonce: Optional[str] = None,
+        scopes: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """
     Validate an ID token or access token.
@@ -237,6 +238,7 @@ def validate_token(
     :param audience: The expected audience (client ID or resource server).
     :param nonce: The nonce from the original request (for ID token validation).
     :param token_type: The type of token ("id_token" or "access_token").
+    :param scopes: scopes of access token to validate against EXPECTED_OIDC_ACCESS_TOKEN_SCOPE.
 
     :return: The decoded token if valid.
     """
@@ -247,11 +249,13 @@ def validate_token(
     if not alg:
         raise ValueError("Token header is missing the 'alg' (algorithm) claim.")
     if not kid:
-        # in this case use the first key
+        # in this case use the alg to get the key
         keys = jwks_content.get("keys", [])
         if not keys:
             raise ValueError("No keys found in JWKS.")
-        key = keys[0]
+        for _key in keys:
+            if _key["alg"] == alg:
+                key = _key
     else:
         # Find the key in the JWKS matching the 'kid'
         key = next((jwk for jwk in jwks_content.get("keys", []) if jwk.get("kid") == kid), None)
@@ -270,6 +274,7 @@ def validate_token(
             key=public_key,
             audience=audience,
             issuer=issuer_url,
+            leeway=LEEWAY_SECS,
             algorithms=[alg],
             options={"verify_signature": True}
         )
@@ -286,7 +291,7 @@ def validate_token(
             profile_claims = ["profile","name", "given_name", "family_name"]
             has_profile_scope = any(claim in decoded_token for claim in profile_claims)
             if not has_profile_scope:
-                raise CannotAuthenticate("Failed to get name from ID token")
+                raise CannotAuthenticate("Failed to get claims for profile scope from ID token")
         if "email" in ID_TOKEN_EXTRA_SCOPES:
             if not "email" in decoded_token:
                 raise CannotAuthenticate("failed to get email from ID token")
@@ -297,6 +302,10 @@ def validate_token(
             for _claim in ID_TOKEN_EXTRA_CLAIMS:
                 if _claim not in ID_TOKEN_EXTRA_CLAIMS:
                     raise CannotAuthenticate(f"failed to get {_claim} from ID token")
+
+    if token_type == "access_token":
+        if scopes and EXPECTED_OIDC_ACCESS_TOKEN_SCOPE not in scopes:
+            raise CannotAuthenticate(f"Access token doesn't have scope required scope")
 
     return decoded_token
 
@@ -327,15 +336,15 @@ def request_token(
         raise ValueError("Either 'audience' or 'resource' (RFC8707) must be provided.")
 
     # Load configuration
-    config_loader = LazyConfigLoad()
-    client_config = config_loader.get_client_credential_client(vo)
+    idpsecret_config_loader = IDPSecretLoad()
+    client_config = idpsecret_config_loader.get_client_credential_client(vo)
 
     if client_config is None:
         raise ValueError(f"Configuration for VO '{vo}' not found.")
 
     # Access IDP configurations within the VO
     issuer = client_config.get("issuer")
-    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"]
+    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"] # type: ignore
     client_id = client_config.get("client_id")
     client_secret = client_config.get("client_secret")
 
@@ -420,19 +429,25 @@ def get_auth_oidc(
         logging.debug("Account %s does not exist.", account)
         return None
 
-    auth_scope = kwargs.get('auth_scope', None)
-    if not auth_scope:
-        auth_scope = DEFAULT_ID_TOKEN_SCOPES + ID_TOKEN_EXTRA_SCOPES
+    auth_scope_requested = kwargs.get('auth_scope', None)
+    auth_scopes_default = DEFAULT_ID_TOKEN_SCOPES + ID_TOKEN_EXTRA_SCOPES + EXPECTED_OIDC_ACCESS_TOKEN_SCOPE
+    if not auth_scope_requested:
+        auth_scope = " ".join(auth_scopes_default)
+    else:
+        auth_scopes_requested = list(set(auth_scope_requested.split(" ")))
+        if not auth_scopes_requested in auth_scopes_default:
+            raise CannotAuthenticate(f"requested scope {auth_scopes_requested} not in {auth_scopes_default}")
+        auth_scope = auth_scope_requested
 
     audience = kwargs.get('audience', EXPECTED_OIDC_AUDIENCE)
     resource = None
 
-    config_loader = LazyConfigLoad()
-    idp_config_vo = config_loader.get_vo_user_auth_config(vo)
+    idpsecret_config_loader = IDPSecretLoad()
+    idp_config_vo = idpsecret_config_loader.get_vo_user_auth_config(vo)
     redirect_url = idp_config_vo["redirect_url"]
     client_id = idp_config_vo["client_id"]
     issuer = idp_config_vo["issuer"]
-    authorization_endpoint = get_discovery_metadata(issuer_url=issuer)["authorization_endpoint"]
+    authorization_endpoint = get_discovery_metadata(issuer_url=issuer)["authorization_endpoint"] # type: ignore
 
     polling = kwargs.get('polling', False)
     refresh_lifetime = kwargs.get('refresh_lifetime', REFRESH_LIFETIME_H)
@@ -528,10 +543,9 @@ def get_token_oidc(
     issuer_url = req_url.scheme + "://" + req_url.netloc
 
     # get info from config
-    config_loader = LazyConfigLoad()
-    idp_config_vo =config_loader.get_vo_user_auth_config(vo)
+    idpsecret_config_loader = IDPSecretLoad()
+    idp_config_vo = idpsecret_config_loader.get_vo_user_auth_config(vo)
     issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer_url)["token_endpoint"]
-    config_loader = LazyConfigLoad()
     redirect_url = idp_config_vo["redirect_url"]
     client_id = idp_config_vo["client_id"]
     client_secret = idp_config_vo["client_secret"]
@@ -554,18 +568,19 @@ def get_token_oidc(
 
     # Decode the ID token and validate the nonce
     token_type = "id_token"
-    id_token_decoded = validate_token(token=tokens['id_token'], issuer_url=issuer_url, nonce=nonce, audience=client_id, token_type=token_type)
+    id_token_decoded = validate_token(token=tokens['id_token'], issuer_url=issuer_url, nonce=nonce, audience=client_id, token_type=token_type) # type: ignore
     # Extract the issuer from the ID token
     issuer_from_id_token = id_token_decoded.get("iss")
     sub_from_id_token = id_token_decoded.get("sub")
-    identity = oidc_identity_string(issuer_from_id_token, sub_from_id_token)
+    identity = oidc_identity_string(issuer_from_id_token, sub_from_id_token) # type: ignore
     # check if given account has the identity registered
     if not exist_identity_account(identity, IdentityType.OIDC, account, session=session):
         raise CannotAuthenticate("OIDC identity '%s' of the '%s' account is unknown to Rucio."
                                     % (identity, account))
     # extract scope, audience, lifetime from access token
     token_type = "access_token"
-    access_token_decoded = validate_token(token=tokens['access_token'], issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type)
+    scopes =list(set(tokens["scope"].split(" ")))
+    access_token_decoded = validate_token(token=tokens['access_token'], issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type, scopes=scopes)
     scopes =  access_token_decoded['scopes']
     exp_at = access_token_decoded['exp']
     lifetime = datetime.utcnow() + timedelta(seconds=exp_at)
@@ -897,8 +912,8 @@ def __refresh_token_oidc(
     refresh_token = token_object.refresh_token
     decoded_refresh_token = jwt.decode(refresh_token, options={"verify_signature": False})
     issuer_url = decoded_refresh_token.get('iss')
-    config_loader = LazyConfigLoad()
-    idp_config_vo =config_loader.get_vo_user_auth_config(vo)
+    idpsecret_config_loader = IDPSecretLoad()
+    idp_config_vo =idpsecret_config_loader.get_vo_user_auth_config(vo)
     issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer_url)["token_endpoint"]
     client_id = idp_config_vo["client_id"]
     client_secret = idp_config_vo["client_secret"]
@@ -925,7 +940,7 @@ def __refresh_token_oidc(
     # save new access and refresh tokens in the DB
     if 'refresh_token' in oidc_tokens and 'access_token' in oidc_tokens:
         token_type = "access_token"
-        validate_token(token=oidc_tokens['access_token'],issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type)
+        validate_token(token=oidc_tokens['access_token'],issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type, scopes=EXPECTED_OIDC_ACCESS_TOKEN_SCOPE)
         # aborting refresh of the original token
         # (keeping it in place until it expires)
         __change_refresh_state(token_object.token, refresh=False, session=session)
@@ -948,10 +963,8 @@ def __refresh_token_oidc(
     return new_token
 
 
-def validate_jwt_and_save_token(
+def validate_jwt(
     token: str,
-    account: Optional[str],
-    vo: str = 'def',
     *,
     session: "Session"
 ) -> dict[str, Any]:
@@ -962,15 +975,32 @@ def validate_jwt_and_save_token(
     """
     unverified_claims = jwt.get_unverified_claims(token)
     issuer_url = unverified_claims["iss"]
-    config_loader = LazyConfigLoad()
-    is_valid_issuer = config_loader.is_valid_issuer(issuer_url=issuer_url, vo=vo)
+    token_type = "access_token"
+    access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type, scopes=EXPECTED_OIDC_ACCESS_TOKEN_SCOPE)
+    identity_string = oidc_identity_string(access_token_decoded['sub'], access_token_decoded['iss'])
+    account = get_default_account(identity_string, IdentityType.OIDC, True, session=session)
+    account_model = get_account(account, session=session)
+    vo = account_model.vo
+    idpsecret_config_loader = IDPSecretLoad()
+    is_valid_issuer = idpsecret_config_loader.is_valid_issuer(issuer_url=issuer_url, vo=vo)
     if not is_valid_issuer:
         raise CannotAuthenticate(f"token with issuer {issuer_url} is not from valid issuer")
-    token_type = "access_token"
-    access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=EXPECTED_OIDC_AUDIENCE, token_type=token_type)
     token_dict = {}
+    if "scope" in access_token_decoded:
+        token_dict['authz_scope'] = access_token_decoded['scope']
+    else:
+        # if not scope in access_token claims, get it from introspection_endpoint
+        introspection_endpoint = get_discovery_metadata(issuer_url=issuer_url)["introspection_endpoint"]
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        idpsecret_config_loader = IDPSecretLoad()
+        auths = idpsecret_config_loader.get_vo_user_auth_config(vo)
+        data = {"token": token}
+        response = requests.post(introspection_endpoint, headers=headers, auth=(str(auths["client_id"]), str(auths["client_secret"])), data=data, timeout=10)
+        if response.status_code == 200:
+            token_info = response.json()
+            if token_info.get("active", False):
+                token_dict['authz_scope'] = token_info['scope']
     token_dict["audience"] = access_token_decoded["aud"]
-    token_dict['authz_scope'] = access_token_decoded['scope']
     token_dict["account"] = account
     __save_validated_token(token, token_dict, session=session)
     return token_dict

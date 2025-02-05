@@ -12,36 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""${message}"""    # noqa: D400, D415
+"""Increase OAuthRequest.redirect_msg length"""    # noqa: D400, D415
 
 import sqlalchemy as sa
 from alembic import context
-from alembic.op import execute
+from alembic.op import alter_column
 
 # Alembic revision identifiers
-revision = ${repr(up_revision)}
-down_revision = ${repr(down_revision)}
+revision = '30d5206e9cad'
+down_revision = 'b0070f3695c8'
 
 
 def upgrade():
     """Upgrade the database to this revision."""
-    schema = context.get_context().version_table_schema + '.' if context.get_context().version_table_schema else ''
-
-    if context.get_context().dialect.name == 'oracle':
-        pass
-    elif context.get_context().dialect.name == 'postgresql':
-        pass
-    elif context.get_context().dialect.name == 'mysql':
-        pass
+    if context.get_context().dialect.name in ['oracle', 'mysql', 'postgresql']:
+        schema = context.get_context().version_table_schema if context.get_context().version_table_schema else ''
+        alter_column('oauth_requests', 'redirect_msg', existing_type=sa.String(2048), type_=sa.String(4000), schema=schema)
 
 
 def downgrade():
     """Downgrade the database to the previous revision."""
-    schema = context.get_context().version_table_schema + '.' if context.get_context().version_table_schema else ''
-
-    if context.get_context().dialect.name == 'oracle':
-        pass
-    elif context.get_context().dialect.name == 'postgresql':
-        pass
-    elif context.get_context().dialect.name == 'mysql':
-        pass
+    if context.get_context().dialect.name in ['oracle', 'mysql', 'postgresql']:
+        schema = context.get_context().version_table_schema if context.get_context().version_table_schema else ''
+        alter_column('oauth_requests', 'redirect_msg', existing_type=sa.String(4000), type_=sa.String(2048), schema=schema)

@@ -71,7 +71,6 @@ def get_scope(did, client):
         scopes = client.list_scopes()
         scope, name = extract_scope(did, scopes)
         return scope, name
-    return None, did
 
 
 @exception_handler
@@ -82,7 +81,7 @@ def add_account(args, client, logger, console, spinner):
     Adds a new account. Specify metadata fields as arguments.
 
     """
-    client.add_account(account=args.account, type_=args.accounttype, email=args.accountemail)
+    client.add_account(account=args.account, type_=args.account_type, email=args.email)
     print('Added new account: %s' % args.account)
     return SUCCESS
 
@@ -95,8 +94,8 @@ def delete_account(args, client, logger, console, spinner):
     Delete account.
 
     """
-    client.delete_account(args.acnt)
-    print('Deleted account: %s' % args.acnt)
+    client.delete_account(args.account)
+    print('Deleted account: %s' % args.account)
     return SUCCESS
 
 
@@ -418,7 +417,6 @@ def info_rse(args, client, logger, console, spinner):
     if cli_config == 'rich':
         table = generate_table(table_data, row_styles=['none'], col_alignments=['left', 'left'])
         output.append(table)
-        table_data = []
     else:
         print('Protocols:')
         print('==========')
@@ -430,6 +428,7 @@ def info_rse(args, client, logger, console, spinner):
         else:
             print('  ' + protocol['scheme'])
 
+        table_data = []
         for item in sorted(protocol):
             if cli_config == 'rich':
                 if item == 'domains':
@@ -447,10 +446,11 @@ def info_rse(args, client, logger, console, spinner):
                 else:
                     print('    ' + item + ': ' + str(protocol[item]))
 
-    if cli_config == 'rich':
-        table = generate_table(table_data, col_alignments=['left', 'left'], row_styles=['none'])
-        output.append(Padding.indent(table, 2))
+        if cli_config == 'rich':
+            table = generate_table(table_data, col_alignments=['left', 'left'], row_styles=['none'])
+            output.append(Padding.indent(table, 2))
 
+    if cli_config == 'rich':
         header = ['SOURCE', 'USED', 'FILES', 'FREE', 'TOTAL', 'UPDATED AT']
         key2id = {header[i].lower().replace(' ', '_'): i for i in range(len(header))}
         table_data = []
@@ -1519,8 +1519,8 @@ def get_parser():
                                                              '\n')
     add_account_parser.set_defaults(which='add_account')
     add_account_parser.add_argument('account', action='store', help='Account name')
-    add_account_parser.add_argument('--type', dest='accounttype', default='USER', help='Account Type (USER, GROUP, SERVICE)')
-    add_account_parser.add_argument('--email', dest='accountemail', action='store',
+    add_account_parser.add_argument('--type', dest='account_type', default='USER', help='Account Type (USER, GROUP, SERVICE)')
+    add_account_parser.add_argument('--email', dest='email', action='store',
                                     help='Email address associated with the account')
 
     # The disable_account command
@@ -1535,7 +1535,7 @@ def get_parser():
                                                                 '    Deleted account: jdoe-sister\n'
                                                                 '\n')
     delete_account_parser.set_defaults(which='delete_account')
-    delete_account_parser.add_argument('acnt', action='store', help='Account name')
+    delete_account_parser.add_argument('account', action='store', help='Account name')
 
     # The info_account command
     info_account_parser = account_subparser.add_parser('info',

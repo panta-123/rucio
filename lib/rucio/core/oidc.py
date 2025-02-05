@@ -29,7 +29,7 @@ from sqlalchemy import delete, null, or_, select, update
 from sqlalchemy.sql.expression import true
 
 from rucio.common.cache import MemcacheRegion
-from rucio.common.config import config_get, config_get_int, config_get_list
+from rucio.common.config import config_get, config_get_bool, config_get_int, config_get_list
 from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
 from rucio.common.utils import all_oidc_req_claims_present, build_url, chunks, val_to_space_sep_str
 from rucio.core.account import account_exists, get_account
@@ -508,10 +508,11 @@ def get_auth_oidc(
             "redirect_uri": redirect_url,
             "scope": auth_scope,
         }
-        if resource:
-            query_params['resource'] = resource
-        else:
-            query_params['audience'] = audience
+        if config_get_bool('oidc', 'supports_audience', raise_exception=False, default=True):
+            if resource:
+                query_params['resource'] = resource
+            else:
+                query_params['audience'] = audience
         auth_url = f"{auth_server.geturl()}?{urlencode(query_params)}"
         # redirect code is put in access_msg and returned to the user
         access_msg =str(uuid.uuid4())

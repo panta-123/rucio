@@ -679,11 +679,12 @@ class RefreshOIDC(ErrorHandlingMethodView):
         vo = extract_vo(request.headers)
         account = request.headers.get('X-Rucio-Account', default=None)
         token = request.headers.get('X-Rucio-Auth-Token', default=None)
+        issuer = request.headers.get('X-RUCIO-CLIENT-AUTHORIZE-ISSUER', None)
         if token is None or account is None:
             return generate_http_error_flask(401, CannotAuthorize.__name__, 'Cannot authorize token request.', headers=headers)
 
         try:
-            result = refresh_cli_auth_token(token, account, vo=vo)
+            result = refresh_cli_auth_token(token, account, issuer, vo=vo)
         except AccessDenied:
             return generate_http_error_flask(401, CannotAuthorize.__name__, 'Cannot authorize token request.', headers=headers)
 

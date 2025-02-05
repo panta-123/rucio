@@ -62,7 +62,7 @@ IDPSECRETS = config_get('oidc', 'idpsecrets', False)
 # expected audience for access token
 EXPECTED_OIDC_AUDIENCE = config_get('oidc', 'expected_audience', False, 'rucio')
 # if using RFC8707 we use this as aud for access token.
-# this value takes precendence over EXPECTED_OIDC_AUDIENCE
+# this value takes precedence over EXPECTED_OIDC_AUDIENCE
 EXPECTED_OIDC_RESOURCE = config_get('oidc', 'expected_resource', False, '')
 
 # The 'openid' scope is always required for an ID token to be issued.
@@ -110,7 +110,7 @@ class IDPSecretLoad:
             return vo_user_auth_config[0]
         else:
             if len(vo_user_auth_config) > 1:
-                raise ValueError("issuer nickname is required for since server has multiple issuer configured.")
+                raise ValueError("issuer nickname is required since server has multiple issuer configured.")
         for issuer_config in vo_user_auth_config:
             if issuer_config["issuer_nickname"] == issuer_nickname:
                 return issuer_config
@@ -380,7 +380,7 @@ def request_token(
 
     # Access IDP configurations within the VO
     issuer = client_config.get("issuer")
-    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"]  # type: ignore
+    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"]
     client_id = client_config.get("client_id")
     client_secret = client_config.get("client_secret")
 
@@ -689,6 +689,7 @@ def get_token_oidc(
 def refresh_cli_auth_token(
     token_string: str,
     account: str,
+    issuer_nickname: Optional[str] = None,
     vo: str = 'def',
     *,
     session: "Session"
@@ -736,7 +737,7 @@ def refresh_cli_auth_token(
             return new_token_string, epoch_exp
 
         # asking for a refresh of this token
-        new_token = __refresh_token_oidc(account_token, vo=vo, session=session)
+        new_token = __refresh_token_oidc(account_token, issuer_nickname, vo=vo, session=session)
         new_token_string = new_token['token']
         epoch_exp = int(floor((new_token['expires_at'] - datetime(1970, 1, 1)).total_seconds()))
         return new_token_string, epoch_exp
@@ -925,6 +926,7 @@ def __change_refresh_state(
 @transactional_session
 def __refresh_token_oidc(
     token_object: models.Token,
+    issuer_nickname: Optional[str] = None,
     vo: str = 'def',
     *,
     session: "Session"
@@ -963,7 +965,7 @@ def __refresh_token_oidc(
     decoded_refresh_token = jwt.decode(refresh_token, options={"verify_signature": False})
     issuer_url = decoded_refresh_token.get('iss')
     idpsecret_config_loader = IDPSecretLoad()
-    idp_config_vo = idpsecret_config_loader.get_vo_user_auth_config(vo)
+    idp_config_vo = idpsecret_config_loader.get_vo_user_auth_config(vo, issuer_nickname=issuer_nickname)
     issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer_url)["token_endpoint"]
     client_id = idp_config_vo["client_id"]
     client_secret = idp_config_vo["client_secret"]

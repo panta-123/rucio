@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 def refresh_cli_auth_token(
     token_string: str,
     account: str,
+    issuer_nickname: Optional[str] = None,
     vo: str = 'def',
     *,
     session: "Session"
@@ -45,7 +46,7 @@ def refresh_cli_auth_token(
     :return: tuple of (access token, expiration epoch), None otherswise
     """
     internal_account = InternalAccount(account, vo=vo)
-    return oidc.refresh_cli_auth_token(token_string, internal_account, session=session)
+    return oidc.refresh_cli_auth_token(token_string, internal_account, issuer_nickname=issuer_nickname, vo=vo, session=session)
 
 
 @transactional_session

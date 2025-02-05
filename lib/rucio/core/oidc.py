@@ -83,6 +83,12 @@ LEEWAY_SECS = 120
 
 
 class IDPSecretLoad:
+    """
+    Class to load and manage Identity Provider secrets from a JSON configuration file.
+
+    :param config_file: Path to the JSON configuration file.
+    """
+
     def __init__(self, config_file: str = IDPSECRETS):
         """Initialize with a JSON configuration file."""
         self.config_file = config_file
@@ -100,7 +106,14 @@ class IDPSecretLoad:
         self._validate_config()
 
     def get_vo_user_auth_config(self, vo: str = "def", issuer_nickname: Optional[str] = None) -> Optional[dict[str, str]]:
-        """Retrieve the issuer configuration for a VO."""
+        """
+        Retrieve the issuer configuration for a VO.
+
+        :param vo: Virtual Organization identifier.
+        :param issuer_nickname: Optional issuer nickname.
+        :returns: Issuer configuration dictionary.
+        :raises: ValueError if VO or issuer nickname is not found.
+        """
         config = self._config.get(vo)
         if not config:
             raise ValueError(f"VO '{vo}' not found in the configuration.")
@@ -116,7 +129,13 @@ class IDPSecretLoad:
                 return issuer_config
 
     def get_client_credential_client(self, vo: str = "def") -> dict[str, str]:
-        """Retrieve client credentials for the specified VO."""
+        """
+        Retrieve client credentials for the specified VO.
+
+        :param vo: Virtual Organization identifier.
+        :returns: Client credentials dictionary.
+        :raises: ValueError if VO is not found.
+        """
         config = self._config.get(vo)
         if not config:
             raise ValueError(f"VO '{vo}' not found in the configuration.")
@@ -126,6 +145,13 @@ class IDPSecretLoad:
         return vo_client_credential_config
 
     def get_config_from_clientid_issuer(self, client_id: str, issuer: str) -> dict[str, str]:
+        """
+        Retrieve configuration based on client ID and issuer.
+
+        :param client_id: Client ID.
+        :param issuer: Issuer URL.
+        :returns: Configuration dictionary.
+        """
         config = self._config
         all_config = list(config.values())
         for vo_config in all_config:
@@ -135,11 +161,22 @@ class IDPSecretLoad:
                     return issuer_auth_config
 
     def is_valid_issuer(self, issuer_url: str, vo: str = "def", issuer_nickname: Optional[str] = None) -> bool:
-        """Check if the given issuer URL matches the VO's configured issuer."""
+        """
+        Check if the given issuer URL matches the VO's configured issuer.
+
+        :param issuer_url: Issuer URL.
+        :param vo: Virtual Organization identifier.
+        :param issuer_nickname: Optional issuer nickname.
+        :returns: True if the issuer URL is valid, False otherwise.
+        """
         return self.get_vo_user_auth_config(vo, issuer_nickname=issuer_nickname).get("issuer") == issuer_url
 
     def _validate_config(self) -> None:
-        """Validate the configuration format."""
+        """
+        Validate the configuration format.
+
+        :raises: ValueError if the configuration is invalid.
+        """
         if not self._config:
             raise ValueError("Configuration is empty or invalid.")
 
@@ -170,11 +207,12 @@ def _token_cache_get(
     key: str,
     min_lifetime: int = TOKEN_MIN_LIFETIME,
 ) -> Optional[str]:
-    """Retrieve a token from the cache.
+    """
+    Retrieve a token from the cache.
 
-    Return ``None`` if the cache backend did not return a value, the value is
-    not a valid JWT, or the token has a remaining lifetime less than
-    ``min_lifetime`` seconds.
+    :param key: Cache key.
+    :param min_lifetime: Minimum lifetime of the token in seconds.
+    :returns: Token string if valid, None otherwise.
     """
     value = REGION.get(key)
     if isinstance(value, NoValue):
@@ -202,10 +240,11 @@ def _token_cache_get(
 
 
 def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
-    """_summary_
+    """
+    Retrieve the discovery metadata for an issuer.
 
-    :param str issuer_url: _description_
-    :return dict[str, Any]: _description_
+    :param issuer_url: Issuer URL.
+    :returns: Discovery metadata dictionary.
     """
     # Check if the JWKS content is already cached
     cache_key = f"discovery_metadata_{issuer_url}"
@@ -436,28 +475,13 @@ def get_auth_oidc(
     **kwargs
 ) -> Optional[str]:
     """
-    Assembles the authorization request of the Rucio Client tailored to the Rucio user
-    & Identity Provider. Saves authentication session parameters in the oauth_requests
-    DB table (for later use-cases). This information is saved for the token lifetime
-    of a token to allow token exchange and refresh.
-    Returns authorization URL as a string or a redirection url to
-    be used in user's browser for authentication.
+    Assemble the authorization request of the Rucio Client tailored to the Rucio user & Identity Provider.
 
-    :param account: Rucio Account identifier as a string.
-    :param auth_scope: space separated list of scope names. Scope parameter
-                       defines which user's info the user allows to provide
-                       to the Rucio Client.
-    :param audience: audience for which tokens are requested (EXPECTED_OIDC_AUDIENCE is the default)
-    :param polling: If True, '_polling' string will be appended to the access_msg
-                    in the DB oauth_requests table to inform the authorization stage
-                    that the Rucio Client is polling the server for a token
-    :param refresh_lifetime: specifies how long the OAuth daemon should
-                             be refreshing this token. Default is 96 hours.
-    :param ip: IP address of the client as a string.
+    :param account: Rucio Account identifier.
+    :param vo: Virtual Organization (default: 'def').
     :param session: The database session in use.
-
-    :returns: User & Rucio OIDC Client specific Authorization or Redirection URL as a string
-              OR a redirection url to be used in user's browser for authentication.
+    :returns: Authorization URL as a string or a redirection URL.
+    :raises: CannotAuthenticate if the account does not exist.
     """
     # TO-DO - implement a check if that account already has a valid
     # token with the required scope and audience and return such token !
@@ -553,15 +577,13 @@ def get_token_oidc(
     session: "Session"
 ) -> Optional[dict[str, Optional[Union[str, bool]]]]:
     """
-    After Rucio User got redirected to Rucio /auth/oidc_token (or /auth/oidc_code)
-    REST endpoints with authz code and session state encoded within the URL.
-    These parameters are used to eventually gets user's info and tokens from IdP.
+    Retrieve user's info and tokens from IdP after redirection.
 
-    :param auth_query_string: IdP redirection URL query string (AuthZ code & user session state).
-    :param ip: IP address of the client as a string.
+    :param auth_query_string: IdP redirection URL query string.
+    :param ip: IP address of the client.
     :param session: The database session in use.
-
-    :returns:
+    :returns: Dictionary with token information.
+    :raises: CannotAuthenticate if the user session is invalid.
     """
     # parse auth_query_string
     parsed_authquery = parse_qs(auth_query_string)
@@ -696,13 +718,14 @@ def refresh_cli_auth_token(
     session: "Session"
 ) -> Optional[tuple[str, int]]:
     """
-    Checks if there is active refresh token and if so returns
-    either active token with expiration timestamp or requests a new
-    refresh and returns new access token.
-    :param token_string: token string
-    :param account: Rucio account for which token refresh should be considered
+    Refresh CLI authentication token if there is an active refresh token.
 
-    :return: tuple of (access token, expiration epoch), None otherwise
+    :param token_string: Token string.
+    :param account: Rucio account for which token refresh should be considered.
+    :param issuer_nickname: Optional issuer nickname.
+    :param vo: Virtual Organization (default: 'def').
+    :param session: The database session in use.
+    :returns: Tuple of (access token, expiration epoch) or None.
     """
     # only validated tokens are in the DB, check presence of token_string
     query = select(
@@ -779,14 +802,10 @@ def _delete_oauth_request_by_account_and_expiration(
     session: "Session"
 ) -> None:
     """
-    Delete an OAuth request by its account, and expiration time.
+    Delete an OAuth request by its account and expiration time.
 
     :param account: The account associated with the OAuth request.
-    :param expired_at: The expiration time of the OAuth request.
     :param session: Database session in use.
-
-    :returns: Number of deleted rows.
-    :raises RucioException: If an error occurs during deletion.
     """
     query = select(
         models.OAuthRequest.state
@@ -819,8 +838,8 @@ def __delete_expired_tokens_account(
     *,
     session: "Session"
 ) -> None:
-    """"
-    Deletes expired tokens from the database.
+    """
+    Delete expired tokens from the database.
 
     :param account: Account to delete expired tokens.
     :param session: The database session in use.
@@ -861,11 +880,12 @@ def __save_validated_token(
     """
     Save JWT token to the Rucio DB.
 
-    :param token: Authentication token as a variable-length string.
-    :param valid_dict: Validation Rucio dictionary as the output
-                       of the __get_rucio_jwt_dict function
-    :raises RucioException: on any error
+    :param token: Authentication token.
+    :param valid_dict: Validation Rucio dictionary.
+    :param extra_dict: Optional extra dictionary.
+    :param session: The database session in use.
     :returns: A dict with token and expires_at entries.
+    :raises: RucioException on any error.
     """
     try:
         if not extra_dict:
@@ -896,11 +916,13 @@ def __change_refresh_state(
     refresh: bool = False,
     *,
     session: "Session"
-):
+) -> None:
     """
-    Changes token refresh state to True/False.
+    Change token refresh state to True/False.
 
-    :param token:      the access token for which the refresh value should be changed.
+    :param token: The access token for which the refresh value should be changed.
+    :param refresh: Boolean indicating the refresh state.
+    :param session: The database session in use.
     """
     try:
         query = update(
@@ -931,18 +953,16 @@ def __refresh_token_oidc(
     vo: str = 'def',
     *,
     session: "Session"
-):
+) -> Optional[dict[str, Any]]:
     """
-    Requests new access and refresh tokens from the Identity Provider.
-    Assumption: The Identity Provider issues refresh tokens for one time use only and
-    with a limited lifetime. The refresh tokens are invalidated no matter which of these
-    situations happens first.
+    Request new access and refresh tokens from the Identity Provider.
 
-    :param token_object: Rucio models.Token DB row object
-
-    :returns: A dict with token and expires_at entries if all went OK, None if
-        refresh was not possible due to token invalidity or refresh lifetime
-        constraints. Otherwise, throws an an Exception.
+    :param token_object: Rucio models.Token DB row object.
+    :param issuer_nickname: Optional issuer nickname.
+    :param vo: Virtual Organization (default: 'def').
+    :param session: The database session in use.
+    :returns: A dict with token and expires_at entries if successful, None otherwise.
+    :raises: CannotAuthorize if the token refresh fails.
     """
     jwt_row_dict, extra_dict = {}, {}
     jwt_row_dict['account'] = token_object.account
@@ -1027,10 +1047,13 @@ def validate_jwt(
     *,
     session: "Session"
 ) -> dict[str, Any]:
-    """_summary_
+    """
+    Validate a JWT token.
 
-    :raises CannotAuthenticate: _description_
-    :return _type_: _description_
+    :param token: JWT token string.
+    :param session: The database session in use.
+    :returns: Token validation dictionary.
+    :raises: CannotAuthenticate if the token is invalid.
     """
     unverified_claims = jwt.get_unverified_claims(token)
     issuer_url = unverified_claims["iss"]
@@ -1071,19 +1094,20 @@ def validate_jwt(
 
 def oidc_identity_string(sub: str, iss: str) -> str:
     """
-    Transform IdP sub claim and issuers url into users identity string.
-    :param sub: users SUB claim from the Identity Provider
-    :param iss: issuer (IdP) https url
+    Transform IdP sub claim and issuer URL into user's identity string.
 
-    :returns: OIDC identity string "SUB=<usersid>, ISS=https://iam-test.ch/"
+    :param sub: User's SUB claim from the Identity Provider.
+    :param iss: Issuer (IdP) URL.
+    :returns: OIDC identity string.
     """
     return f"SUB={sub}, ISS={iss}"
 
 
 def token_dictionary(token: models.Token) -> dict[str, Any]:
-    """_summary_
+    """
+    Convert a token model to a dictionary.
 
-    :param models.Token token: token as Token model
-    :return _type_: _description_
+    :param token: Token model.
+    :returns: Dictionary with token and expires_at entries.
     """
     return {'token': token.token, 'expires_at': token.expired_at}

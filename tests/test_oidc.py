@@ -32,7 +32,6 @@ from jwkest.jwt import JWT
 from jwt.algorithms import RSAAlgorithm
 from oic import rndstr
 from sqlalchemy import select
-from your_module import IDPSecretLoad  # Import the class you want to test
 
 from rucio.common.config import config_get_bool
 from rucio.common.exception import CannotAuthenticate, DatabaseException, Duplicate
@@ -44,23 +43,24 @@ from rucio.core.oidc import IDPSecretLoad, _token_cache_get, _token_cache_set, g
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountType, IdentityType
 from rucio.db.sqla.session import get_session
+from rucio.tests.common import account_name_generator
 
 # Sample IDP secret mock data
 mock_idpsecrets = {
     "def": {
         "user_auth_client": [
             {
-                "issuer": "https://issuer.example.com",
-                "client_id": "client123",
+                "issuer": "https://mock-oidc-provider",
+                "client_id": "mock-client-id",
                 "client_secret": "secret",
-                "redirect_uris": ["https://redirect.example.com"],
+                "redirect_uris": "https://redirect.example.com",
                 "issuer_nickname": "example_issuer"
             }
         ],
         "client_credential_client": {
             "client_id": "client456",
             "client_secret": "secret456",
-            "issuer": "https://issuer.example.com"
+            "issuer": "https://mock-oidc-provider"
         }
     }
 }
@@ -81,8 +81,8 @@ def test_get_vo_user_auth_config(mock_idp_secret_load):
     # Test the method
     result = mock_idp_secret_load.get_vo_user_auth_config(vo="def")
     # Assertions
-    assert result["client_id"] == "client123"
-    assert result["issuer"] == "https://issuer.example.com"
+    assert result["client_id"] == "mock-client-id"
+    assert result["issuer"] == "https://mock-oidc-provider"
     mock_idp_secret_load.get_vo_user_auth_config.assert_called_once_with(vo="def")
 
 # Test for get_client_credential_client
@@ -93,7 +93,7 @@ def test_get_client_credential_client(mock_idp_secret_load):
     result = mock_idp_secret_load.get_client_credential_client(vo="def")
     # Assertions
     assert result["client_id"] == "client456"
-    assert result["issuer"] == "https://issuer.example.com"
+    assert result["issuer"] == "https://mock-oidc-provider"
     mock_idp_secret_load.get_client_credential_client.assert_called_once_with(vo="def")
 
 # Test for get_config_from_clientid_issuer
@@ -101,21 +101,21 @@ def test_get_config_from_clientid_issuer(mock_idp_secret_load):
     # Mock the method behavior
     mock_idp_secret_load.get_config_from_clientid_issuer.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
     # Test the method
-    result = mock_idp_secret_load.get_config_from_clientid_issuer(client_id="client123", issuer="https://issuer.example.com")
+    result = mock_idp_secret_load.get_config_from_clientid_issuer(client_id="mock-client-id", issuer="https://mock-oidc-provider")
     # Assertions
-    assert result["client_id"] == "client123"
-    assert result["issuer"] == "https://issuer.example.com"
-    mock_idp_secret_load.get_config_from_clientid_issuer.assert_called_once_with(client_id="client123", issuer="https://issuer.example.com")
+    assert result["client_id"] == "mock-client-id"
+    assert result["issuer"] == "https://mock-oidc-provider"
+    mock_idp_secret_load.get_config_from_clientid_issuer.assert_called_once_with(client_id="mock-client-id", issuer="https://mock-oidc-provider")
 
 # Test for is_valid_issuer
 def test_is_valid_issuer(mock_idp_secret_load):
     # Mock the method behavior
     mock_idp_secret_load.is_valid_issuer.return_value = True
     # Test the method
-    result = mock_idp_secret_load.is_valid_issuer(issuer_url="https://issuer.example.com", vo="def")
+    result = mock_idp_secret_load.is_valid_issuer(issuer_url="https://mock-oidc-provider", vo="def")
     # Assertions
     assert result is True
-    mock_idp_secret_load.is_valid_issuer.assert_called_once_with(issuer_url="https://issuer.example.com", vo="def")
+    mock_idp_secret_load.is_valid_issuer.assert_called_once_with(issuer_url="https://mock-oidc-provider", vo="def")
 
 
 @pytest.fixture
@@ -141,92 +141,91 @@ def generate_rsa_keypair():
     return private_key, public_key, private_pem, public_pem
 
 @pytest.fixture
-def mock_jwks(generate_rsa_keypair):
+def get_jwks_content(generate_rsa_keypair):
     """Mock JWKS content using the generated RSA public key."""
     _, public_key, _, _ = generate_rsa_keypair
 
-    public_numbers = public_key.public_numbers()
-    jwk = {
-        "keys": [
-            {
-                "kid": "test-key",
-                "kty": "RSA",
-                "alg": "RS256",
-                "use": "sig",
-                "n": RSAAlgorithm.to_jwk({"n": public_numbers.n, "e": public_numbers.e})["n"],
-                "e": RSAAlgorithm.to_jwk({"n": public_numbers.n, "e": public_numbers.e})["e"]
-            }
+    jwk = {"keys": [
+        {
+            "kid": "test-key",
+            "kty": "RSA",
+            "alg": "RS256",
+            "use": "sig",
+            **RSAAlgorithm.to_jwk(public_key, as_dict=True)
+        }
         ]
     }
     return jwk
+  
 
 @pytest.fixture
-def mock_oidc_discovery():
+def get_discovery_metadata():
     """Mock OIDC discovery metadata."""
     return {
         "issuer": "https://mock-oidc-provider",
         "jwks_uri": "https://mock-oidc-provider/.well-known/jwks.json",
-        "token_endpoint": "https://mock-oidc-provider/token"
+        "token_endpoint": "https://mock-oidc-provider/token",
+        "authorization_endpoint": "https://mock-oidc-provider/authorize",
     }
 
 @pytest.fixture
-def encode_jwt(mock_jwks, generate_rsa_keypair):
+def encode_jwt_id_token(generate_rsa_keypair):
     """Generate a JWT using the mock JWKS private key."""
     private_key, _, _, _ = generate_rsa_keypair
 
     payload = {
         "sub": "1234567890",
         "name": "John Doe",
-        "iat": 1700000000,
-        "exp": 1700003600,
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(hours=1),
+        "nbf": datetime.utcnow(),
         "iss": "https://mock-oidc-provider",
         "aud": "mock-client-id",
         "nonce": "random-nonce",
-        "scope": "openid profile email"
     }
 
     token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
     return token
 
+@pytest.fixture
+def encode_jwt_id_token_with_argument(generate_rsa_keypair):
+    """Generate a JWT using the mock JWKS private key with dynamic `aud` and `scope`."""
+    def _generate_jwt(nonce):
+        private_key, _, _, _ = generate_rsa_keypair
 
-def get_jwks_content(issuer_url: str):
-    """Mock function to return JWKS content."""
-    return mock_jwks
+        payload = {
+            "sub": "knownsub",
+            "name": "John Doe",
+            "iat": datetime.utcnow(),
+            "exp": datetime.utcnow() + timedelta(hours=1),
+            "nbf": datetime.utcnow(),
+            "iss": "https://mock-oidc-provider",
+            "aud": "mock-client-id",
+            "nonce": nonce,
+        }
 
-def test_validate_token_success(encode_jwt):
-    """Test successful token validation."""
-    decoded_token = validate_token(
-        token=encode_jwt,
-        issuer_url="https://mock-oidc-provider",
-        audience="mock-client-id",
-        token_type="id_token",
-        nonce="random-nonce"
-    )
-    assert decoded_token["sub"] == "1234567890"
-    assert decoded_token["iss"] == "https://mock-oidc-provider"
+        token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+        return token
+    return _generate_jwt
 
-def test_validate_token_invalid_nonce(encode_jwt):
-    """Test failure due to incorrect nonce."""
-    with pytest.raises(CannotAuthenticate, match="Invalid nonce in ID token."):
-        validate_token(
-            token=encode_jwt,
-            issuer_url="https://mock-oidc-provider",
-            audience="mock-client-id",
-            token_type="id_token",
-            nonce="wrong-nonce"
-        )
+@pytest.fixture
+def encode_jwt_access_token(generate_rsa_keypair):
+    """Generate a JWT using the mock JWKS private key."""
+    private_key, _, _, _ = generate_rsa_keypair
 
-def test_validate_token_missing_scope(encode_jwt):
-    """Test failure when access token is missing required scope."""
-    with pytest.raises(CannotAuthenticate, match="Access token doesn't have required scope."):
-        validate_token(
-            token=encode_jwt,
-            issuer_url="https://mock-oidc-provider",
-            audience="mock-client-id",
-            token_type="access_token",
-            scopes=["admin"]
-        )
+    payload = {
+        "sub": "1234567890",
+        "name": "John Doe",
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(hours=1),
+        "nbf": datetime.utcnow(),
+        "iss": "https://mock-oidc-provider",
+        "aud": "rucio",
+        "scope": "test"
+    }
 
+    token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+    return token
 
 @pytest.fixture
 def encode_jwt_with_argument(generate_rsa_keypair):
@@ -235,10 +234,11 @@ def encode_jwt_with_argument(generate_rsa_keypair):
         private_key, _, _, _ = generate_rsa_keypair
 
         payload = {
-            "sub": "1234567890",
+            "sub": "knownsub",
             "name": "John Doe",
-            "iat": 1700000000,
-            "exp": 1700003600,
+            "iat": datetime.utcnow(),
+            "exp": datetime.utcnow() + timedelta(hours=1),
+            "nbf": datetime.utcnow(),
             "iss": "https://mock-oidc-provider",
             "aud": aud,  # Dynamic audience
             "scope": scope  # Dynamic scope
@@ -248,16 +248,111 @@ def encode_jwt_with_argument(generate_rsa_keypair):
         return token
     return _generate_jwt
 
+@pytest.fixture
+def encode_jwt_refresh_token(generate_rsa_keypair):
+    """Generate a refresh JWT using the mock JWKS private key."""
+    private_key, _, _, _ = generate_rsa_keypair
+
+    payload = {
+        "sub": "1234567890",
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(days=30),  # Longer validity for refresh tokens
+        "nbf": datetime.utcnow(),
+        "iss": "https://mock-oidc-provider",
+        "aud": "rucio"
+    }
+
+    token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+    return token
+
+
+def test_validate_token_success(encode_jwt_id_token, get_discovery_metadata, get_jwks_content):
+    """Test successful token validation."""
+    # Patching get_discovery_metadata and get_jwks_content using unittest.mock.patch
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        # Call the function being tested
+        decoded_token = validate_token(
+            token=encode_jwt_id_token,
+            issuer_url=get_discovery_metadata["issuer"],
+            audience="mock-client-id",
+            token_type="id_token",
+            nonce="random-nonce"
+        )
+        
+        # Assertions based on expected decoded values
+        assert decoded_token["sub"] == "1234567890"
+        assert decoded_token["iss"] == get_discovery_metadata["issuer"]
+        
+        # Verify that get_discovery_metadata and get_jwks_content were called
+        mock_get_jwks_content.assert_called_once()
+
+def test_validate_token_invalid_nonce(encode_jwt_id_token, get_jwks_content):
+    """Test failure due to incorrect nonce."""
+
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        with pytest.raises(CannotAuthenticate, match="Invalid nonce in ID token."):
+            validate_token(
+                token=encode_jwt_id_token,
+                issuer_url="https://mock-oidc-provider",
+                audience="mock-client-id",
+                token_type="id_token",
+                nonce="wrong-nonce"
+            )
+
+from rucio.core.config import remove_option as config_remove
+from rucio.core.config import set as config_set
+
+
+def test_validate_token_extra_acess_token_scope(encode_jwt_access_token, get_jwks_content):
+    """Test failure due to incorrect nonce."""
+    config_set('oidc', 'extra_access_token_scope', 'test')
+
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        decoded_token = validate_token(
+            token=encode_jwt_access_token,
+            issuer_url="https://mock-oidc-provider",
+            audience="rucio",
+            token_type="access_token",
+            scopes=["test"]
+        )        
+        # Verify that get_discovery_metadata and get_jwks_content were called
+        mock_get_jwks_content.assert_called_once()
+    config_remove('oidc', 'extra_access_token_scope')
+
+"""
+def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_access_token, get_jwks_content):
+    config_set('oidc', 'extra_access_token_scope', 'test')
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        with pytest.raises(CannotAuthenticate):
+            decoded_token = validate_token(
+                token=encode_jwt_access_token,
+                issuer_url="https://mock-oidc-provider",
+                audience="mock-client-id",
+                token_type="access_token",
+                scopes= ["wrongscope"]
+            )
+    config_remove('oidc', 'extra_access_token_scope')
+"""
+
+@pytest.fixture
+def mock_idp_secret_load():
+    with patch("rucio.core.oidc.IDPSecretLoad") as MockIDPSecretLoad:
+        mock_instance = Mock()  # Create a Mock instance directly
+        mock_instance._config = mock_idpsecrets
+        mock_instance.get_client_credential_client.return_value = mock_idpsecrets["def"]["client_credential_client"]
+        mock_instance.get_vo_user_auth_config.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
+        mock_instance.get_config_from_clientid_issuer.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
+        MockIDPSecretLoad.return_value = mock_instance  # Make the class instantiation return the mock instance
+        yield mock_instance
+
 @patch("rucio.core.oidc.get_discovery_metadata")
-@patch("rucio.core.oidc.IDPSecretLoad")
 @patch('requests.post')
 @pytest.mark.parametrize("audience, scope", [
-    ("https://mydestrse.com", "storage.modify:/mydir storage.read:/mydir"),
     ("https://mysourcerse.com", "storage.read:/mydir"),
-    ("https://mydestrse.com", "storage.modify:/mydir/myfile.txt")
+    ("https://mydestrse.com", "storage.modify:/mydir storage.read:/mydir"),
+    ("https://mysourcerse.com", "storage.read:/mydir/myfile.txt")
 ])
-def test_request_token_success(mock_get_discovery_metadata, mock_IDPSecretLoad, encode_jwt_with_argument, mock_post, audience, scope):
-
+def test_request_token_success(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_with_argument, audience, scope, get_discovery_metadata):
     mock_token = encode_jwt_with_argument(audience, scope)
     # Prepare mock response
     mock_response = Mock()
@@ -266,15 +361,14 @@ def test_request_token_success(mock_get_discovery_metadata, mock_IDPSecretLoad, 
     # Mock the requests.post to return the mock_response
     mock_post.return_value = mock_response
 
-    mock_get_discovery_metadata.return_value = mock_oidc_discovery
-    mock_IDPSecretLoad.return_value = mock_idp_secret_load
-    mock_idp_secret_load.get_client_credential_client.return_value = mock_idpsecrets["def"]["client_credential_client"]
+    mock_get_discovery_metadata.return_value = get_discovery_metadata
+    
 
     result = request_token(scope=scope, audience=audience, vo="def", use_cache=False)
     # Assertions to ensure everything works as expected
     mock_post.assert_called_once()  # Ensure the post request was made
     mock_post.assert_called_with(
-        url=mock_oidc_discovery["token_endpoint"],
+        url=get_discovery_metadata["token_endpoint"],
         auth=(mock_idpsecrets["def"]["client_credential_client"]["client_id"], mock_idpsecrets["def"]["client_credential_client"]["client_secret"]),
         data={
             'grant_type': 'client_credentials',
@@ -289,6 +383,193 @@ def test_request_token_success(mock_get_discovery_metadata, mock_IDPSecretLoad, 
     # Validate the claims
     assert decoded_token["aud"] == audience
     assert decoded_token["scope"] == scope
+
+def setup_test_account():
+    usr = account_name_generator()
+    account = InternalAccount(usr)
+    db_session = get_session()
+    
+    add_account(account, AccountType.USER, 'rucio@email.com', session=db_session)
+    add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider', IdentityType.OIDC, account, 'rucio@email.com', session=db_session)
+
+    return account, db_session
+
+def get_idp_auth_params(auth_url, session):
+    urlparsed = urlparse(auth_url)
+    idp_auth_url = redirect_auth_oidc(urlparsed.query, session=session)
+    idp_urlparsed = urlparse(idp_auth_url)
+    return parse_qs(idp_urlparsed.query)
+
+@patch("rucio.core.oidc.get_discovery_metadata")
+def test_get_auth_oidc(mock_get_discovery_metadata, mock_idp_secret_load, get_discovery_metadata):
+    account, db_session = setup_test_account()
+    
+    kwargs = {
+        'auth_scope': 'openid profile',
+        'audience': 'rucio',    
+        'issuer': 'https://mock-oidc-provider',
+        'polling': False,
+        'refresh_lifetime': 96,
+        'ip': None,
+        'webhome': None,
+    }
+    
+    mock_get_discovery_metadata.return_value = get_discovery_metadata
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+    
+    redirect_url = mock_idpsecrets["def"]["user_auth_client"][0]["redirect_uris"]
+    assert f"{redirect_url}/auth/oidc_redirect?" in auth_url and '_polling' not in auth_url
+    
+    idp_params = get_idp_auth_params(auth_url, db_session)
+    
+    assert 'state' in idp_params
+    assert 'nonce' in idp_params
+    assert idp_params["audience"][0] in kwargs["audience"]
+    assert idp_params["client_id"][0] in mock_idpsecrets["def"]["user_auth_client"][0]["client_id"]
+    assert 'code' in idp_params["response_type"][0]
+
+    # Test polling mode
+    kwargs["polling"] = True
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+    assert f"{redirect_url}/auth/oidc_redirect?" in auth_url and '_polling' in auth_url
+
+    # Test modified auth_scope
+    kwargs["polling"] = False
+    kwargs["auth_scope"] = "openid profile extra_scope"
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+    
+    idp_params = get_idp_auth_params(auth_url, db_session)
+    assert kwargs["auth_scope"] in idp_params["scope"][0]
+
+    # Test unknown identity
+    new_account, _ = setup_test_account()
+    auth_url = get_auth_oidc(new_account, session=db_session, **kwargs)
+    assert auth_url is None
+
+    
+@patch("rucio.core.oidc.get_discovery_metadata")
+@patch('requests.post')
+def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_id_token_with_argument, encode_jwt_access_token, get_discovery_metadata, get_jwks_content):
+    account, db_session = setup_test_account()
+
+    kwargs = {
+        'auth_scope': 'openid profile',
+        'audience': 'rucio',    
+        'issuer': 'https://mock-oidc-provider',
+        'polling': False,
+        'refresh_lifetime': 96,
+        'ip': None,
+        'webhome': None,
+    }
+    
+    mock_get_discovery_metadata.return_value = get_discovery_metadata
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+
+    idp_params = get_idp_auth_params(auth_url, db_session)
+    state, nonce = idp_params["state"][0], idp_params["nonce"][0]
+    # created id_token with same nonce
+    id_token = encode_jwt_id_token_with_argument(nonce)
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()  # No exception for a successful response
+    mock_response.json.return_value = {"access_token": encode_jwt_access_token, "id_token": id_token, "expires_in": 3600, "scope": "test"}
+    mock_post.return_value = mock_response
+    auth_query_string = f"code=test_code&state={state}"
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        result = get_token_oidc(auth_query_string, session=db_session)
+        assert 'fetchcode' in result
+        db_token = get_token_row(encode_jwt_access_token, account=account, session=db_session)
+        assert db_token
+        assert db_token.token == encode_jwt_access_token
+        assert db_token.refresh is False
+        assert db_token.account == account
+        assert db_token.identity == 'SUB=knownsub, ISS=https://mock-oidc-provider'
+        assert db_token.audience == 'rucio'
+
+
+    # wrong state validation
+    auth_query_string = f"code=test_code&state=wrongstate"
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        with pytest.raises(CannotAuthenticate):
+            get_token_oidc(auth_query_string, session=db_session)
+    
+    
+    mock_response = Mock()
+    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("400 Client Error: Bad Request for url")
+    mock_response.json.return_value = {"error": "invalid_grant", "error_description": "Invalid authorization code"}
+    mock_post.return_value = mock_response
+    auth_query_string = f"code=wrongcode&state={state}"
+    
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        with pytest.raises(requests.exceptions.HTTPError, match="400 Client Error: Bad Request for url"):
+            get_token_oidc(auth_query_string, session=db_session)
+    
+
+@patch("rucio.core.oidc.get_discovery_metadata")
+@patch('requests.post')
+def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_id_token_with_argument, encode_jwt_access_token, get_discovery_metadata, get_jwks_content):
+    account, db_session = setup_test_account()
+
+    kwargs = {
+        'auth_scope': 'openid profile',
+        'audience': 'rucio',    
+        'issuer': 'https://mock-oidc-provider',
+        'polling': True,
+        'refresh_lifetime': 96,
+        'ip': None,
+        'webhome': None,
+    }
+    
+    mock_get_discovery_metadata.return_value = get_discovery_metadata
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+
+    idp_params = get_idp_auth_params(auth_url, db_session)
+    state, nonce = idp_params["state"][0], idp_params["nonce"][0]
+    # created id_token with same nonce
+    id_token = encode_jwt_id_token_with_argument(nonce)
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()  # No exception for a successful response
+    mock_response.json.return_value = {"access_token": encode_jwt_access_token, "id_token": id_token, "expires_in": 3600, "scope": "test"}
+    mock_post.return_value = mock_response
+    auth_query_string = f"code=test_code&state={state}"
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        result = get_token_oidc(auth_query_string, session=db_session)
+        assert 'polling' in result
+        assert result['polling']
+
+
+@patch("rucio.core.oidc.get_discovery_metadata")
+@patch('requests.post')
+def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_id_token_with_argument, encode_jwt_access_token, encode_jwt_refresh_token, get_discovery_metadata, get_jwks_content):
+    account, db_session = setup_test_account()
+
+    kwargs = {
+        'auth_scope': 'openid profile offline_access',
+        'audience': 'rucio',    
+        'issuer': 'https://mock-oidc-provider',
+        'polling': False,
+        'refresh_lifetime': 96,
+        'ip': None,
+        'webhome': None,
+    }
+    
+    mock_get_discovery_metadata.return_value = get_discovery_metadata
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+
+    idp_params = get_idp_auth_params(auth_url, db_session)
+    state, nonce = idp_params["state"][0], idp_params["nonce"][0]
+    # created id_token with same nonce
+    id_token = encode_jwt_id_token_with_argument(nonce)
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()  # No exception for a successful response
+    mock_response.json.return_value = {"refresh_token": encode_jwt_refresh_token, "access_token": encode_jwt_access_token, "id_token": id_token, "expires_in": 3600, "scope": "test"}
+    mock_post.return_value = mock_response
+    auth_query_string = f"code=test_code&state={state}"
+    with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+        result = get_token_oidc(auth_query_string, session=db_session)
+        db_token = get_token_row(encode_jwt_access_token, account=account, session=db_session)
+        assert db_token
+        assert db_token.refresh_token == encode_jwt_refresh_token
+
 
 
 def save_validated_token(token, valid_dict, extra_dict=None, session=None):
@@ -345,503 +626,3 @@ def get_token_row(access_token, account=None, session=None) -> models.Token:
     if account and token:
         assert token.account == account
     return token
-
-
-class MockResponse:
-    def __init__(self, json_data):
-        self.json_data = json_data
-
-    def json(self):
-        return self.json_data
-
-
-
-@pytest.mark.noparallel(reason='fails when run in parallel')
-class TestAuthCoreAPIoidc:
-
-    """ OIDC Core API Testing: Testing creation of authorization URL for Rucio Client,
-        token request, token exchange, admin token request, finding token for an account.
-        TO-DO tests for: exchange_token_oidc, get_token_for_account_operation, get_admin_token_oidc
-
-        setUp function (below) runs first (nose does this automatically)
-
-    """
-    # pylint: disable=unused-argument
-
-    def setup_method(self):
-        if config_get_bool('common', 'multi_vo', raise_exception=False, default=False):
-            self.vo = {'vo': get_vo()}
-        else:
-            self.vo = {}
-
-        self.db_session = get_session()
-        self.accountstring = 'test_' + rndstr()
-        self.accountstring = self.accountstring.lower()
-        self.account = InternalAccount(self.accountstring, **self.vo)
-        try:
-            add_account(self.account, AccountType.USER, 'rucio@email.com', session=self.db_session)
-        except Duplicate:
-            pass
-
-        try:
-            add_account_identity('SUB=knownsub, ISS=https://test_issuer/', IdentityType.OIDC, self.account, 'rucio_test@test.com', session=self.db_session)
-        except DatabaseException:
-            pass
-
-    def teardown_method(self):
-        self.db_session.remove()
-
-    def get_auth_init_and_mock_response(self, code_response, account=None, polling=False, auto=True, session=None):
-        """
-        OIDC creates entry in oauth_requests table
-
-        returns: auth_query_string (state=xxx&code=yyy
-                 as would be returned from the IdP
-                 after a successful authentication)
-
-        """
-        if not account:
-            account = self.account
-
-        kwargs = {
-            'auth_scope': 'openid profile',
-            'audience': 'rucio',
-            'issuer': 'dummy_admin_iss_nickname',
-            'auto': auto,
-            'polling': polling,
-            'refresh_lifetime': 96,
-            'ip': None,
-            'webhome': 'https://rucio-test.cern.ch/ui',
-        }
-        auth_url = get_auth_oidc(account, session=session, **kwargs)
-        print("[get_auth_init_and_mock_response] got auth_url:", auth_url)
-        # get the state from the auth_url and add an arbitrary code value to the query string
-        # to mimic a return of IdP with authz_code
-        urlparsed = urlparse(auth_url)
-        if ('_polling' in auth_url) or (not polling and not auto):
-            auth_url = redirect_auth_oidc(urlparsed.query, session=session)
-            print("[get_auth_init_and_mock_response] got redirect auth_url:", auth_url)
-            urlparsed = urlparse(auth_url)
-        urlparams = parse_qs(urlparsed.query)
-        assert 'state' in urlparams
-        state = urlparams["state"][0]
-        assert 'nonce' in urlparams
-        nonce = urlparams["nonce"][0]
-        auth_query_string = "state=" + state + "&code=" + code_response
-        return {'state': state, 'nonce': nonce, 'auth_url': auth_url, 'auth_query_string': auth_query_string}
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_auth_oidc_url(self, mock_clients, mock_oidc_client):
-        """ OIDC Auth URL generation
-
-            Runs the Test:
-
-            - calling the respective function
-
-            End:
-
-            - checking the URL to be as expected
-        """
-
-        mock_oidc_client.side_effect = get_mock_oidc_client
-
-        try:
-            kwargs = {'auth_scope': 'openid profile',
-                      'audience': 'rucio',
-                      'issuer': 'dummy_admin_iss_nickname',
-                      'auto': False,
-                      'polling': False,
-                      'refresh_lifetime': 96,
-                      'ip': None,
-                      'webhome': None}
-            # testing classical CLI login init, expecting user to be
-            # redirected via Rucio Auth server to the IdP issuer for login
-            auth_url = get_auth_oidc(self.account, session=self.db_session, **kwargs)
-            assert 'https://test_redirect_string/auth/oidc_redirect?' in auth_url and '_polling' not in auth_url
-
-            # testing classical CLI login init, expecting user to be redirected
-            # via Rucio Auth server to the IdP issuer for login and Rucio Client
-            # to be polling the Rucio Auth server for token until done so
-            kwargs['polling'] = True
-            auth_url = get_auth_oidc(self.account, session=self.db_session, **kwargs)
-            assert 'https://test_redirect_string/auth/oidc_redirect?' in auth_url and '_polling' in auth_url
-
-            # testing classical CLI login init, with the Rucio Client being
-            # trusted with IdP user credentials (auto = True). Rucio Client
-            # gets directly the auth_url pointing it to the IdP
-            kwargs['polling'] = False
-            kwargs['auto'] = True
-            auth_url = get_auth_oidc(self.account, session=self.db_session, **kwargs)
-            assert 'https://test_auth_url_string' in auth_url
-
-            # testing webui login URL (auto = True, polling = False)
-            kwargs['webhome'] = 'https://back_to_rucio_ui_page'
-            auth_url = get_auth_oidc(InternalAccount('webui', **self.vo), session=self.db_session, **kwargs)
-            assert 'https://test_auth_url_string' in auth_url
-
-        except:
-            print(traceback.format_exc())
-
-    def test_get_token_oidc_unknown_state(self):
-        """ OIDC Token request with unknown state from IdP
-
-            Runs the Test:
-
-            - requesting token with parameters without corresponding
-              DB entry (in oauth_Requests table)
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        try:
-            auth_query_string = "state=" + rndstr() + "&code=" + rndstr()
-            get_token_oidc(auth_query_string, session=self.db_session)
-        except CannotAuthenticate:
-            assert "could not keep track of responses from outstanding requests" in traceback.format_exc()
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_token_oidc_unknown_code(self, mock_clients, mock_oidc_client):
-        """ OIDC Token request with unknown code from IdP
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        try:
-            auth_init_response = self.get_auth_init_and_mock_response(code_response='wrongcode', session=self.db_session)
-            # check if DB entry exists
-            oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-            assert oauth_session_row
-            get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        except CannotAuthenticate:
-            assert "Unknown AuthZ code provided" in traceback.format_exc()
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_token_oidc_unknown_nonce(self, mock_clients, mock_oidc_client):
-        """ OIDC Token request with unknown nonce from IdP
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        try:
-            auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), session=self.db_session)
-            # check if DB entry exists
-            oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-            assert oauth_session_row
-
-            NEW_TOKEN_DICT['id_token']['nonce'] = 'wrongnonce'
-            get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        except CannotAuthenticate:
-            assert "This points to possible replay attack !" in traceback.format_exc()
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_token_oidc_unknown_account_identity(self, mock_clients, mock_oidc_client):
-        """ OIDC Token request with unknown account identity in the token from IdP
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        try:
-            auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), session=self.db_session)
-            # check if DB entry exists
-            oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-            assert oauth_session_row
-
-            NEW_TOKEN_DICT['id_token'] = {'sub': 'unknownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-            get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        except CannotAuthenticate:
-            assert "OIDC identity 'SUB=unknownsub, ISS=https://test_issuer/' of the '" + self.accountstring + "' account is unknown to Rucio." in traceback.format_exc()
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_token_oidc_unknown_webui_account_identity(self, mock_clients, mock_oidc_client):
-        """ OIDC Token request with unknown webui identity in the token from IdP
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), account=InternalAccount('webui', **self.vo), session=self.db_session)
-        # check if DB entry exists
-        oauth_session_row = get_oauth_session_row(InternalAccount('webui', **self.vo), state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'unknownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict['webhome'] is None
-        assert token_dict['token'] is None
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_access_token_oidc_success(self, mock_clients, mock_oidc_client):
-        """ OIDC Request for access token - success
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - filling the right identity into the token (mocking the IdP response)
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), session=self.db_session)
-        oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # mocking the token response
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        db_token = get_token_row(access_token, account=self.account, session=self.db_session)
-        assert db_token
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_access_token_oidc_webui_success(self, mock_clients, mock_oidc_client):
-        """ OIDC Request for access token via webui 'account' - success
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - filling the right identity into the token (mocking the IdP response)
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking if the right token is saved in the DB and if it is present
-              in the return dict of the get_token_oidc function
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), account=InternalAccount('webui', **self.vo), session=self.db_session)
-        oauth_session_row = get_oauth_session_row(InternalAccount('webui', **self.vo), state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # mocking the token response
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        assert token_dict['webhome'] is not None
-        assert token_dict['token']['token'] == access_token
-        # not checking the account specifically as it may be that the
-        # identity was registered for other accounts in previous tests
-        db_token = get_token_row(access_token, session=self.db_session)
-        assert db_token
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_access_token_oidc_cli_polling_success(self, mock_clients, mock_oidc_client):
-        """ OIDC Request for access token while client is polling - success
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - filling the right identity into the token (mocking the IdP response)
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking if the token is in the DB and no token is being returned from the core function
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), polling=True, auto=False, session=self.db_session)
-        oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # mocking the token response
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        assert token_dict['polling'] is True
-        assert 'token' not in token_dict
-        # not checking the account specifically as it may be that the
-        # identity was registered for other accounts in previous tests
-        db_token = get_token_row(access_token, session=self.db_session)
-        assert db_token
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_access_token_oidc_cli_fetchcode_success(self, mock_clients, mock_oidc_client):
-        """ OIDC Request for access token, client receives fetchcode - success
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - filling the right identity into the token (mocking the IdP response)
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking if the token is in the DB and a fetchcode is being returned from the core function
-            - fetching the token
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), polling=False, auto=False, session=self.db_session)
-        oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # mocking the token response
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        assert 'fetchcode' in token_dict
-        assert 'token' not in token_dict
-        # not checking the account specifically as it may be that the
-        # identity was registered for other accounts in previous tests
-        db_token = get_token_row(access_token, session=self.db_session)
-        assert db_token
-        token = redirect_auth_oidc(token_dict['fetchcode'], fetchtoken=True, session=self.db_session)
-        assert token == access_token
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_access_and_refresh_tokens_oidc_success(self, mock_clients, mock_oidc_client):
-        """ OIDC Request for access and refresh tokens - success
-
-            Runs the Test:
-
-            - getting the auth_query_string (mocking the IdP response)
-              and with it the corresponding entry in the oauth_requests table
-            - filling the right identity into the token (mocking the IdP response)
-            - calling the get_token_oidc core function
-
-            End:
-
-            - checking the relevant exception to be thrown
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), session=self.db_session)
-        oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # mocking the token response
-        access_token = rndstr()
-        refresh_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['refresh_token'] = refresh_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        db_token = get_token_row(access_token, account=self.account, session=self.db_session)
-        assert db_token
-        assert db_token.token == access_token
-        assert db_token.refresh_token == refresh_token
-
-    @patch('rucio.core.oidc.JWS')
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_CLIENTS')
-    def test_validate_and_save_external_token_success(self, mock_oidc_clients, mock_jwt_dict, mock_jws):
-        """ OIDC validate externally provided token with correct audience, scope and issuer - success
-
-            Runs the Test:
-
-            - mocking the OIDC client, and token validation dictionary pretending
-              the externally passed token is valid (time, issuer, audience, scope all as expected)
-            - calling the validate_auth_token core function (which is being called
-              e.g. when trying to validate tokens passed to rucio in the header of a request
-
-            End:
-
-            - checking if the external token has been saved in the DB
-
-        """
-
-        mock_oidc_clients.return_value = {'https://test_issuer/': MockClientOIDC()}
-        token_validate_dict = {'account': self.account,
-                               'identity': 'SUB=knownsub, ISS=https://test_issuer/',
-                               'lifetime': datetime.utcfromtimestamp(time.time() + 60),
-                               'audience': 'rucio',
-                               'authz_scope': 'openid profile'}
-        mock_jwt_dict.return_value = token_validate_dict
-
-        # mocking the token response
-        access_token = rndstr() + '.' + rndstr() + '.' + rndstr()
-        # trying to validate a token that does not exist in the Rucio DB
-        value = validate_auth_token(access_token, session=self.db_session)
-        # checking if validation went OK (we bypassed it with the dictionary above)
-        assert value == token_validate_dict
-        # most importantly, check that the token was saved in Rucio DB
-        db_token = get_token_row(access_token, account=self.account, session=self.db_session)
-        assert db_token
-        assert db_token.token == access_token
-
-    @patch('rucio.core.oidc.JWS')
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_CLIENTS')
-    def test_validate_and_save_external_token_fail(self, mock_oidc_clients, mock_jwt_dict, mock_jws):
-        """ OIDC validate externally provided token with correct audience, scope and issuer - failure
-
-            Runs the Test:
-
-            - mocking the OIDC client, and token validation dictionary pretending
-              the externally passed token has invalid audience
-            - calling the validate_auth_token core function (which is being called
-              e.g. when trying to validate tokens passed to rucio in the header of a request
-
-            End:
-
-            - checking if the external token was not saved in the DB
-
-        """
-
-        mock_oidc_clients.return_value = {'https://test_issuer/': MockClientOIDC()}
-        token_validate_dict = {'account': self.account,
-                               'identity': 'SUB=knownsub, ISS=https://test_issuer/',
-                               'lifetime': datetime.utcfromtimestamp(time.time() + 60),
-                               'audience': 'unknown_audience',
-                               'authz_scope': 'openid profile'}
-        mock_jwt_dict.return_value = token_validate_dict
-
-        # mocking the token response
-        access_token = rndstr() + '.' + rndstr() + '.' + rndstr()
-        # trying to validate a token that does not exist in the Rucio DB
-        with pytest.raises(CannotAuthenticate):
-            validate_auth_token(access_token, session=self.db_session)
-        # most importantly, check that the token was saved in Rucio DB
-        db_token = get_token_row(access_token, account=self.account, session=self.db_session)
-        assert not db_token

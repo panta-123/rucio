@@ -144,7 +144,7 @@ class IDPSecretLoad:
 
         return vo_client_credential_config
 
-    def get_config_from_clientid_issuer(self, client_id: str, issuer: str) -> dict[str, str]:
+    def get_config_from_clientid_issuer(self, client_id: str, issuer: str) -> Optional[dict[str, str]]:
         """
         Retrieve configuration based on client ID and issuer.
 
@@ -238,6 +238,9 @@ def _token_cache_get(
     METRICS.counter('token_cache.hit').inc()
     return value
 
+def _token_cache_set(key: str, value: str) -> None:
+    """Store a token in the cache."""
+    REGION.set(key, value)
 
 def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
     """

@@ -12,17 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from typing import Any, Literal, Optional
+from unittest.mock import MagicMock, Mock, mock_open, patch
 from urllib.parse import parse_qs, urlparse
 
+import jwt
+
+#from rucio.tests.common_server import get_vo
 import pytest
+import requests
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from jwkest.jwt import JWT
+from jwt.algorithms import RSAAlgorithm
 from oic import rndstr
 from sqlalchemy import select
+from your_module import IDPSecretLoad  # Import the class you want to test
 
 from rucio.common.config import config_get_bool
 from rucio.common.exception import CannotAuthenticate, DatabaseException, Duplicate
@@ -30,43 +40,255 @@ from rucio.common.types import InternalAccount
 from rucio.core.account import add_account
 from rucio.core.authentication import redirect_auth_oidc, validate_auth_token
 from rucio.core.identity import add_account_identity
-from rucio.core.oidc import EXPECTED_OIDC_AUDIENCE, EXPECTED_OIDC_SCOPE, _token_cache_get, _token_cache_set, get_auth_oidc, get_token_for_account_operation, get_token_oidc, oidc_identity_string
+from rucio.core.oidc import IDPSecretLoad, _token_cache_get, _token_cache_set, get_auth_oidc, get_token_oidc, oidc_identity_string, request_token, validate_token
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountType, IdentityType
 from rucio.db.sqla.session import get_session
-from rucio.tests.common_server import get_vo
 
-NEW_TOKEN_DICT = {'access_token': 'eyJ3bG...',
-                  'expires_in': 3599,
-                  'id_token': {'sub': 'abcdefg23', 'iss': 'https://test_auth_url_string/', 'nonce': 'mynonce'},
-                  'scope': 'openid profile',
-                  'token_type': 'Bearer',
-                  'audience': 'rucio'}
+# Sample IDP secret mock data
+mock_idpsecrets = {
+    "def": {
+        "user_auth_client": [
+            {
+                "issuer": "https://issuer.example.com",
+                "client_id": "client123",
+                "client_secret": "secret",
+                "redirect_uris": ["https://redirect.example.com"],
+                "issuer_nickname": "example_issuer"
+            }
+        ],
+        "client_credential_client": {
+            "client_id": "client456",
+            "client_secret": "secret456",
+            "issuer": "https://issuer.example.com"
+        }
+    }
+}
+
+# Fixture to mock the IDPSecretLoad instance
+@pytest.fixture
+def mock_idp_secret_load():
+    with patch("rucio.core.oidc.IDPSecretLoad") as MockIDPSecretLoad:
+        mock_instance = MockIDPSecretLoad.return_value
+        mock_instance._config = mock_idpsecrets  # Set the mock data
+        yield mock_instance
+
+# Test for get_vo_user_auth_config
+def test_get_vo_user_auth_config(mock_idp_secret_load):
+    # Mock the method behavior
+    mock_idp_secret_load.get_vo_user_auth_config.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
+
+    # Test the method
+    result = mock_idp_secret_load.get_vo_user_auth_config(vo="def")
+    # Assertions
+    assert result["client_id"] == "client123"
+    assert result["issuer"] == "https://issuer.example.com"
+    mock_idp_secret_load.get_vo_user_auth_config.assert_called_once_with(vo="def")
+
+# Test for get_client_credential_client
+def test_get_client_credential_client(mock_idp_secret_load):
+    # Mock the method behavior
+    mock_idp_secret_load.get_client_credential_client.return_value = mock_idpsecrets["def"]["client_credential_client"]
+    # Test the method
+    result = mock_idp_secret_load.get_client_credential_client(vo="def")
+    # Assertions
+    assert result["client_id"] == "client456"
+    assert result["issuer"] == "https://issuer.example.com"
+    mock_idp_secret_load.get_client_credential_client.assert_called_once_with(vo="def")
+
+# Test for get_config_from_clientid_issuer
+def test_get_config_from_clientid_issuer(mock_idp_secret_load):
+    # Mock the method behavior
+    mock_idp_secret_load.get_config_from_clientid_issuer.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
+    # Test the method
+    result = mock_idp_secret_load.get_config_from_clientid_issuer(client_id="client123", issuer="https://issuer.example.com")
+    # Assertions
+    assert result["client_id"] == "client123"
+    assert result["issuer"] == "https://issuer.example.com"
+    mock_idp_secret_load.get_config_from_clientid_issuer.assert_called_once_with(client_id="client123", issuer="https://issuer.example.com")
+
+# Test for is_valid_issuer
+def test_is_valid_issuer(mock_idp_secret_load):
+    # Mock the method behavior
+    mock_idp_secret_load.is_valid_issuer.return_value = True
+    # Test the method
+    result = mock_idp_secret_load.is_valid_issuer(issuer_url="https://issuer.example.com", vo="def")
+    # Assertions
+    assert result is True
+    mock_idp_secret_load.is_valid_issuer.assert_called_once_with(issuer_url="https://issuer.example.com", vo="def")
 
 
-EXCHANGED_TOKEN_DICT = {'access_token': 'eyJ3bG...',
-                        'expires_in': 3599,
-                        'id_token': {'sub': 'abcdefg23', 'iss': 'https://test_auth_url_string/', 'nonce': 'mynonce'},
-                        'scope': 'openid profile',
-                        'token_type': 'Bearer',
-                        'audience': 'rucio'}
+@pytest.fixture
+def generate_rsa_keypair():
+    """Generate an RSA keypair for testing."""
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048
+    )
+    public_key = private_key.public_key()
+
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode("utf-8")
+
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode("utf-8")
+
+    return private_key, public_key, private_pem, public_pem
+
+@pytest.fixture
+def mock_jwks(generate_rsa_keypair):
+    """Mock JWKS content using the generated RSA public key."""
+    _, public_key, _, _ = generate_rsa_keypair
+
+    public_numbers = public_key.public_numbers()
+    jwk = {
+        "keys": [
+            {
+                "kid": "test-key",
+                "kty": "RSA",
+                "alg": "RS256",
+                "use": "sig",
+                "n": RSAAlgorithm.to_jwk({"n": public_numbers.n, "e": public_numbers.e})["n"],
+                "e": RSAAlgorithm.to_jwk({"n": public_numbers.n, "e": public_numbers.e})["e"]
+            }
+        ]
+    }
+    return jwk
+
+@pytest.fixture
+def mock_oidc_discovery():
+    """Mock OIDC discovery metadata."""
+    return {
+        "issuer": "https://mock-oidc-provider",
+        "jwks_uri": "https://mock-oidc-provider/.well-known/jwks.json",
+        "token_endpoint": "https://mock-oidc-provider/token"
+    }
+
+@pytest.fixture
+def encode_jwt(mock_jwks, generate_rsa_keypair):
+    """Generate a JWT using the mock JWKS private key."""
+    private_key, _, _, _ = generate_rsa_keypair
+
+    payload = {
+        "sub": "1234567890",
+        "name": "John Doe",
+        "iat": 1700000000,
+        "exp": 1700003600,
+        "iss": "https://mock-oidc-provider",
+        "aud": "mock-client-id",
+        "nonce": "random-nonce",
+        "scope": "openid profile email"
+    }
+
+    token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+    return token
 
 
-def encode_access_token(tokenlist):
-    # tokenlist = [tokenstr, scope, audience, sub, iss]
-    identity = oidc_identity_string(tokenlist[3], tokenlist[4])
-    tokenout = tokenlist[0] + '_||_' + tokenlist[1] + '_||_' + tokenlist[2] + '_||_' + identity
-    return tokenout
+def get_jwks_content(issuer_url: str):
+    """Mock function to return JWKS content."""
+    return mock_jwks
+
+def test_validate_token_success(encode_jwt):
+    """Test successful token validation."""
+    decoded_token = validate_token(
+        token=encode_jwt,
+        issuer_url="https://mock-oidc-provider",
+        audience="mock-client-id",
+        token_type="id_token",
+        nonce="random-nonce"
+    )
+    assert decoded_token["sub"] == "1234567890"
+    assert decoded_token["iss"] == "https://mock-oidc-provider"
+
+def test_validate_token_invalid_nonce(encode_jwt):
+    """Test failure due to incorrect nonce."""
+    with pytest.raises(CannotAuthenticate, match="Invalid nonce in ID token."):
+        validate_token(
+            token=encode_jwt,
+            issuer_url="https://mock-oidc-provider",
+            audience="mock-client-id",
+            token_type="id_token",
+            nonce="wrong-nonce"
+        )
+
+def test_validate_token_missing_scope(encode_jwt):
+    """Test failure when access token is missing required scope."""
+    with pytest.raises(CannotAuthenticate, match="Access token doesn't have required scope."):
+        validate_token(
+            token=encode_jwt,
+            issuer_url="https://mock-oidc-provider",
+            audience="mock-client-id",
+            token_type="access_token",
+            scopes=["admin"]
+        )
 
 
-def dencode_access_token(tokenstr):
-    # tokenlist = [tokenstr, scope, audience, sub, iss]
-    tokenout = tokenstr.split("_||_")
-    dictout = {'token': tokenout[0],
-               'scope': tokenout[1],
-               'audience': tokenout[2],
-               'identity': tokenout[3]}
-    return dictout
+@pytest.fixture
+def encode_jwt_with_argument(generate_rsa_keypair):
+    """Generate a JWT using the mock JWKS private key with dynamic `aud` and `scope`."""
+    def _generate_jwt(aud, scope):
+        private_key, _, _, _ = generate_rsa_keypair
+
+        payload = {
+            "sub": "1234567890",
+            "name": "John Doe",
+            "iat": 1700000000,
+            "exp": 1700003600,
+            "iss": "https://mock-oidc-provider",
+            "aud": aud,  # Dynamic audience
+            "scope": scope  # Dynamic scope
+        }
+
+        token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+        return token
+    return _generate_jwt
+
+@patch("rucio.core.oidc.get_discovery_metadata")
+@patch("rucio.core.oidc.IDPSecretLoad")
+@patch('requests.post')
+@pytest.mark.parametrize("audience, scope", [
+    ("https://mydestrse.com", "storage.modify:/mydir storage.read:/mydir"),
+    ("https://mysourcerse.com", "storage.read:/mydir"),
+    ("https://mydestrse.com", "storage.modify:/mydir/myfile.txt")
+])
+def test_request_token_success(mock_get_discovery_metadata, mock_IDPSecretLoad, encode_jwt_with_argument, mock_post, audience, scope):
+
+    mock_token = encode_jwt_with_argument(audience, scope)
+    # Prepare mock response
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()  # No exception for a successful response
+    mock_response.json.return_value = {"access_token": mock_token}  # Mock the response to return the token
+    # Mock the requests.post to return the mock_response
+    mock_post.return_value = mock_response
+
+    mock_get_discovery_metadata.return_value = mock_oidc_discovery
+    mock_IDPSecretLoad.return_value = mock_idp_secret_load
+    mock_idp_secret_load.get_client_credential_client.return_value = mock_idpsecrets["def"]["client_credential_client"]
+
+    result = request_token(scope=scope, audience=audience, vo="def", use_cache=False)
+    # Assertions to ensure everything works as expected
+    mock_post.assert_called_once()  # Ensure the post request was made
+    mock_post.assert_called_with(
+        url=mock_oidc_discovery["token_endpoint"],
+        auth=(mock_idpsecrets["def"]["client_credential_client"]["client_id"], mock_idpsecrets["def"]["client_credential_client"]["client_secret"]),
+        data={
+            'grant_type': 'client_credentials',
+            'scope': scope,
+            'audience': audience
+        },
+        timeout=10
+    )
+    assert result == mock_token
+    # Decode the JWT token and validate the claims
+    decoded_token = jwt.decode(result, options={"verify_signature": False})
+    # Validate the claims
+    assert decoded_token["aud"] == audience
+    assert decoded_token["scope"] == scope
 
 
 def save_validated_token(token, valid_dict, extra_dict=None, session=None):
@@ -100,50 +322,6 @@ def save_validated_token(token, valid_dict, extra_dict=None, session=None):
         raise Exception(error.args)
 
 
-def validate_jwt(token, **kwargs):
-    account = kwargs.get('account', None)
-    oidc_token_dict = dencode_access_token(token)
-    expirydate = datetime.utcnow() + timedelta(seconds=3600)
-    validate_dict = {'account': account,
-                     'identity': oidc_token_dict['identity'],
-                     'lifetime': expirydate,
-                     'audience': oidc_token_dict['audience'],
-                     'authz_scope': oidc_token_dict['scope']}
-    return validate_dict
-
-
-def create_preexisting_exchange_token(request_args, session=None):
-    oidc_tokens = EXCHANGED_TOKEN_DICT.copy()
-    oidc_tokens['scope'] = request_args['scope']
-    oidc_tokens['audience'] = request_args['audience']
-    oidc_tokens['expires_in'] = 3600
-    oidc_tokens['id_token'] = {'sub': request_args['client_id'], 'iss': request_args['issuer']}
-    access_token = encode_access_token([request_args['token'],
-                                        request_args['scope'],
-                                        request_args['audience'],
-                                        request_args['client_id'],
-                                        request_args['issuer']])
-    validate_dict = validate_jwt(access_token, account=request_args['account'])
-    pre_existing_token = save_validated_token(access_token, validate_dict, session=session)
-    return pre_existing_token
-
-
-def get_mock_oidc_client(**kwargs):
-    # issuer_id = kwargs.get('issuer_id', None)
-    # redirect_to = kwargs.get('redirect_to', None)
-    state = str(kwargs.get('state', None))
-    nonce = str(kwargs.get('nonce', None))
-    # scope = kwargs.get('scope', None)
-    # audience = kwargs.get('audience', None)
-    # first_init = kwargs.get('first_init', None)
-
-    return {'client': MockClientOIDC(),
-            'state': state,
-            'nonce': nonce,
-            'auth_url': 'https://test_auth_url_string?state=' + state + '&nonce=' + nonce,
-            'redirect': 'https://test_redirect_string'}
-
-
 def get_oauth_session_row(account, state=None, session=None):
     stmt = select(
         models.OAuthRequest
@@ -169,31 +347,6 @@ def get_token_row(access_token, account=None, session=None) -> models.Token:
     return token
 
 
-class MockADMINClientISSOIDC(MagicMock):
-    # pylint: disable=unused-argument
-    client_secret = 'topsecret_nr1'
-
-    @classmethod
-    def do_any(cls, request=None, request_args=None, response=None):
-        oidc_tokens = EXCHANGED_TOKEN_DICT.copy()
-        oidc_tokens['scope'] = request_args['scope']
-        oidc_tokens['audience'] = request_args['audience']
-        oidc_tokens['id_token'] = {'sub': request_args['client_id'], 'iss': 'https://test_issuer/'}
-        # we need to pass the full dict in the access_token key again in order to have  a chance to bypass the token validation method
-        access_token = encode_access_token([oidc_tokens['access_token'], oidc_tokens['scope'],
-                                           oidc_tokens['audience'], request_args['client_id'], 'https://test_issuer/'])
-        oidc_tokens['access_token'] = access_token
-        return oidc_tokens
-
-    @classmethod
-    def construct_AuthorizationRequest(cls, request_args=None):  # noqa: N802 (method name defined in pyoidc)
-        return None
-
-    @classmethod
-    def parse_response(cls, authorization_response, info=None, sformat="urlencoded"):
-        return None
-
-
 class MockResponse:
     def __init__(self, json_data):
         self.json_data = json_data
@@ -201,66 +354,6 @@ class MockResponse:
     def json(self):
         return self.json_data
 
-
-class MockClientOIDC(MagicMock):
-    # pylint: disable=unused-argument
-    @classmethod
-    def do_access_token_request(cls, state=None, request_args={},
-                                authn_method="client_secret_basic", skew=120):
-        if request_args['code'] == 'wrongcode':
-            return {'error': 'Unknown AuthZ code provided'}
-        else:
-            return NEW_TOKEN_DICT
-
-    @classmethod
-    def construct_AuthorizationRequest(cls, request_args=None):  # noqa: N802 (method name defined in pyoidc)
-        return None
-
-    @classmethod
-    def parse_response(cls, authorization_response, info=None, sformat="urlencoded"):
-        return None
-
-    client_secret = 'topsecret_nr1'
-
-    @classmethod
-    def do_any(cls, message, endpoint=None, state=None, request_args=None, authn_method=None):
-        oidc_tokens = EXCHANGED_TOKEN_DICT.copy()
-        oidc_token_dict = dencode_access_token(request_args['subject_token'])
-        user_sub = oidc_token_dict['identity'].split(',')[0].split('=')[1]
-        user_issuer = oidc_token_dict['identity'].split(',')[1].split('=')[1]
-        oidc_tokens['scope'] = request_args['scope']
-        oidc_tokens['audience'] = request_args['audience']
-        oidc_tokens['id_token'] = {'sub': user_sub, 'iss': user_issuer}
-        # we need to pass the full dict in the access_token key again in order to have  a chance to bypass the token validation method
-        access_token = encode_access_token([oidc_tokens['access_token'], oidc_tokens['scope'],
-                                           oidc_tokens['audience'], user_sub, user_issuer])
-        oidc_tokens['access_token'] = access_token
-        return MockResponse(oidc_tokens)
-
-
-class MockADMINClientOtherISSOIDC(MagicMock):
-    # pylint: disable=unused-argument
-    client_secret = 'topsecret_nr2'
-
-    @classmethod
-    def do_any(cls, request=None, request_args=None, response=None):
-        oidc_tokens = EXCHANGED_TOKEN_DICT.copy()
-        oidc_tokens['scope'] = request_args['scope']
-        oidc_tokens['audience'] = request_args['audience']
-        oidc_tokens['id_token'] = {'sub': request_args['client_id'], 'iss': 'https://test_other_issuer/'}
-        # we need to pass the full dict in the access_token key again in order to have  a chance to bypass the token validation method
-        access_token = encode_access_token([oidc_tokens['access_token'], oidc_tokens['scope'],
-                                           oidc_tokens['audience'], request_args['client_id'], 'https://test_other_issuer/'])
-        oidc_tokens['access_token'] = access_token
-        return oidc_tokens
-
-    @classmethod
-    def construct_AuthorizationRequest(cls, request_args=None):  # noqa: N802 (method name defined in pyoidc)
-        return None
-
-    @classmethod
-    def parse_response(cls, authorization_response, info=None, sformat="urlencoded"):
-        return None
 
 
 @pytest.mark.noparallel(reason='fails when run in parallel')
@@ -285,29 +378,13 @@ class TestAuthCoreAPIoidc:
         self.accountstring = 'test_' + rndstr()
         self.accountstring = self.accountstring.lower()
         self.account = InternalAccount(self.accountstring, **self.vo)
-        self.adminaccountstring = 'admin_' + rndstr()[:-1]  # Too long to use full string
-        print("ADMIN ACCOUNT STRING: ", self.adminaccountstring)
-        self.adminaccountstring = self.adminaccountstring.lower()
-        self.adminaccount = InternalAccount(self.adminaccountstring, **self.vo)
-        self.adminaccSUB = str('adminSUB' + rndstr()).lower()
-        self.adminaccSUB_otherISS = str('adminSUB_otherISS' + rndstr()).lower()
-        self.adminClientSUB = str('adminclientSUB' + rndstr()).lower()
-        self.adminClientSUB_otherISS = str('adminclientSUB_otherISS' + rndstr()).lower()
         try:
             add_account(self.account, AccountType.USER, 'rucio@email.com', session=self.db_session)
-        except Duplicate:
-            pass
-        try:
-            add_account(self.adminaccount, AccountType.SERVICE, 'rucio@email.com', session=self.db_session)
         except Duplicate:
             pass
 
         try:
             add_account_identity('SUB=knownsub, ISS=https://test_issuer/', IdentityType.OIDC, self.account, 'rucio_test@test.com', session=self.db_session)
-            add_account_identity('SUB=%s, ISS=https://test_issuer/' % self.adminaccSUB, IdentityType.OIDC, self.adminaccount, 'rucio_test@test.com', session=self.db_session)
-            add_account_identity('SUB=%s, ISS=https://test_other_issuer/' % self.adminaccSUB_otherISS, IdentityType.OIDC, self.adminaccount, 'rucio_test@test.com', session=self.db_session)
-            add_account_identity('SUB=%s, ISS=https://test_issuer/' % self.adminClientSUB, IdentityType.OIDC, self.adminaccount, 'rucio_test@test.com', session=self.db_session)
-            add_account_identity('SUB=%s, ISS=https://test_other_issuer/' % self.adminClientSUB_otherISS, IdentityType.OIDC, self.adminaccount, 'rucio_test@test.com', session=self.db_session)
         except DatabaseException:
             pass
 
@@ -768,1224 +845,3 @@ class TestAuthCoreAPIoidc:
         # most importantly, check that the token was saved in Rucio DB
         db_token = get_token_row(access_token, account=self.account, session=self.db_session)
         assert not db_token
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_1(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_useraccREQ_hasSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user HAS valid subject token
-              - final token for FTS transfer with required scope and audience does NOT exist already
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result has issuer same as user OIDC identity issuer of the subject token
-            - checking that the final token belongs to the admin account
-            - final token has the requested scope and audience claims in
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        final_token_account = self.adminaccount
-        req_admin = True
-        # ---------------------------
-        # giving a USER a subject token
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), session=self.db_session)
-        oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # mocking the token response
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        db_token = get_token_row(access_token, account=self.account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        expected_access_token = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB, 'https://test_issuer/'])
-        # for  OIDC_ADMIN_CLIENTS in __get_admin_token_oidc we need to mock result of __get_rucio_oidc_clients
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert 'https://test_issuer/' in db_token.identity
-        assert self.adminClientSUB in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # ---------------------------
-        # Check that the resulting token is NOT same as original
-        assert token_dict['token'] != new_token_dict['token']
-        # -----
-        # check that result is as expected
-        assert expected_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_2(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_useraccREQ_hasSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user HAS valid subject token
-              - final token for FTS transfer with required scope and audience does exist already
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result has issuer same as user OIDC identity issuer of the subject token
-            - checking that the final token belongs to the admin account
-            - final token has the requested scope and audience claims in and is the same as the preexisting one
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        final_token_account = self.adminaccount
-        final_token_issuer = 'https://test_issuer/'
-        req_admin = True
-        # ---------------------------
-        # giving a USER a subject token
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), session=self.db_session)
-        oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
-        assert oauth_session_row
-        # ---------------------------
-        # mocking the token response
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_init_response['nonce']}
-        token_dict = get_token_oidc(auth_init_response['auth_query_string'], session=self.db_session)
-        assert token_dict
-        db_token = get_token_row(access_token, account=self.account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # giving the final token account PRE EXISTING FINAL token
-        preexisting_access_token_strpart = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': self.adminClientSUB,
-                        'issuer': final_token_issuer,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart}
-        expected_preexisting_access_token_object = create_preexisting_exchange_token(request_args, session=self.db_session)
-        expected_preexisting_access_token = expected_preexisting_access_token_object.token
-        db_token = get_token_row(expected_preexisting_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # preparing the expected resulting token
-        not_expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = not_expected_access_token_strpart
-        not_expected_access_token = encode_access_token([not_expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB, 'https://test_issuer/'])
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert 'https://test_issuer/' in db_token.identity
-        # and that the SUB claim is as expected the admin client_id
-        assert self.adminClientSUB in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # ---------------------------
-        # check that the not expected token is not in the DB
-        db_token = get_token_row(not_expected_access_token, session=self.db_session)
-        assert not db_token
-        # ---------------------------
-        # Check that it has the expected token string
-        assert expected_preexisting_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_3(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_useraccREQ_NOSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user DOES NOT HAVE valid subject token
-              - final token for FTS transfer with required scope and audience does NOT exist apriori
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result is NOne as the user has no valid OIDC token in the DB to start with !
-        """
-        # ---------------------------
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        req_admin = True
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-
-        # ---------------------------
-        # Check if NO token has been received
-        assert not new_token_dict
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_4(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_useraccREQ_NOSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user HAS NO valid subject token
-              - final token for FTS transfer with required scope and audience does exist already
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result is NOne as the user has no valid OIDC token in the DB to start with !
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        final_token_account = self.adminaccount
-        final_token_issuer_1 = 'https://test_issuer/'
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = True
-        # -----------------------------
-        # creating pre-existing token that is supposed to be picked up as final
-        preexisting_access_token_strpart_1 = rndstr()
-        preexisting_access_token_strpart_2 = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': self.adminClientSUB,
-                        'issuer': final_token_issuer_1,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart_1}
-        expected_preexisting_access_token_object_1 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        request_args['issuer'] = final_token_issuer_2
-        request_args['client_id'] = self.adminClientSUB_otherISS
-        request_args['token'] = preexisting_access_token_strpart_2
-        expected_preexisting_access_token_object_2 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        expected_preexisting_access_token_1 = expected_preexisting_access_token_object_1.token
-        expected_preexisting_access_token_2 = expected_preexisting_access_token_object_2.token
-        db_token = get_token_row(expected_preexisting_access_token_1, account=final_token_account, session=self.db_session)
-        assert db_token
-        db_token = get_token_row(expected_preexisting_access_token_2, account=final_token_account, session=self.db_session)
-        assert db_token
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if NO token has been received
-        assert not new_token_dict
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_5(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_adminaccREQ_NOSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for admin account name
-              - admin has a valid token AS NO valid subject token
-              - final token for FTS transfer with required scope and audience does NOT exist apriori
-
-            Runs the Test:
-            - see actions below
-            End:
-
-            - checking that token was issued to the admin account of any of the OIDC admin clients
-            - final token has the requested scope and audience claims in and is the same as the expected string
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        req_admin = True
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        expected_access_token_1 = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB, 'https://test_issuer/'])
-        expected_access_token_2 = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB_otherISS, 'https://test_other_issuer/'])
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer same as admin OIDC identity issuer of the subject token
-        assert (('https://test_issuer/' in db_token.identity) and (self.adminClientSUB in db_token.identity)
-                or (('https://test_other_issuer/' in db_token.identity) and (self.adminClientSUB_otherISS in db_token.identity)))  # NOQA: W503
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert (expected_access_token_1 == new_token_dict['token']) or (expected_access_token_2 == new_token_dict['token'])
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_6(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_adminaccREQ_hasSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a admin account name
-              - has pre-existing token which does NOT have the same audience and scope
-              - final token for FTS transfer with required scope and audience does NOT exist yet
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final token is NOT the same as the preexisting one apart of the issuer !
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = True
-        # -----------------------------
-        # creating pre-existing token that is NOT supposed to be picked up as final
-        preexisting_access_token_strpart_2 = rndstr()
-        request_args = {'scope': EXPECTED_OIDC_SCOPE,
-                        'audience': EXPECTED_OIDC_AUDIENCE,
-                        'client_id': self.adminaccSUB_otherISS,
-                        'issuer': final_token_issuer_2,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart_2}
-        preexisting_access_token_object = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_access_token = preexisting_access_token_object.token
-        db_token = get_token_row(preexisting_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        expected_access_token = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB_otherISS, final_token_issuer_2])
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert 'https://test_other_issuer/' in db_token.identity
-        assert self.adminClientSUB_otherISS in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert expected_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_7(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_adminaccREQ_hasSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a admin account name
-              - has pre-existing token which does not have the same audience and scope
-              - has final token for FTS using a different issuer (the challenging mode)
-
-            Runs the Test:
-
-                        - see actions below
-            End:
-
-            - checking that the final token is NOT the same as the preexisting one
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        final_token_issuer_1 = 'https://test_issuer/'
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = True
-        # -----------------------------
-        # creating pre-existing token that is supposed to be picked up as final
-        preexisting_access_token_strpart_2 = rndstr()
-        request_args = {'scope': EXPECTED_OIDC_SCOPE,
-                        'audience': EXPECTED_OIDC_AUDIENCE,
-                        'client_id': self.adminaccSUB_otherISS,
-                        'issuer': final_token_issuer_2,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart_2}
-        preexisting_access_token_object_2 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_access_token = preexisting_access_token_object_2.token
-        db_token = get_token_row(preexisting_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        preexisting_final_access_token_strpart_1 = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': self.adminClientSUB,
-                        'issuer': final_token_issuer_1,
-                        'account': final_token_account,
-                        'token': preexisting_final_access_token_strpart_1}
-        preexisting_final_access_token_object_1 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_final_access_token = preexisting_final_access_token_object_1.token
-        db_token = get_token_row(preexisting_final_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert ('https://test_issuer/' in db_token.identity) and (self.adminClientSUB in db_token.identity)
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert preexisting_final_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_8(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminON_adminaccREQ_NOSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a admin account name
-              - has no pre-existing token which would have other than the expected audience and scopes audience and scope
-              - has final token for FTS is present
-            Runs the Test:
-
-                        - see actions below
-            End:
-
-            - checking that the final token is the same as the preexisting one
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = True
-        # -----------------------------
-        # creating pre-existing token that is supposed to be picked up as final
-        preexisting_final_access_token_strpart_2 = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': self.adminClientSUB_otherISS,
-                        'issuer': final_token_issuer_2,
-                        'account': final_token_account,
-                        'token': preexisting_final_access_token_strpart_2}
-        preexisting_final_access_token_object_2 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_final_access_token = preexisting_final_access_token_object_2.token
-        db_token = get_token_row(preexisting_final_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert ('https://test_other_issuer/' in db_token.identity) and (self.adminClientSUB_otherISS in db_token.identity)
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert preexisting_final_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_9(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_adminaccREQ_NOSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for admin account name
-              - admin has a valid token AS NO valid subject token
-              - final token for FTS transfer with required scope and audience does NOT exist apriori
-
-            Runs the Test:
-            - see actions below
-            End:
-
-            - checking that token was issued to the admin account of any of the OIDC admin clients
-            - final token has the requested scope and audience claims in and is the same as the expected string
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        req_admin = False
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        expected_access_token_1 = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB, 'https://test_issuer/'])
-        expected_access_token_2 = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB_otherISS, 'https://test_other_issuer/'])
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer same as admin OIDC identity issuer of the subject token
-        assert (('https://test_issuer/' in db_token.identity) and (self.adminClientSUB in db_token.identity)
-                or (('https://test_other_issuer/' in db_token.identity) and (self.adminClientSUB_otherISS in db_token.identity)))  # NOQA: W503
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert (expected_access_token_1 == new_token_dict['token']) or (expected_access_token_2 == new_token_dict['token'])
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_10(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_adminaccREQ_hasSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a admin account name
-              - has pre-existing token which does NOT have the same audience and scope
-              - final token for FTS transfer with required scope and audience does NOT exist yet
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final token is NOT the same as the preexisting one apart of the issuer !
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = False
-        # -----------------------------
-        # creating pre-existing token that is NOT supposed to be picked up as final
-        preexisting_access_token_strpart_2 = rndstr()
-        request_args = {'scope': EXPECTED_OIDC_SCOPE,
-                        'audience': EXPECTED_OIDC_AUDIENCE,
-                        'client_id': self.adminaccSUB_otherISS,
-                        'issuer': final_token_issuer_2,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart_2}
-        preexisting_access_token_object = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_access_token = preexisting_access_token_object.token
-        db_token = get_token_row(preexisting_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        expected_access_token = encode_access_token([expected_access_token_strpart, req_scope, req_audience, self.adminClientSUB_otherISS, final_token_issuer_2])
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert 'https://test_other_issuer/' in db_token.identity
-        assert self.adminClientSUB_otherISS in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert expected_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_11(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_adminaccREQ_hasSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a admin account name
-              - has pre-existing token which does not have the same audience and scope
-              - has final token for FTS using a different issuer (the challenging mode)
-
-            Runs the Test:
-
-                        - see actions below
-            End:
-
-            - checking that the final token is the same as the preexisting final one
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        final_token_issuer_1 = 'https://test_issuer/'
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = False
-        # -----------------------------
-        # creating pre-existing token that is supposed to be picked up as final
-        preexisting_access_token_strpart_2 = rndstr()
-        request_args = {'scope': EXPECTED_OIDC_SCOPE,
-                        'audience': EXPECTED_OIDC_AUDIENCE,
-                        'client_id': self.adminaccSUB_otherISS,
-                        'issuer': final_token_issuer_2,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart_2}
-        preexisting_access_token_object_2 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_access_token = preexisting_access_token_object_2.token
-        db_token = get_token_row(preexisting_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        preexisting_final_access_token_strpart_1 = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': self.adminClientSUB,
-                        'issuer': final_token_issuer_1,
-                        'account': final_token_account,
-                        'token': preexisting_final_access_token_strpart_1}
-        preexisting_final_access_token_object_1 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_final_access_token = preexisting_final_access_token_object_1.token
-        db_token = get_token_row(preexisting_final_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert ('https://test_issuer/' in db_token.identity) and (self.adminClientSUB in db_token.identity)
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert preexisting_final_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_12(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_adminaccREQ_NOSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a admin account name
-              - has no pre-existing token which would have other than the expected audience and scopes audience and scope
-              - has final token for FTS is present
-            Runs the Test:
-
-                        - see actions below
-            End:
-
-            - checking that the final token is the same as the preexisting final one
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.adminaccount
-        final_token_account = self.adminaccount
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = True
-        # -----------------------------
-        # creating pre-existing token that is supposed to be picked up as final
-        preexisting_final_access_token_strpart_2 = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': self.adminClientSUB_otherISS,
-                        'issuer': final_token_issuer_2,
-                        'account': final_token_account,
-                        'token': preexisting_final_access_token_strpart_2}
-        preexisting_final_access_token_object_2 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_final_access_token = preexisting_final_access_token_object_2.token
-        db_token = get_token_row(preexisting_final_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert 'https://test_other_issuer/' in db_token.identity
-        assert self.adminClientSUB_otherISS in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert preexisting_final_access_token == new_token_dict['token']
-
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer and sub claim as expected
-        assert 'https://test_other_issuer/' in db_token.identity
-        assert self.adminClientSUB_otherISS in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # Check that it has the expected token string
-        assert preexisting_final_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_13(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_useraccREQ_hasSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user HAS valid subject token
-              - final token for FTS transfer with required scope and audience does NOT exist already
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result has issuer same as SUBtoken
-            - checking that the final token belongs to user account
-            - final token has the requested scope and audience claims in
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        final_token_account = self.account
-        final_token_issuer = 'https://test_issuer/'
-        user_sub = 'knownsub'
-        req_admin = False
-        # ---------------------------
-        # giving a USER a subject token - need to bypass the usual auth grant flow
-        # as that is not the purpose of this test
-        preexisting_user_access_token_strpart = rndstr()
-        request_args = {'scope': EXPECTED_OIDC_SCOPE,
-                        'audience': EXPECTED_OIDC_AUDIENCE,
-                        'client_id': user_sub,
-                        'issuer': final_token_issuer,
-                        'account': final_token_account,
-                        'token': preexisting_user_access_token_strpart}
-        preexisting_user_access_token_object = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_user_access_token = preexisting_user_access_token_object.token
-        db_token = get_token_row(preexisting_user_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        expected_access_token = encode_access_token([expected_access_token_strpart, req_scope, req_audience, 'knownsub', 'https://test_issuer/'])
-        # for  OIDC_ADMIN_CLIENTS in __get_admin_token_oidc we need to mock result of __get_rucio_oidc_clients
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockClientOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockClientOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        print('NEW TOKEN DICT ==', new_token_dict)
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert 'https://test_issuer/' in db_token.identity
-        assert 'knownsub' in db_token.identity
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_scope == db_token.oidc_scope
-        # ---------------------------
-        # Check hat the final result has issuer same as user OIDC identity issuer of the subject token
-        assert req_audience == db_token.audience
-        # ---------------------------
-        # Check that the resulting token is NOT same as original
-        assert preexisting_user_access_token != new_token_dict['token']
-        # -----
-        # check that result is as expected
-        assert expected_access_token == new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_14(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_useraccREQ_hasSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user HAS valid subject token
-              - final token for FTS transfer with required scope and audience does exist already
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result is the same as the pre-existing final token
-        """
-        # ---------------------------
-        # setting conditions of the test
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        final_token_account = self.account
-        final_token_issuer = 'https://test_issuer/'
-        user_sub = 'knownsub'
-        req_admin = False
-        # ---------------------------
-        # giving a USER a subject token - need to bypass the usual auth grant flow
-        # as that is not the purpose of this test
-        preexisting_user_access_token_strpart = rndstr()
-        request_args = {'scope': EXPECTED_OIDC_SCOPE,
-                        'audience': EXPECTED_OIDC_AUDIENCE,
-                        'client_id': user_sub,
-                        'issuer': final_token_issuer,
-                        'account': final_token_account,
-                        'token': preexisting_user_access_token_strpart}
-        preexisting_user_access_token_object = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_user_access_token = preexisting_user_access_token_object.token
-        db_token = get_token_row(preexisting_user_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        # giving a user a filen token
-        final_access_token = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': user_sub,
-                        'issuer': final_token_issuer,
-                        'account': final_token_account,
-                        'token': final_access_token}
-        preexisting_final_user_access_token_object = create_preexisting_exchange_token(request_args, session=self.db_session)
-        preexisting_final_user_access_token = preexisting_final_user_access_token_object.token
-        db_token = get_token_row(preexisting_final_user_access_token, account=final_token_account, session=self.db_session)
-        assert db_token
-        #
-        # ---------------------------
-        # preparing the expected resulting token
-        expected_access_token_strpart = rndstr()
-        EXCHANGED_TOKEN_DICT['access_token'] = expected_access_token_strpart
-        hypothetical_exchange_access_token = encode_access_token([expected_access_token_strpart, req_scope, req_audience, 'knownsub', 'https://test_issuer/'])
-        # for  OIDC_ADMIN_CLIENTS in __get_admin_token_oidc we need to mock result of __get_rucio_oidc_clients
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockClientOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockClientOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if token has been received
-        assert new_token_dict
-        # ---------------------------
-        # Check of token being in DB under the expected account
-        db_token = get_token_row(new_token_dict['token'], account=final_token_account, session=self.db_session)
-        assert db_token
-        assert 'https://test_issuer/' in db_token.identity
-        assert 'knownsub' in db_token.identity
-        assert req_scope == db_token.oidc_scope
-        assert req_audience == db_token.audience
-        assert preexisting_final_user_access_token == new_token_dict['token']
-        assert hypothetical_exchange_access_token != new_token_dict['token']
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_15(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_useraccREQ_NOSUBtoken_NoFinalPreexistingToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user DOES NOT HAVE valid subject token
-              - final token for FTS transfer with required scope and audience does NOT exist apriori
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result is NOne as the user has no valid OIDC token in the DB to start with !
-        """
-        # ---------------------------
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        req_admin = False
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if NO token has been received
-        assert not new_token_dict
-
-    @patch('rucio.core.oidc.__get_rucio_jwt_dict')
-    @patch('rucio.core.oidc.OIDC_ADMIN_CLIENTS')
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    @patch('rucio.core.oidc.__get_rucio_oidc_clients')
-    def test_get_at_for_account_operation_16(self, mock_clients, mock_oidc_client, admin_clients, validate_jwt_dict):
-        """ Request for OIDC token for FTS transfer (adminOFF_useraccREQ_NOSUBtoken_HasPreexistingFinalToken)
-           Setting initial conditions:
-              - requesting Rucio Admin token
-              - for a user account name
-              - user HAS NO valid subject token
-              - final token for FTS transfer with required scope and audience does exist already
-
-            Runs the Test:
-
-                        - see actions below
-
-            End:
-
-            - checking that the final result is None as the user has no valid OIDC token in the DB to start with !
-        """
-        # ---------------------------
-        # setting conditions of the test
-        req_scope = 'transfer_scope_' + rndstr() + ' some_other_scope' + rndstr()
-        req_audience = 'transfer_audience_' + rndstr() + ' some_other_audience' + rndstr()
-        req_account = self.account
-        final_token_account = self.account
-        final_token_issuer_1 = 'https://test_issuer/'
-        final_token_issuer_2 = 'https://test_other_issuer/'
-        req_admin = False
-        # -----------------------------
-        # creating pre-existing token that is supposed to be picked up as final
-        preexisting_access_token_strpart_1 = rndstr()
-        preexisting_access_token_strpart_2 = rndstr()
-        request_args = {'scope': req_scope,
-                        'audience': req_audience,
-                        'client_id': 'knownsub',
-                        'issuer': final_token_issuer_1,
-                        'account': final_token_account,
-                        'token': preexisting_access_token_strpart_1}
-        expected_preexisting_access_token_object_1 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        request_args['issuer'] = final_token_issuer_2
-        request_args['client_id'] = 'knownsub'
-        request_args['token'] = preexisting_access_token_strpart_2
-        expected_preexisting_access_token_object_2 = create_preexisting_exchange_token(request_args, session=self.db_session)
-        expected_preexisting_access_token_1 = expected_preexisting_access_token_object_1.token
-        expected_preexisting_access_token_2 = expected_preexisting_access_token_object_2.token
-        db_token = get_token_row(expected_preexisting_access_token_1, account=final_token_account, session=self.db_session)
-        assert db_token
-        db_token = get_token_row(expected_preexisting_access_token_2, account=final_token_account, session=self.db_session)
-        assert db_token
-        # mocking additional objects
-        mock_admin_oidc_clients = {'https://test_other_issuer/': MockADMINClientOtherISSOIDC(client_id=self.adminClientSUB_otherISS),
-                                   'https://test_issuer/': MockADMINClientISSOIDC(client_id=self.adminClientSUB)}
-        admin_clients.__getitem__.side_effect = mock_admin_oidc_clients.__getitem__
-        admin_clients.__iter__.side_effect = mock_admin_oidc_clients.__iter__
-        admin_clients.__contains__.side_effect = mock_admin_oidc_clients.__contains__
-        admin_clients.keys.side_effect = mock_admin_oidc_clients.keys
-        validate_jwt_dict.side_effect = validate_jwt
-        mock_oidc_client.side_effect = get_mock_oidc_client
-        # ---------------------------
-        # ASKING FOR THE TOKEN
-        new_token_dict = get_token_for_account_operation(req_account, req_audience=req_audience, req_scope=req_scope, admin=req_admin, session=self.db_session)
-        # ---------------------------
-        # Check if NO token has been received
-        assert not new_token_dict
-
-
-def test_token_cache() -> None:
-    key = str(uuid.uuid1())
-    assert _token_cache_get(key) is None
-
-    valid_token = JWT().pack([{
-        'exp': int((datetime.utcnow() + timedelta(hours=1)).timestamp())
-    }])
-    _token_cache_set(key, valid_token)
-    assert _token_cache_get(key) == valid_token
-
-    invalid_token = 'invalid'
-    _token_cache_set(key, invalid_token)
-    assert _token_cache_get(key) is None
-
-    below_min_lifetime_token = JWT().pack([{
-        'exp': int((datetime.utcnow() + timedelta(minutes=1)).timestamp())
-    }])
-    _token_cache_set(key, below_min_lifetime_token)
-    assert _token_cache_get(key) is None
-
-    expired_token = JWT().pack([{
-        'exp': int((datetime.utcnow() - timedelta(minutes=1)).timestamp())
-    }])
-    _token_cache_set(key, expired_token)
-    assert _token_cache_get(key) is None

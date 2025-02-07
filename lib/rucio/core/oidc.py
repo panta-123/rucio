@@ -121,8 +121,7 @@ class IDPSecretLoad:
         vo_user_auth_config = config["user_auth_client"]
         if not issuer_nickname:
             return vo_user_auth_config[0]
-        else:
-            if len(vo_user_auth_config) > 1:
+        if len(vo_user_auth_config) > 1 and issuer_nickname:
                 raise ValueError("issuer nickname is required since server has multiple issuer configured.")
         for issuer_config in vo_user_auth_config:
             if issuer_config["issuer_nickname"] == issuer_nickname:
@@ -1068,8 +1067,7 @@ def validate_jwt(
     access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=audience_to_valiadate, token_type=token_type, scopes=EXTRA_OIDC_ACCESS_TOKEN_SCOPE)
     identity_string = oidc_identity_string(access_token_decoded['sub'], access_token_decoded['iss'])
     account = get_default_account(identity_string, IdentityType.OIDC, True, session=session)
-    account_model = get_account(account, session=session)
-    vo = account_model.vo
+    vo = account.vo
     idpsecret_config_loader = IDPSecretLoad()
     is_valid_issuer = idpsecret_config_loader.is_valid_issuer(issuer_url=issuer_url, vo=vo)
     if not is_valid_issuer:

@@ -18,7 +18,7 @@ from os import remove
 from random import choice
 from re import search
 from string import ascii_letters, ascii_lowercase, ascii_uppercase, digits
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -192,7 +192,7 @@ def account_new(usr_uuid, second_vo):
 
 class TestVORestAPI:
 
-    @pytest.mark.parametrize("polling", [(True, False)])
+    @pytest.mark.parametrize("polling", [True, False])
     @patch("rucio.core.oidc.get_discovery_metadata")
     @patch("requests.post")
     def test_oidc_auth_flow(
@@ -233,6 +233,9 @@ class TestVORestAPI:
 
         # Extract redirect URL
         redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
+        if polling:
+            assert '_polling' in redirect_url
+
         assert 'https://redirect.example.com/auth/oidc_redirect?' in redirect_url
 
         redirect_url_parsed = urlparse(redirect_url)
@@ -247,9 +250,6 @@ class TestVORestAPI:
         # Create id_token with the same nonce
         id_token = encode_jwt_id_token_with_argument("knownsub", auth_url_params["nonce"][0])
         access_token = encode_jwt_with_argument("knownsub", "rucio", "openid profile")
-
-        session = db_session.get_session()
-
         headers_dict['X-Rucio-Client-Fetch-Token'] = 'True'
         with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
             # Step 4: Submit authorization code (Mock /auth/oidc_code)
@@ -264,12 +264,16 @@ class TestVORestAPI:
             }
             mock_post.return_value = mock_response
             response = rest_client.get(f'/auth/oidc_code?state={auth_url_params["state"][0]}&code=xxxx', headers=headers(hdrdict(headers_dict)))
-            db_token = get_token_row(access_token, account=InternalAccount("root"), session=session)
             assert response.status_code == 200
-            fetch_code = search(r'<b>([a-f0-9\-]{36})</b>', response.get_data(as_text=True))
-            assert fetch_code is not None
-            code= fetch_code.group(1)
-            response = rest_client.get(f'/auth/oidc_redirect?{code}', headers=headers(hdrdict(headers_dict)))
+            if polling:
+                assert 'Rucio Client should now be able to fetch your token automatically.' in response.get_data(as_text=True)
+                response = rest_client.get('/auth/oidc_redirect?%s' % redirect_url_parsed.query, headers=headers(hdrdict(headers_dict)))
+            else:
+                fetch_code = search(r'<b>([a-f0-9\-]{36})</b>', response.get_data(as_text=True))
+                assert fetch_code is not None
+                code= fetch_code.group(1)
+                response = rest_client.get(f'/auth/oidc_redirect?{code}', headers=headers(hdrdict(headers_dict)))
+
             assert response.status_code == 200
             token = response.headers.get('X-Rucio-Auth-Token')
 

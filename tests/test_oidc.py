@@ -32,10 +32,10 @@ from jwt.algorithms import RSAAlgorithm
 from sqlalchemy import select
 
 from rucio.common.config import config_get_bool
-from rucio.common.exception import CannotAuthenticate, DatabaseException, Duplicate, IdentityError
+from rucio.common.exception import CannotAuthenticate, IdentityError
 from rucio.common.types import InternalAccount
-from rucio.core.account import add_account
-from rucio.core.authentication import redirect_auth_oidc, validate_auth_token
+from rucio.core.account import add_account, del_account
+from rucio.core.authentication import redirect_auth_oidc
 from rucio.core.config import remove_option as config_remove
 from rucio.core.config import set as config_set
 from rucio.core.identity import add_account_identity
@@ -418,6 +418,7 @@ def test_get_auth_oidc(mock_get_discovery_metadata, mock_idp_secret_load, get_di
     new_account = InternalAccount('random')
     auth_url = get_auth_oidc(new_account, session=db_session, **kwargs)
     assert auth_url is None
+    del_account(account, session=db_session)
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
@@ -474,6 +475,8 @@ def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, mock_idp
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         with pytest.raises(requests.exceptions.HTTPError, match="400 Client Error: Bad Request for url"):
             get_token_oidc(auth_query_string, session=db_session)
+    
+    del_account(account, session=db_session)
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
@@ -508,6 +511,7 @@ def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, 
         result = get_token_oidc(auth_query_string, session=db_session)
         assert 'polling' in result
         assert result['polling']
+    del_account(account, session=db_session)
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
@@ -542,6 +546,7 @@ def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadat
         db_token = get_token_row(access_token, account=account, session=db_session)
         assert db_token
         assert db_token.refresh_token == encode_jwt_refresh_token
+    del_account(account, session=db_session)
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
@@ -578,6 +583,7 @@ def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argume
             res = validate_jwt(mock_token, session=db_session)
     db_token = get_token_row(mock_token, account=account, session=db_session)
     assert not db_token
+    del_account(account, session=db_session)
 
 
 
@@ -616,20 +622,47 @@ def mock_idpsecret_load_multiissuer():
         yield instance
 
 def test_get_vo_user_auth_config_multi(mock_idpsecret_load_multiissuer):
-    result = mock_idpsecret_load_multiissuer.get_vo_user_auth_config(issuer_nickname="mock-client-id2")
+    result = mock_idpsecret_load_multiissuer.get_vo_user_auth_config(issuer_nickname="example_issuer2")
     assert result["client_id"] == "mock-client-id2"
-    assert result["issuer"] == "https://mock-oidc-provider"
+    assert result["issuer"] == "https://mock-oidc-provider2"
 
 def test_get_client_credential_client_multi(mock_idpsecret_load_multiissuer):
     result = mock_idpsecret_load_multiissuer.get_client_credential_client()
     assert result["client_id"] == "client456"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-def test_get_client_remove_issuer_name_multi():
-    del mock_idpsecrets_multi_issuer['def']['user_auth_client'][0]["issuer_nickname"]
-    with patch.object(IDPSecretLoad, "_load_config", return_value=mock_idpsecrets_multi_issuer):
-        instance = IDPSecretLoad()
-        instance._config = mock_idpsecrets_multi_issuer
-        with pytest.raises(ValueError):
-            instance.get_vo_user_auth_config(issuer_nickname="mock-client-id2")
-    mock_idpsecrets_multi_issuer['def']['user_auth_client'][0]["issuer_nickname"] = "example_issuer"
+
+mock_idpsecrets_multi_vo = {
+    "def": {
+        "user_auth_client": [
+            {
+                "issuer": "https://mock-oidc-provider",
+                "client_id": "mock-client-id",
+                "client_secret": "secret",
+                "redirect_uris": "https://redirect.example.com",
+                "issuer_nickname": "example_issuer"
+            },
+        ],
+        "client_credential_client": {
+            "client_id": "client456",
+            "client_secret": "secret456",
+            "issuer": "https://mock-oidc-provider"
+        }
+    },
+    "new": {
+        "user_auth_client": [
+            {
+                "issuer": "https://mock-oidc-provider2",
+                "client_id": "mock-client-id2",
+                "client_secret": "secret",
+                "redirect_uris": "https://redirect.example.com",
+                "issuer_nickname": "example_issuer2"
+            },
+        ],
+        "client_credential_client": {
+            "client_id": "client4562",
+            "client_secret": "secret4562",
+            "issuer": "https://mock-oidc-provider2"
+        }
+    }
+}

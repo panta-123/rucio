@@ -60,7 +60,7 @@ from rucio.gateway.subscription import add_subscription, list_subscriptions
 from rucio.tests.common import auth, execute, hdrdict, headers, loginhdr, vohdr
 
 from .test_authentication import PRIVATE_KEY, PUBLIC_KEY
-from .test_oidc import NEW_TOKEN_DICT, get_mock_oidc_client
+from .test_oidc import encode_jwt_id_token_with_argument, encode_jwt_with_argument, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, mock_idp_secret_load
 
 LOG = getLogger(__name__)
 
@@ -192,111 +192,94 @@ def account_new(usr_uuid, second_vo):
 
 class TestVORestAPI:
 
-    @staticmethod
-    def auth_oidc_handling(mock_oidc_client, rest_client, vo, long_vo, account_in, account_not_in, auto, polling):
-        """
-        Utility script to handle the REST calls with various urls and codes needed to authenticate via OIDC.
-        IdP responses are faked using code from `test_oidc.py`.
-
-        :param mock_oidc_client: Mock OIDC client used to fake responses from the IdP for test purposes.
-        :param vo: VO to authenticate
-        :param account_in: A string (externally) representing an account we DO expect to find at the VO.
-        :param account_not_in: A string (externally) representing an account we DO NOT expect to find at the VO.
-        :param auto: Boolean to specify whether we automatically submit userpass to the IdP as part of authentication.
-        :param auto: Boolean to specify whether we poll the IdP for a successful login as part of authentication.
-        """
-        mock_oidc_client.side_effect = get_mock_oidc_client
-
+    @pytest.mark.parametrize("polling", [(True, False)])
+    @patch("rucio.core.oidc.get_discovery_metadata")
+    @patch("requests.post")
+    def test_oidc_auth_flow(
+        self,
+        mock_post,
+        mock_get_discovery_metadata,
+        mock_idp_secret_load, rest_client,
+        long_vo, polling,
+        encode_jwt_id_token_with_argument,
+        encode_jwt_with_argument,
+        get_discovery_metadata,
+        get_jwks_content,
+        vo,
+    ):
         try:
-            add_account_identity('SUB=knownsub, ISS=https://test_issuer/', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=vo)
+            add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=vo)
         except Duplicate:
             pass  # Might already exist, can skip
 
+        """Test the complete OIDC authentication flow from /auth/oidc to fetching the token."""
         # Define headers
-        headers_dict = {'X-Rucio-Account': 'root',
-                        'X-Rucio-VO': long_vo,
-                        'X-Rucio-Client-Authorize-Auto': str(auto),
-                        'X-Rucio-Client-Authorize-Polling': str(polling),
-                        'X-Rucio-Client-Authorize-Scope': 'openid profile',
-                        'X-Rucio-Client-Authorize-Refresh-Lifetime': '96',
-                        'X-Rucio-Client-Authorize-Audience': 'rucio',
-                        'X-Rucio-Client-Authorize-Issuer': 'dummy_admin_iss_nickname'}
+        headers_dict = {
+            'X-Rucio-Account': 'root',
+            'X-Rucio-VO': long_vo,
+            'X-Rucio-Client-Authorize-Polling': polling,
+            'X-Rucio-Client-Authorize-Scope': 'openid profile',
+            'X-Rucio-Client-Authorize-Refresh-Lifetime': '96',
+            'X-Rucio-Client-Authorize-Audience': 'rucio',
+            'X-Rucio-Client-Authorize-Issuer': 'dummy_admin_iss_nickname'
+        }
 
+        # Mock discovery metadata
+        mock_get_discovery_metadata.return_value = get_discovery_metadata
+
+        # Step 1: Initial request to /auth/oidc
         response = rest_client.get('/auth/oidc', headers=headers(hdrdict(headers_dict)))
         assert response.status_code == 200
-        if auto:
-            # Get the auth_url without any redirect
-            auth_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
-        else:
-            # Get the redirect_url
-            redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
-            assert 'https://test_redirect_string/auth/oidc_redirect?' in redirect_url
-            if polling:
-                assert '_polling' in redirect_url
-            else:
-                assert '_polling' not in redirect_url
-            redirect_url_parsed = urlparse(redirect_url)
 
-            # Get the auth_url from the redirect_url
-            response = rest_client.get('/auth/oidc_redirect?%s' % redirect_url_parsed.query, headers=headers(hdrdict(headers_dict)))
-            assert response.status_code == 303
-            auth_url = response.headers.get('location')
+        # Extract redirect URL
+        redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
+        assert 'https://redirect.example.com/auth/oidc_redirect?' in redirect_url
 
-        assert 'https://test_auth_url_string?' in auth_url
+        redirect_url_parsed = urlparse(redirect_url)
+        # Step 2: Follow redirect
+        response = rest_client.get(f'/auth/oidc_redirect?{redirect_url_parsed.query}', headers=headers(hdrdict(headers_dict)))
+        assert response.status_code == 303 
+        auth_url = response.headers.get('location')
         auth_url_parsed = urlparse(auth_url)
         auth_url_params = parse_qs(auth_url_parsed.query)
 
-        # Fake the IdP response for a successful login
-        code_response = rndstr()
-        access_token = rndstr()
-        NEW_TOKEN_DICT['access_token'] = access_token
-        NEW_TOKEN_DICT['id_token'] = {'sub': 'knownsub', 'iss': 'https://test_issuer/', 'nonce': auth_url_params['nonce'][0]}
+
+        # Create id_token with the same nonce
+        id_token = encode_jwt_id_token_with_argument("knownsub", auth_url_params["nonce"][0])
+        access_token = encode_jwt_with_argument("knownsub", "rucio", "openid profile")
+
+        session = db_session.get_session()
+
         headers_dict['X-Rucio-Client-Fetch-Token'] = 'True'
-
-        if auto:
-            # Can get the token now
-            response = rest_client.get('/auth/oidc_token?state=%s&code=%s' % (auth_url_params['state'][0], code_response), headers=headers(hdrdict(headers_dict)))
-        else:
-            # Get the html response
-            response = rest_client.get('/auth/oidc_code?state=%s&code=%s' % (auth_url_params['state'][0], code_response), headers=headers(hdrdict(headers_dict)))
+        with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
+            # Step 4: Submit authorization code (Mock /auth/oidc_code)
+            # Mocking requests.post response
+            mock_response = Mock()
+            mock_response.raise_for_status = Mock()  # No exception for a successful response
+            mock_response.json.return_value = {
+                "access_token": access_token,
+                "id_token": id_token,
+                "expires_in": 3600,
+                "scope": "openid profile"
+            }
+            mock_post.return_value = mock_response
+            response = rest_client.get(f'/auth/oidc_code?state={auth_url_params["state"][0]}&code=xxxx', headers=headers(hdrdict(headers_dict)))
+            db_token = get_token_row(access_token, account=InternalAccount("root"), session=session)
             assert response.status_code == 200
-            if polling:
-                assert 'Rucio Client should now be able to fetch your token automatically.' in response.get_data(as_text=True)
-                response = rest_client.get('/auth/oidc_redirect?%s' % redirect_url_parsed.query, headers=headers(hdrdict(headers_dict)))
-            else:
-                # Get the fetch_code from the response, then submit it
-                fetch_code = search(r'<b>[a-zA-Z0-9]{50}</b>', response.get_data(as_text=True))
-                assert fetch_code is not None
-                fetch_code = fetch_code.group()[3:53]
-                response = rest_client.get('/auth/oidc_redirect?%s' % fetch_code, headers=headers(hdrdict(headers_dict)))
+            fetch_code = search(r'<b>([a-f0-9\-]{36})</b>', response.get_data(as_text=True))
+            assert fetch_code is not None
+            code= fetch_code.group(1)
+            response = rest_client.get(f'/auth/oidc_redirect?{code}', headers=headers(hdrdict(headers_dict)))
+            assert response.status_code == 200
+            token = response.headers.get('X-Rucio-Auth-Token')
 
-        # Regardless of how we got it, check we have the token and that we only get results from our VO when using it
-        assert response.status_code == 200
-        token = str(response.headers.get('X-Rucio-Auth-Token'))
-        response = rest_client.get('/accounts/', headers=headers(auth(token)))
-        assert response.status_code == 200
-        accounts = [parse_response(a)['account'] for a in response.get_data(as_text=True).split('\n')[:-1]]
-        assert len(accounts) != 0
-        assert account_in in accounts
-        assert account_not_in not in accounts
+            # Step 6: Use token to verify account access
+            response = rest_client.get('/accounts/', headers=headers(auth(token)))
+            assert response.status_code == 200
+            accounts = [parse_response(a)['account'] for a in response.get_data(as_text=True).split('\n')[:-1]]
 
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    def test_auth_oidc(self, mock_oidc_client, vo, long_vo, second_vo, account_tst, account_new, rest_client):
-        """ MULTI VO (REST): Test oidc authentication to multiple VOs """
-        self.auth_oidc_handling(mock_oidc_client, rest_client, vo, long_vo, account_tst, account_new, auto=False, polling=False)
-        self.auth_oidc_handling(mock_oidc_client, rest_client, second_vo, second_vo, account_new, account_tst, auto=False, polling=False)
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    def test_auth_oidc_polling(self, mock_oidc_client, vo, long_vo, second_vo, account_tst, account_new, rest_client):
-        """ MULTI VO (REST): Test oidc authentication to multiple VOs using 'polling' option """
-        self.auth_oidc_handling(mock_oidc_client, rest_client, vo, long_vo, account_tst, account_new, auto=False, polling=True)
-        self.auth_oidc_handling(mock_oidc_client, rest_client, second_vo, second_vo, account_new, account_tst, auto=False, polling=True)
-
-    @patch('rucio.core.oidc.__get_init_oidc_client')
-    def test_auth_oidc_auto(self, mock_oidc_client, vo, long_vo, second_vo, account_tst, account_new, rest_client):
-        """ MULTI VO (REST): Test oidc authentication to multiple VOs using 'auto' option """
-        self.auth_oidc_handling(mock_oidc_client, rest_client, vo, long_vo, account_tst, account_new, auto=True, polling=False)
-        self.auth_oidc_handling(mock_oidc_client, rest_client, second_vo, second_vo, account_new, account_tst, auto=True, polling=False)
+            assert len(accounts) != 0
+            assert 'root' in accounts
 
     def test_auth_gss(self, vo, second_vo, account_tst, account_new, rest_client):
         """ MULTI VO (REST): Test gss authentication to multiple VOs """

@@ -70,12 +70,12 @@ EXPECTED_OIDC_RESOURCE = config_get('oidc', 'expected_resource', False, '')
 # 'profile' is added as required for extra scope
 DEFAULT_ID_TOKEN_SCOPES = ['openid', 'profile']
 # Extra scopes for id token.
-ID_TOKEN_EXTRA_SCOPES = config_get_list('oidc', 'id_token_extra_scopes', False, [])
+ID_TOKEN_EXTRA_SCOPES: list = config_get_list('oidc', 'id_token_extra_scopes', False, [])
 # Corresponding claim that needs to there for ID_TOKEN_EXTRA_SCOPES
-ID_TOKEN_EXTRA_CLAIMS = config_get_list('oidc', 'id_token_extra_claims', False, [])
+ID_TOKEN_EXTRA_CLAIMS: list = config_get_list('oidc', 'id_token_extra_claims', False, [])
 # extra scope to ask for in access token.
 # some issuer wants to have extra scope for RP to validate against.
-EXTRA_OIDC_ACCESS_TOKEN_SCOPE = config_get_list('oidc', 'extra_access_token_scope', raise_exception=False, default='')
+EXTRA_OIDC_ACCESS_TOKEN_SCOPE: list = config_get_list('oidc', 'extra_access_token_scope', False, default='') # type: ignore
 REFRESH_LIFETIME_H = config_get_int('oidc', 'default_jwt_refresh_lifetime', False, 96)
 
 # Allow 2 mins of leeway in case Rucio and IdP server clocks are not perfectly synchronized
@@ -106,7 +106,7 @@ class IDPSecretLoad:
 
         self._validate_config()
 
-    def get_vo_user_auth_config(self, vo: str = "def", issuer_nickname: Optional[str] = None) -> Optional[dict[str, str]]:
+    def get_vo_user_auth_config(self, vo: str = "def", issuer_nickname: Optional[str] = None) -> dict[str, str]:
         """
         Retrieve the issuer configuration for a VO.
 
@@ -123,10 +123,12 @@ class IDPSecretLoad:
         if not issuer_nickname and len(vo_user_auth_config) == 1:
             return vo_user_auth_config[0]
         if len(vo_user_auth_config) > 1 and not issuer_nickname:
-                raise ValueError("issuer nickname is required since server has multiple issuer configured.")
+            raise ValueError("issuer nickname is required since server has multiple issuer configured.")
         for issuer_config in vo_user_auth_config:
             if issuer_config["issuer_nickname"] == issuer_nickname:
                 return issuer_config
+
+        raise ValueError(f"Issuer nickname '{issuer_nickname}' not found for VO '{vo}'.")
 
     def get_client_credential_client(self, vo: str = "def") -> dict[str, str]:
         """
@@ -144,7 +146,7 @@ class IDPSecretLoad:
 
         return vo_client_credential_config
 
-    def get_config_from_clientid_issuer(self, client_id: str, issuer: str) -> Optional[dict[str, str]]:
+    def get_config_from_clientid_issuer(self, client_id: str, issuer: str) -> dict[str, str]:
         """
         Retrieve configuration based on client ID and issuer.
 
@@ -159,6 +161,7 @@ class IDPSecretLoad:
             for issuer_auth_config in user_auth_config:
                 if issuer_auth_config["client_id"] == client_id and issuer_auth_config["issuer"].rstrip('/') == issuer.rstrip('/'):
                     return issuer_auth_config
+        raise ValueError(f"Client_ID '{client_id}' not found for issuer '{issuer}'.")
 
     def is_valid_issuer(self, issuer_url: str, vo: str = "def", issuer_nickname: Optional[str] = None) -> bool:
         """
@@ -424,7 +427,7 @@ def request_token(
 
     # Access IDP configurations within the VO
     issuer = client_config.get("issuer")
-    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"]
+    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"] # type: ignore
     client_id = client_config.get("client_id")
     client_secret = client_config.get("client_secret")
 
@@ -1060,7 +1063,7 @@ def validate_jwt(
     :returns: Token validation dictionary.
     :raises: CannotAuthenticate if the token is invalid.
     """
-    unverified_claims = jwt.get_unverified_claims(token)
+    unverified_claims =  jwt.decode(token, options={"verify_signature": False})
     issuer_url = unverified_claims["iss"]
     token_type = "access_token"
     if EXPECTED_OIDC_RESOURCE:

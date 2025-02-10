@@ -19,7 +19,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Iterator, Literal, Optional
+from typing import Any, Literal, Optional
 from unittest.mock import MagicMock, Mock, mock_open, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -46,6 +46,9 @@ from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountType, IdentityType
 from rucio.db.sqla.session import get_session
 from rucio.tests.common import account_name_generator
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def get_oauth_session_row(account, state=None, session=None):

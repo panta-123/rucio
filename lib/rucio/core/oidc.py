@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import jwt
 import requests
 from dogpile.cache.api import NoValue
+from jwt.algorithms import RSAAlgorithm
 from sqlalchemy import delete, null, or_, select, update
 from sqlalchemy.sql.expression import true
 
@@ -33,12 +34,12 @@ from rucio.common.cache import MemcacheRegion
 from rucio.common.config import config_get, config_get_bool, config_get_int, config_get_list
 from rucio.common.exception import CannotAuthenticate, CannotAuthorize, RucioException
 from rucio.common.utils import all_oidc_req_claims_present, build_url, chunks, val_to_space_sep_str
-from rucio.core.account import account_exists, get_account
+from rucio.core.account import account_exists
 from rucio.core.identity import exist_identity_account, get_default_account
 from rucio.core.monitor import MetricManager
 from rucio.db.sqla import models
 from rucio.db.sqla.constants import IdentityType
-from rucio.db.sqla.session import read_session, transactional_session
+from rucio.db.sqla.session import transactional_session
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -75,7 +76,7 @@ ID_TOKEN_EXTRA_SCOPES: list = config_get_list('oidc', 'id_token_extra_scopes', F
 ID_TOKEN_EXTRA_CLAIMS: list = config_get_list('oidc', 'id_token_extra_claims', False, [])
 # extra scope to ask for in access token.
 # some issuer wants to have extra scope for RP to validate against.
-EXTRA_OIDC_ACCESS_TOKEN_SCOPE: list = config_get_list('oidc', 'extra_access_token_scope', False, default='') # type: ignore
+EXTRA_OIDC_ACCESS_TOKEN_SCOPE: list = config_get_list('oidc', 'extra_access_token_scope', False, default='')  # type: ignore
 REFRESH_LIFETIME_H = config_get_int('oidc', 'default_jwt_refresh_lifetime', False, 96)
 
 # Allow 2 mins of leeway in case Rucio and IdP server clocks are not perfectly synchronized
@@ -243,9 +244,11 @@ def _token_cache_get(
     METRICS.counter('token_cache.hit').inc()
     return value
 
+
 def _token_cache_set(key: str, value: str) -> None:
     """Store a token in the cache."""
     REGION.set(key, value)
+
 
 def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
     """
@@ -256,9 +259,12 @@ def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
     """
     # Check if the JWKS content is already cached
     cache_key = f"discovery_metadata_{issuer_url}"
-    cached_discovery = DISCOVERY_CACHE_REGION.get(cache_key)
+    cached_discovery = DISCOVERY_CACHE_REGION.get(cache_key, None)
     if cached_discovery:
-        return json.loads(cached_discovery)
+        try:
+            return json.loads(cached_discovery)
+        except json.JSONDecodeError:
+            pass
     discovery_url = f"{issuer_url}/.well-known/openid-configuration"
     response = requests.get(discovery_url, timeout=10)
     response.raise_for_status()
@@ -276,7 +282,7 @@ def get_jwks_content(issuer_url: str) -> dict[str, Any]:
     """
     # Check if the JWKS content is already cached
     cache_key = f"jwks_content_{issuer_url}"
-    cached_jwks = DISCOVERY_CACHE_REGION.get(cache_key)
+    cached_jwks = DISCOVERY_CACHE_REGION.get(cache_key, None)
 
     if cached_jwks:
         return json.loads(cached_jwks)  # Return the cached JWKS content
@@ -339,7 +345,7 @@ def validate_token(
             raise ValueError(f"No matching key found in JWKS for kid: {kid}")
 
     try:
-        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+        public_key = RSAAlgorithm.from_jwk(json.dumps(key))
     except Exception as e:
         raise ValueError(f"Failed to convert JWK to PEM-format public key: {e}") from e
 
@@ -427,7 +433,7 @@ def request_token(
 
     # Access IDP configurations within the VO
     issuer = client_config.get("issuer")
-    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"] # type: ignore
+    issuer_token_endpoint = get_discovery_metadata(issuer_url=issuer)["token_endpoint"]  # type: ignore
     client_id = client_config.get("client_id")
     client_secret = client_config.get("client_secret")
 
@@ -547,7 +553,7 @@ def get_auth_oidc(
                 query_params['audience'] = audience
         auth_url = f"{auth_server.geturl()}?{urlencode(query_params)}"
         # redirect code is put in access_msg and returned to the user
-        access_msg =str(uuid.uuid4())
+        access_msg = str(uuid.uuid4())
         if polling:
             access_msg += '_polling'
         # Making sure refresh_lifetime is an integer or None.
@@ -569,7 +575,7 @@ def get_auth_oidc(
 
         auth_server = urlparse(redirect_url)
         auth_url = build_url('https://' + auth_server.netloc, path='{}auth/oidc_redirect'.format(
-        auth_server.path.split('auth/')[0].lstrip('/')), params=access_msg)
+            auth_server.path.split('auth/')[0].lstrip('/')), params=access_msg)
 
         return auth_url
 
@@ -606,7 +612,7 @@ def get_token_oidc(
     oauth_req_params = session.execute(query).scalar()
     if oauth_req_params is None:
         raise CannotAuthenticate("User related Rucio OIDC session could not keep "
-                                    + "track of responses from outstanding requests.")  # NOQA: W503
+                                 + "track of responses from outstanding requests.")
     req_url = urlparse(oauth_req_params.redirect_msg or '')
     issuer_extracted = req_url.scheme + "://" + req_url.netloc
     query_params = parse_qs(req_url.query)
@@ -643,15 +649,14 @@ def get_token_oidc(
 
     # Decode the ID token and validate the nonce
     token_type = "id_token"
-    id_token_decoded = validate_token(token=tokens['id_token'], issuer_url=issuer_url, nonce=nonce, audience=client_id, token_type=token_type) # type: ignore
+    id_token_decoded = validate_token(token=tokens['id_token'], issuer_url=issuer_url, nonce=nonce, audience=client_id, token_type=token_type)
     # Extract the issuer from the ID token
     issuer_from_id_token = id_token_decoded.get("iss")
     sub_from_id_token = id_token_decoded.get("sub")
     identity = oidc_identity_string(sub=sub_from_id_token, iss=issuer_from_id_token)  # type: ignore
     # check if given account has the identity registered
     if not exist_identity_account(identity, IdentityType.OIDC, account, session=session):
-        raise CannotAuthenticate("OIDC identity '%s' of the '%s' account is unknown to Rucio."
-                                    % (identity, account))
+        raise CannotAuthenticate("OIDC identity '%s' of the '%s' account is unknown to Rucio." % (identity, account))
     # extract scope, audience, lifetime from access token
     token_type = "access_token"
     scopes = tokens["scope"].split()
@@ -659,7 +664,7 @@ def get_token_oidc(
         audience_to_valiadate = EXPECTED_OIDC_RESOURCE
     else:
         audience_to_valiadate = EXPECTED_OIDC_AUDIENCE
-    access_token_decoded = validate_token(token=tokens['access_token'], issuer_url=issuer_url, audience=audience_to_valiadate, token_type=token_type, scopes=scopes)
+    _ = validate_token(token=tokens['access_token'], issuer_url=issuer_url, audience=audience_to_valiadate, token_type=token_type, scopes=scopes)
     scopes = tokens['scope']
     lifetime = datetime.utcnow() + timedelta(seconds=tokens['expires_in'])
 
@@ -1063,7 +1068,11 @@ def validate_jwt(
     :returns: Token validation dictionary.
     :raises: CannotAuthenticate if the token is invalid.
     """
-    unverified_claims =  jwt.decode(token, options={"verify_signature": False})
+    unverified_claims = jwt.decode(token, options={"verify_signature": False})
+    exp = unverified_claims.get('exp', 3600)
+    iat =  unverified_claims.get('iat', 0)
+    _lifetime = exp - iat
+    lifetime = datetime.utcnow() + timedelta(seconds=_lifetime)
     issuer_url = unverified_claims["iss"]
     token_type = "access_token"
     if EXPECTED_OIDC_RESOURCE:
@@ -1079,6 +1088,8 @@ def validate_jwt(
     if not is_valid_issuer:
         raise CannotAuthenticate(f"token with issuer {issuer_url} is not from valid issuer")
     token_dict = {}
+    token_dict['lifetime'] = lifetime
+    token_dict['identity'] = identity_string
     if "scope" in access_token_decoded:
         token_dict['authz_scope'] = access_token_decoded['scope']
     else:

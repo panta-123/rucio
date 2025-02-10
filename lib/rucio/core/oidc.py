@@ -198,10 +198,10 @@ class IDPSecretLoad:
                     if not all(k in entry for k in ["client_id", "client_secret", "issuer", "redirect_uris"]):
                         raise ValueError(f"VO '{vo}' user_auth_client must have 'issuer', 'client_id' and 'client_secret'.")
 
-            if len(user_auth_client) > 1:
-                for entry in user_auth_client:
-                    if "issuer_nickname" not in entry or not isinstance(entry["issuer_nickname"], str):
-                        raise ValueError(f"Each entry in 'user_auth_client' for VO '{vo}' must have a valid 'issuer_nickname' when multiple clients exist.")
+                if len(user_auth_client) > 1:
+                    for entry in user_auth_client:
+                        if "issuer_nickname" not in entry or not isinstance(entry["issuer_nickname"], str):
+                            raise ValueError(f"Each entry in 'user_auth_client' for VO '{vo}' must have a valid 'issuer_nickname' when multiple clients exist.")
 
             client_credential_client = details.get("client_credential_client", None)
             if client_credential_client:

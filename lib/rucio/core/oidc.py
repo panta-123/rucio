@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
 import requests
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from dogpile.cache.api import NoValue
 from jwt.algorithms import RSAAlgorithm
 from sqlalchemy import delete, null, or_, select, update
@@ -346,6 +347,8 @@ def validate_token(
 
     try:
         public_key = RSAAlgorithm.from_jwk(json.dumps(key))
+        if not isinstance(public_key, RSAPublicKey):
+            raise ValueError("The provided JWK is not a valid RSAPublicKey.")
     except Exception as e:
         raise ValueError(f"Failed to convert JWK to PEM-format public key: {e}") from e
 

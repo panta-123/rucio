@@ -19,7 +19,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import Any, Literal, Optional
 from unittest.mock import MagicMock, Mock, mock_open, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -46,9 +46,6 @@ from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountType, IdentityType
 from rucio.db.sqla.session import get_session
 from rucio.tests.common import account_name_generator
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 
 def get_oauth_session_row(account, state=None, session=None):
@@ -98,7 +95,7 @@ mock_idpsecrets = {
 
 
 @pytest.fixture
-def idp_secrets_mock(request) -> Iterator[str]:
+def idp_secrets_mock(request) -> str:
     """
     Fixture that sets up a temporary JSON file containing IDP secrets and sets
     the IDP_SECRETS_FILE environment variable to point to this file.
@@ -115,7 +112,7 @@ def idp_secrets_mock(request) -> Iterator[str]:
         tmp_file_name = tmp_file.name
     os.environ["IDP_SECRETS_FILE"] = tmp_file_name  # Set environment variable
     try:
-        yield tmp_file_name  # Provide the path to the test
+        return tmp_file_name  # Provide the path to the test
     finally:
         os.remove(tmp_file.name)  # Cleanup after test
         del os.environ["IDP_SECRETS_FILE"]  # Remove env var after test

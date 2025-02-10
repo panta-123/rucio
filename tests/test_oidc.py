@@ -19,7 +19,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from unittest.mock import MagicMock, Mock, mock_open, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -35,7 +35,7 @@ from sqlalchemy import select
 
 from rucio.common.config import config_get_bool
 from rucio.common.exception import CannotAuthenticate, IdentityError
-from rucio.common.types import InternalAccount
+from rucio.common.types import InternalAccount,
 from rucio.core.account import add_account, del_account
 from rucio.core.authentication import redirect_auth_oidc
 from rucio.core.config import remove_option as config_remove
@@ -46,6 +46,8 @@ from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountType, IdentityType
 from rucio.db.sqla.session import get_session
 from rucio.tests.common import account_name_generator
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def get_oauth_session_row(account, state=None, session=None):
@@ -95,7 +97,7 @@ mock_idpsecrets = {
 
 
 @pytest.fixture
-def idp_secrets_mock(request) -> str:
+def idp_secrets_mock(request) -> "Iterator[str]":
     """
     Fixture that sets up a temporary JSON file containing IDP secrets and sets
     the IDP_SECRETS_FILE environment variable to point to this file.
@@ -106,17 +108,13 @@ def idp_secrets_mock(request) -> str:
     secrets = request.param
 
     # Create a temporary file
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:
+    with tempfile.NamedTemporaryFile(mode="w", delete=True, suffix=".json") as tmp_file:
         json.dump(secrets, tmp_file)
         tmp_file.flush()
         tmp_file_name = tmp_file.name
-    os.environ["IDP_SECRETS_FILE"] = tmp_file_name  # Set environment variable
-    try:
-        return tmp_file_name  # Provide the path to the test
-    finally:
-        os.remove(tmp_file.name)  # Cleanup after test
-        del os.environ["IDP_SECRETS_FILE"]  # Remove env var after test
-
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("IDP_SECRETS_FILE", tmp_file_name)
+            yield mp
 
 @pytest.fixture
 def get_jwks_content(generate_rsa_keypair):
@@ -248,7 +246,7 @@ def get_idp_auth_params(auth_url, session):
     return parse_qs(idp_urlparsed.query)
 
 
-@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
 def test_get_vo_user_auth_config(idp_secrets_mock):
     assert "IDP_SECRETS_FILE" in os.environ
     assert os.environ["IDP_SECRETS_FILE"] == idp_secrets_mock
@@ -257,21 +255,21 @@ def test_get_vo_user_auth_config(idp_secrets_mock):
     assert result["client_id"] == "mock-client-id"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
 def test_get_client_credential_client(idp_secrets_mock):
     config = IDPSecretLoad()
     result = config.get_client_credential_client(vo="def")
     assert result["client_id"] == "client456"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
 def test_get_config_from_clientid_issuer(idp_secrets_mock):
     config = IDPSecretLoad()
     result = config.get_config_from_clientid_issuer("mock-client-id", "https://mock-oidc-provider")
     assert result["client_id"] == "mock-client-id"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
 def test_is_valid_issuer(idp_secrets_mock):
     config = IDPSecretLoad()
     result = config.is_valid_issuer(issuer_url="https://mock-oidc-provider", vo='def')

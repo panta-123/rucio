@@ -20,7 +20,7 @@ import traceback
 import uuid
 from datetime import datetime, timedelta
 from math import floor
-from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Final, Literal, Optional, Union, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
@@ -45,7 +45,7 @@ from rucio.db.sqla.session import transactional_session
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-    from rucio.common.types import InternalAccount
+    from rucio.common.types import InternalAccount, TokenValidationDict
 
 # The WLCG Common JWT Profile dictates that the lifetime of access and ID tokens
 # should range from five minutes to six hours.
@@ -262,15 +262,12 @@ def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
     cache_key = f"discovery_metadata_{issuer_url}"
     cached_discovery = DISCOVERY_CACHE_REGION.get(cache_key, None)
     if cached_discovery:
-        try:
-            return json.loads(cached_discovery)
-        except json.JSONDecodeError:
-            pass
+        return cached_discovery
     discovery_url = f"{issuer_url}/.well-known/openid-configuration"
     response = requests.get(discovery_url, timeout=10)
     response.raise_for_status()
-    metadata = response.json()
-    DISCOVERY_CACHE_REGION.set(cache_key, json.dumps(metadata))
+    metadata = json.loads(response.json())
+    DISCOVERY_CACHE_REGION.set(cache_key, metadata)
     return metadata
 
 
@@ -279,14 +276,14 @@ def get_jwks_content(issuer_url: str) -> dict[str, Any]:
     Discover the JWKS content from the issuer's metadata and cache the response.
 
     :param issuer_url: The issuer's base URL (e.g., https://example.com).
-    :return: The JWKS content (JSON with public keys).
+    :return: The JWKS content.
     """
     # Check if the JWKS content is already cached
     cache_key = f"jwks_content_{issuer_url}"
     cached_jwks = DISCOVERY_CACHE_REGION.get(cache_key, None)
 
     if cached_jwks:
-        return json.loads(cached_jwks)  # Return the cached JWKS content
+        return cached_jwks
 
     metadata = get_discovery_metadata(issuer_url=issuer_url)
 
@@ -294,14 +291,13 @@ def get_jwks_content(issuer_url: str) -> dict[str, Any]:
     jwks_url = metadata.get("jwks_uri")
     if not jwks_url:
         raise ValueError("No 'jwks_uri' found in the metadata.")
-
     # Fetch the JWKS content
     jwks_response = requests.get(jwks_url, timeout=10)
     jwks_response.raise_for_status()
-    jwks_content = jwks_response.json()
+    jwks_content = json.loads(jwks_response.json())
 
     # Cache the JWKS content
-    DISCOVERY_CACHE_REGION.set(cache_key, json.dumps(jwks_content))
+    DISCOVERY_CACHE_REGION.set(cache_key, jwks_content)
     return jwks_content
 
 
@@ -664,17 +660,17 @@ def get_token_oidc(
     token_type = "access_token"
     scopes = tokens["scope"].split()
     if EXPECTED_OIDC_RESOURCE:
-        audience_to_valiadate = EXPECTED_OIDC_RESOURCE
+        audience_to_validate = EXPECTED_OIDC_RESOURCE
     else:
-        audience_to_valiadate = EXPECTED_OIDC_AUDIENCE
-    _ = validate_token(token=tokens['access_token'], issuer_url=issuer_url, audience=audience_to_valiadate, token_type=token_type, scopes=scopes)
+        audience_to_validate = EXPECTED_OIDC_AUDIENCE
+    _ = validate_token(token=tokens['access_token'], issuer_url=issuer_url, audience=audience_to_validate, token_type=token_type, scopes=scopes)
     scopes = tokens['scope']
     lifetime = datetime.utcnow() + timedelta(seconds=tokens['expires_in'])
 
     # assemble OIDC table value
     jwt_row_dict = {
         'authz_scope': scopes,
-        'audience': audience_to_valiadate,
+        'audience': audience_to_validate,
         'lifetime': lifetime,
         'account': account,
         'identity': identity
@@ -1061,7 +1057,7 @@ def validate_jwt(
     token: str,
     *,
     session: "Session"
-) -> dict[str, Any]:
+) -> "TokenValidationDict":
     """
     Validate a JWT token.
 
@@ -1078,10 +1074,10 @@ def validate_jwt(
     issuer_url = unverified_claims["iss"]
     token_type = "access_token"
     if EXPECTED_OIDC_RESOURCE:
-        audience_to_valiadate = EXPECTED_OIDC_RESOURCE
+        audience_to_validate = EXPECTED_OIDC_RESOURCE
     else:
-        audience_to_valiadate = EXPECTED_OIDC_AUDIENCE
-    access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=audience_to_valiadate, token_type=token_type, scopes=EXTRA_OIDC_ACCESS_TOKEN_SCOPE)
+        audience_to_validate = EXPECTED_OIDC_AUDIENCE
+    access_token_decoded = validate_token(token=token, issuer_url=issuer_url, audience=audience_to_validate, token_type=token_type, scopes=EXTRA_OIDC_ACCESS_TOKEN_SCOPE)
     identity_string = oidc_identity_string(access_token_decoded['sub'], access_token_decoded['iss'])
     account = get_default_account(identity_string, IdentityType.OIDC, True, session=session)
     vo = account.vo
@@ -1109,7 +1105,7 @@ def validate_jwt(
     token_dict["audience"] = access_token_decoded["aud"]
     token_dict["account"] = account
     __save_validated_token(token, token_dict, session=session)
-    return token_dict
+    return cast("TokenValidationDict", token_dict)
 
 
 def oidc_identity_string(sub: str, iss: str) -> str:

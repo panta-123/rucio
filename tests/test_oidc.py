@@ -19,7 +19,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from unittest.mock import MagicMock, Mock, mock_open, patch
 from urllib.parse import parse_qs, urlparse
 

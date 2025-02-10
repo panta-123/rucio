@@ -22,7 +22,6 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from oic import rndstr
 from sqlalchemy import select
 
 from rucio.client.accountlimitclient import AccountLimitClient

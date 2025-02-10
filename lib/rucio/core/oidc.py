@@ -861,15 +861,14 @@ def __delete_expired_tokens_account(
     :param session: The database session in use.
     """
     query = select(
-            models.Token.token
-        ).where(
-            models.Token.expired_at <= datetime.utcnow(),
-            models.Token.account == account,
-            or_(
-                models.Token.refresh_expired_at == null(),
-                models.Token.refresh_expired_at <= datetime.utcnow()
-            )
-        ).with_for_update(
+        models.Token.token
+    ).where(
+        models.Token.expired_at <= datetime.utcnow(),
+        models.Token.account == account,
+        or_(
+            models.Token.refresh_expired_at == null(),
+            models.Token.refresh_expired_at <= datetime.utcnow()
+        )).with_for_update(
         skip_locked=True
     )
     tokens = session.execute(query).scalars().all()
@@ -1073,7 +1072,7 @@ def validate_jwt(
     """
     unverified_claims = jwt.decode(token, options={"verify_signature": False})
     exp = unverified_claims.get('exp', 3600)
-    iat =  unverified_claims.get('iat', 0)
+    iat = unverified_claims.get('iat', 0)
     _lifetime = exp - iat
     lifetime = datetime.utcnow() + timedelta(seconds=_lifetime)
     issuer_url = unverified_claims["iss"]

@@ -14,9 +14,7 @@
 
 import json
 import logging
-import time
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from flask import Blueprint, Flask, Response, redirect, render_template, request
 from werkzeug.datastructures import Headers

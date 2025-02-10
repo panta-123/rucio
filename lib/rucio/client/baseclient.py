@@ -632,8 +632,10 @@ class BaseClient:
                 if 'X-Rucio-Auth-Token' in result.headers and result.status_code == codes.ok:
                     break
                 else:
-                    print("The Rucio Auth Server did not respond as expected. Please, "
-                            + "try again and make sure you typed the correct code.")  # NOQA: W503
+                    print(
+                        "The Rucio Auth Server did not respond as expected. Please, "
+                        + "try again and make sure you typed the correct code."
+                    )  # NOQA: W503
                     count += 1
 
         if not result:

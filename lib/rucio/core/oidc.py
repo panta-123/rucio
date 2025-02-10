@@ -262,11 +262,14 @@ def get_discovery_metadata(issuer_url: str) -> dict[str, Any]:
     cache_key = f"discovery_metadata_{issuer_url}"
     cached_discovery = DISCOVERY_CACHE_REGION.get(cache_key, None)
     if cached_discovery:
-        return cached_discovery
+        if isinstance(cached_discovery, dict):
+            return cached_discovery
+        else:
+            pass
     discovery_url = f"{issuer_url}/.well-known/openid-configuration"
     response = requests.get(discovery_url, timeout=10)
     response.raise_for_status()
-    metadata = json.loads(response.json())
+    metadata = response.json()
     DISCOVERY_CACHE_REGION.set(cache_key, metadata)
     return metadata
 
@@ -283,8 +286,10 @@ def get_jwks_content(issuer_url: str) -> dict[str, Any]:
     cached_jwks = DISCOVERY_CACHE_REGION.get(cache_key, None)
 
     if cached_jwks:
-        return cached_jwks
-
+        if isinstance(cached_jwks, dict):
+            return cached_jwks
+        else:
+            pass
     metadata = get_discovery_metadata(issuer_url=issuer_url)
 
     # Get the jwks_uri from the metadata
@@ -294,7 +299,7 @@ def get_jwks_content(issuer_url: str) -> dict[str, Any]:
     # Fetch the JWKS content
     jwks_response = requests.get(jwks_url, timeout=10)
     jwks_response.raise_for_status()
-    jwks_content = json.loads(jwks_response.json())
+    jwks_content = jwks_response.json()
 
     # Cache the JWKS content
     DISCOVERY_CACHE_REGION.set(cache_key, jwks_content)
@@ -399,9 +404,8 @@ def validate_token(
 
 
 def request_token(
+    audience: str,
     scope: str,
-    audience: Optional[str] = None,
-    resource: Optional[str] = None,
     vo: str = 'def',
     use_cache: bool = True,
 ) -> Optional[str]:
@@ -411,17 +415,12 @@ def request_token(
     Return ``None`` if the configuration was not loaded properly or the request
     was unsuccessful.
 
+    :param audience: Audience for the token.
     :param scope: Scope of the token.
-    :param audience: (Optional) Audience for the token.
     :param vo: Virtual Organization (default: 'def').
     :param use_cache: Whether to use caching for tokens (default: True).
-    :param resource: (Optional) Resource for the token as per RFC8707.
     :return: The access token or None if the request fails.
-    :raises ValueError: If neither 'audience' nor 'resource' is provided.
     """
-    # Validate input: Either 'audience' or 'resource' must be provided
-    if not audience and not resource:
-        raise ValueError("Either 'audience' or 'resource' (RFC8707) must be provided.")
 
     # Load configuration
     idpsecret_config_loader = IDPSecretLoad()
@@ -437,11 +436,7 @@ def request_token(
     client_secret = client_config.get("client_secret")
 
     # Create a cache key based on parameters
-    cache_key_base = f"scope={scope};vo={vo}"
-    if resource:
-        cache_key_base += f";audience={resource}"
-    else:
-        cache_key_base += f";audience={audience}"
+    cache_key_base = f"scope={scope};vo={vo};audience={audience}"
     key = hashlib.md5(cache_key_base.encode()).hexdigest()
 
     # Check cache
@@ -452,11 +447,9 @@ def request_token(
     data = {
         'grant_type': 'client_credentials',
         'scope': scope,
+        'audience': audience
     }
-    if audience:
-        data['audience'] = audience
-    elif resource:
-        data['resource'] = resource
+
 
     # Request the token
     try:
@@ -464,7 +457,7 @@ def request_token(
             url=issuer_token_endpoint,
             auth=(client_id, client_secret),  # type: ignore
             data=data,
-            timeout=10  # Add a timeout of 10 seconds
+            timeout=10
         )
         response.raise_for_status()
         payload = response.json()
@@ -993,8 +986,11 @@ def __refresh_token_oidc(
         __change_refresh_state(token_object.token, refresh=False, session=session)
         return None
 
-    refresh_token = token_object.refresh_token
-    decoded_refresh_token = jwt.decode(refresh_token, options={"verify_signature": False})
+    if token_object.refresh_token:
+        refresh_token = token_object.refresh_token
+        decoded_refresh_token = jwt.decode(refresh_token, options={"verify_signature": False})
+    else:
+        raise CannotAuthorize("No refresh token found")
     issuer_url = decoded_refresh_token.get('iss')
     idpsecret_config_loader = IDPSecretLoad()
     idp_config_vo = idpsecret_config_loader.get_vo_user_auth_config(vo, issuer_nickname=issuer_nickname)
@@ -1104,6 +1100,12 @@ def validate_jwt(
                 token_dict['authz_scope'] = token_info['scope']
     token_dict["audience"] = access_token_decoded["aud"]
     token_dict["account"] = account
+    acquired_scopes = token_dict.get('authz_scope', None)
+    if not acquired_scopes:
+        raise CannotAuthenticate(traceback.format_exc())
+    else:
+        if not (set(DEFAULT_ID_TOKEN_SCOPES + ID_TOKEN_EXTRA_SCOPES + EXTRA_OIDC_ACCESS_TOKEN_SCOPE)).issubset(set(acquired_scopes.split())):
+            raise CannotAuthenticate(f"Presented token has scope {acquired_scopes} doesn't have required scope {str(DEFAULT_ID_TOKEN_SCOPES + ID_TOKEN_EXTRA_SCOPES + EXTRA_OIDC_ACCESS_TOKEN_SCOPE)}.")
     __save_validated_token(token, token_dict, session=session)
     return cast("TokenValidationDict", token_dict)
 

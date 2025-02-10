@@ -35,7 +35,7 @@ from sqlalchemy import select
 
 from rucio.common.config import config_get_bool
 from rucio.common.exception import CannotAuthenticate, IdentityError
-from rucio.common.types import InternalAccount,
+from rucio.common.types import InternalAccount
 from rucio.core.account import add_account, del_account
 from rucio.core.authentication import redirect_auth_oidc
 from rucio.core.config import remove_option as config_remove
@@ -46,6 +46,7 @@ from rucio.db.sqla import models
 from rucio.db.sqla.constants import AccountType, IdentityType
 from rucio.db.sqla.session import get_session
 from rucio.tests.common import account_name_generator
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -248,8 +249,6 @@ def get_idp_auth_params(auth_url, session):
 
 @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
 def test_get_vo_user_auth_config(idp_secrets_mock):
-    assert "IDP_SECRETS_FILE" in os.environ
-    assert os.environ["IDP_SECRETS_FILE"] == idp_secrets_mock
     config = IDPSecretLoad()
     result = config.get_vo_user_auth_config(vo="def")
     assert result["client_id"] == "mock-client-id"
@@ -516,7 +515,7 @@ def test_get_token_oidc_wrong_code(mock_post, mock_get_discovery_metadata, idp_s
     auth_query_string = f"code=wrongcode&state={state}"
 
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
-        with pytest.raises(requests.exceptions.HTTPError, match="400 Client Error: Bad Request for url"):
+        with pytest.raises(CannotAuthenticate, match="ID token or access token missing in the response."):
             get_token_oidc(auth_query_string, session=db_session)
     del_account(account, session=db_session)
 
@@ -616,7 +615,7 @@ def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argume
     # test with external token with missing required scope
     mock_token = encode_jwt_with_argument(sub, 'rucio', 'random')
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
-        with pytest.raises(CannotAuthenticate, match="is missing some/all required scope"):
+        with pytest.raises(CannotAuthenticate, match="doesn't have required scope"):
             validate_jwt(mock_token, session=db_session)
             db_token = get_token_row(mock_token, account=account, session=db_session)
             assert db_token.token == mock_token

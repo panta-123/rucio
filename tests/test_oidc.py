@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import json
+import os
+import tempfile
 import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Literal, Optional
+from typing import Any, Iterator, Literal, Optional
 from unittest.mock import MagicMock, Mock, mock_open, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -90,6 +92,32 @@ mock_idpsecrets = {
         }
     }
 }
+
+
+@pytest.fixture
+def idp_secrets_mock(request) -> Iterator[str]:
+    """
+    Fixture that sets up a temporary JSON file containing IDP secrets and sets
+    the IDP_SECRETS_FILE environment variable to point to this file.
+
+    This ensures tests use an isolated, in-memory secret configuration that
+    is cleaned up after the fixture exits.
+    """
+    secrets = request.param
+
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:
+        json.dump(secrets, tmp_file)
+        tmp_file.flush()
+        tmp_file_name = tmp_file.name
+    os.environ["IDP_SECRETS_FILE"] = tmp_file_name  # Set environment variable
+    try:
+        yield tmp_file_name  # Provide the path to the test
+    finally:
+        os.remove(tmp_file.name)  # Cleanup after test
+        del os.environ["IDP_SECRETS_FILE"]  # Remove env var after test
+
+
 @pytest.fixture
 def get_jwks_content(generate_rsa_keypair):
     """Mock JWKS content using the generated RSA public key."""
@@ -219,31 +247,34 @@ def get_idp_auth_params(auth_url, session):
     idp_urlparsed = urlparse(idp_auth_url)
     return parse_qs(idp_urlparsed.query)
 
-# test idpsecret load
-@pytest.fixture
-def mock_idpsecret_load():
-    with patch.object(IDPSecretLoad, "_load_config", return_value=None):  # Prevents loading from a file
-        instance = IDPSecretLoad()
-        instance._config = mock_idpsecrets  # Inject the mock data
-        yield instance
 
-def test_get_vo_user_auth_config(mock_idpsecret_load):
-    result = mock_idpsecret_load.get_vo_user_auth_config(vo="def")
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+def test_get_vo_user_auth_config(idp_secrets_mock):
+    assert "IDP_SECRETS_FILE" in os.environ
+    assert os.environ["IDP_SECRETS_FILE"] == idp_secrets_mock
+    config = IDPSecretLoad()
+    result = config.get_vo_user_auth_config(vo="def")
     assert result["client_id"] == "mock-client-id"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-def test_get_client_credential_client(mock_idpsecret_load):
-    result = mock_idpsecret_load.get_client_credential_client(vo="def")
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+def test_get_client_credential_client(idp_secrets_mock):
+    config = IDPSecretLoad()
+    result = config.get_client_credential_client(vo="def")
     assert result["client_id"] == "client456"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-def test_get_config_from_clientid_issuer(mock_idpsecret_load):
-    result = mock_idpsecret_load.get_config_from_clientid_issuer("mock-client-id", "https://mock-oidc-provider")
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+def test_get_config_from_clientid_issuer(idp_secrets_mock):
+    config = IDPSecretLoad()
+    result = config.get_config_from_clientid_issuer("mock-client-id", "https://mock-oidc-provider")
     assert result["client_id"] == "mock-client-id"
     assert result["issuer"] == "https://mock-oidc-provider"
 
-def test_is_valid_issuer(mock_idpsecret_load):
-    result = mock_idpsecret_load.is_valid_issuer(issuer_url="https://mock-oidc-provider", vo='def')
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+def test_is_valid_issuer(idp_secrets_mock):
+    config = IDPSecretLoad()
+    result = config.is_valid_issuer(issuer_url="https://mock-oidc-provider", vo='def')
     assert result == True
 
 def test_validate_token_success(encode_jwt_id_token_with_argument, get_discovery_metadata, get_jwks_content):
@@ -286,8 +317,8 @@ def test_validate_token_invalid_nonce(encode_jwt_id_token_with_argument, get_jwk
 
 def test_validate_token_extra_acess_token_scope(encode_jwt_with_argument, get_jwks_content):
     """Test failure due to incorrect nonce."""
-    config_set('oidc', 'extra_access_token_scope', 'test')
-    sub = str(account_name_generator())
+    account, sub, db_session = setup_test_account()
+    config_set(section='oidc', option='extra_access_token_scope', value='test', session = db_session)
     aud = "rucio"
     scope = 'test'
     token = encode_jwt_with_argument(sub, aud, scope)
@@ -303,11 +334,12 @@ def test_validate_token_extra_acess_token_scope(encode_jwt_with_argument, get_jw
         )        
         # Verify that get_discovery_metadata and get_jwks_content were called
         mock_get_jwks_content.assert_called_once()
-    config_remove('oidc', 'extra_access_token_scope')
+    config_remove(section='oidc', option='extra_access_token_scope', session = db_session)
+    del_account(account, session=db_session)
 
 def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument, get_jwks_content):
-    config_set('oidc', 'extra_access_token_scope', 'test')
-    sub = str(account_name_generator())
+    account, sub, db_session = setup_test_account()
+    config_set(section='oidc', option='extra_access_token_scope', value='test', session = db_session)
     aud = "rucio"
     scope = 'random'
     token = encode_jwt_with_argument(sub, aud, scope)
@@ -320,20 +352,8 @@ def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument
                 token_type="access_token",
                 scopes= [scope]
             )
-    config_remove('oidc', 'extra_access_token_scope')
-
-
-@pytest.fixture
-def mock_idp_secret_load():
-    with patch("rucio.core.oidc.IDPSecretLoad") as MockIDPSecretLoad:
-        mock_instance = Mock()  # Create a Mock instance directly
-        mock_instance._config = mock_idpsecrets
-        mock_instance.get_client_credential_client.return_value = mock_idpsecrets["def"]["client_credential_client"]
-        mock_instance.get_vo_user_auth_config.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
-        mock_instance.get_config_from_clientid_issuer.return_value = mock_idpsecrets["def"]["user_auth_client"][0]
-        mock_instance.is_valid_issuer.return_value = True
-        MockIDPSecretLoad.return_value = mock_instance  # Make the class instantiation return the mock instance
-        yield mock_instance
+    config_remove(section='oidc', option='extra_access_token_scope', session = db_session)
+    del_account(account, session=db_session)
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
@@ -342,7 +362,8 @@ def mock_idp_secret_load():
     ("https://mydestrse.com", "storage.modify:/mydir storage.read:/mydir"),
     ("https://mysourcerse.com", "storage.read:/mydir/myfile.txt")
 ])
-def test_request_token_success(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_with_argument, audience, scope, get_discovery_metadata):
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+def test_request_token_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_with_argument, audience, scope, get_discovery_metadata):
     sub = str(account_name_generator())
     mock_token = encode_jwt_with_argument(sub, audience, scope)
     # Prepare mock response
@@ -376,7 +397,8 @@ def test_request_token_success(mock_post, mock_get_discovery_metadata, mock_idp_
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
-def test_get_auth_oidc(mock_get_discovery_metadata, mock_idp_secret_load, get_discovery_metadata):
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
+def test_get_auth_oidc(mock_get_discovery_metadata, idp_secrets_mock, get_discovery_metadata):
     account, _, db_session = setup_test_account()
 
     kwargs = {
@@ -422,7 +444,8 @@ def test_get_auth_oidc(mock_get_discovery_metadata, mock_idp_secret_load, get_di
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
-def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
+def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
     account, sub, db_session = setup_test_account()
 
     kwargs = {
@@ -465,7 +488,29 @@ def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, mock_idp
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         with pytest.raises(CannotAuthenticate):
             get_token_oidc(auth_query_string, session=db_session)
+    del_account(account, session=db_session)
 
+@patch("rucio.core.oidc.get_discovery_metadata")
+@patch('requests.post')
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
+def test_get_token_oidc_wrong_code(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
+    account, sub, db_session = setup_test_account()
+
+    kwargs = {
+        'auth_scope': 'openid profile',
+        'audience': 'rucio',    
+        'issuer': 'https://mock-oidc-provider',
+        'polling': False,
+        'refresh_lifetime': 96,
+        'ip': None,
+        'webhome': None,
+    }
+
+    mock_get_discovery_metadata.return_value = get_discovery_metadata
+    auth_url = get_auth_oidc(account, session=db_session, **kwargs)
+
+    idp_params = get_idp_auth_params(auth_url, db_session)
+    state, _ = idp_params["state"][0], idp_params["nonce"][0]
     mock_response = Mock()
     mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("400 Client Error: Bad Request for url")
     mock_response.json.return_value = {"error": "invalid_grant", "error_description": "Invalid authorization code"}
@@ -475,13 +520,12 @@ def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, mock_idp
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         with pytest.raises(requests.exceptions.HTTPError, match="400 Client Error: Bad Request for url"):
             get_token_oidc(auth_query_string, session=db_session)
-    
     del_account(account, session=db_session)
-
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
-def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
+def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
     account, sub, db_session = setup_test_account()
 
     kwargs = {
@@ -516,7 +560,8 @@ def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
-def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadata, mock_idp_secret_load, encode_jwt_id_token_with_argument, encode_jwt_with_argument, encode_jwt_refresh_token, get_discovery_metadata, get_jwks_content):
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
+def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, encode_jwt_refresh_token, get_discovery_metadata, get_jwks_content):
     account, sub, db_session = setup_test_account()
 
     kwargs = {
@@ -541,6 +586,7 @@ def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadat
     mock_response.json.return_value = {"refresh_token": encode_jwt_refresh_token, "access_token": access_token, "id_token": id_token, "expires_in": 3600, "scope": "test"}
     mock_post.return_value = mock_response
     auth_query_string = f"code=test_code&state={state}"
+    print(auth_query_string)
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         result = get_token_oidc(auth_query_string, session=db_session)
         db_token = get_token_row(access_token, account=account, session=db_session)
@@ -550,7 +596,8 @@ def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadat
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
-def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argument, mock_idp_secret_load, get_discovery_metadata, get_jwks_content):
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
+def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argument, idp_secrets_mock, get_discovery_metadata, get_jwks_content):
     account, sub, db_session = setup_test_account()
 
     mock_get_discovery_metadata.return_value = get_discovery_metadata
@@ -614,20 +661,18 @@ mock_idpsecrets_multi_issuer = {
     }
 }
 
-@pytest.fixture
-def mock_idpsecret_load_multiissuer():
-    with patch.object(IDPSecretLoad, "_load_config", return_value=None):
-        instance = IDPSecretLoad()
-        instance._config = mock_idpsecrets_multi_issuer  # Inject the mock data
-        yield instance
 
-def test_get_vo_user_auth_config_multi(mock_idpsecret_load_multiissuer):
-    result = mock_idpsecret_load_multiissuer.get_vo_user_auth_config(issuer_nickname="example_issuer2")
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets_multi_issuer], indirect=True)
+def test_get_vo_user_auth_config_multi(idp_secrets_mock):
+    config = IDPSecretLoad()
+    result = config.get_vo_user_auth_config(issuer_nickname="example_issuer2")
     assert result["client_id"] == "mock-client-id2"
     assert result["issuer"] == "https://mock-oidc-provider2"
 
-def test_get_client_credential_client_multi(mock_idpsecret_load_multiissuer):
-    result = mock_idpsecret_load_multiissuer.get_client_credential_client()
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets_multi_issuer], indirect=True)
+def test_get_client_credential_client_multi(idp_secrets_mock):
+    config = IDPSecretLoad()
+    result = config.get_client_credential_client()
     assert result["client_id"] == "client456"
     assert result["issuer"] == "https://mock-oidc-provider"
 

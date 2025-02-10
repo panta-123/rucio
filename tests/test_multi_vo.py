@@ -60,7 +60,7 @@ from rucio.gateway.subscription import add_subscription, list_subscriptions
 from rucio.tests.common import auth, execute, hdrdict, headers, loginhdr, vohdr
 
 from .test_authentication import PRIVATE_KEY, PUBLIC_KEY
-from .test_oidc import encode_jwt_id_token_with_argument, encode_jwt_with_argument, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, mock_idp_secret_load
+from .test_oidc import encode_jwt_id_token_with_argument, encode_jwt_with_argument, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, mock_idp_secret_load, mock_idpsecrets_multi_vo
 
 LOG = getLogger(__name__)
 
@@ -193,20 +193,23 @@ def account_new(usr_uuid, second_vo):
 class TestVORestAPI:
 
     @pytest.mark.parametrize("polling", [True, False])
+    @pytest.mark.parametrize("use_vo", ["vo", "second_vo"])
     @patch("rucio.core.oidc.get_discovery_metadata")
     @patch("requests.post")
+    @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets_multi_vo], indirect=True)
     def test_oidc_auth_flow(
         self,
         mock_post,
         mock_get_discovery_metadata,
-        mock_idp_secret_load, rest_client,
-        long_vo, polling,
+        idp_secrets_mock, rest_client,
+        second_vo, vo, polling,
         encode_jwt_id_token_with_argument,
         encode_jwt_with_argument,
         get_discovery_metadata,
         get_jwks_content,
-        vo,
+        use_vo
     ):
+        vo  = vo if use_vo == "vo" else second_vo
         try:
             add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=vo)
         except Duplicate:
@@ -216,12 +219,12 @@ class TestVORestAPI:
         # Define headers
         headers_dict = {
             'X-Rucio-Account': 'root',
-            'X-Rucio-VO': long_vo,
+            'X-Rucio-VO': vo,
             'X-Rucio-Client-Authorize-Polling': polling,
             'X-Rucio-Client-Authorize-Scope': 'openid profile',
             'X-Rucio-Client-Authorize-Refresh-Lifetime': '96',
             'X-Rucio-Client-Authorize-Audience': 'rucio',
-            'X-Rucio-Client-Authorize-Issuer': 'dummy_admin_iss_nickname'
+            'X-Rucio-Client-Authorize-Issuer': 'example_issuer'
         }
 
         # Mock discovery metadata
@@ -235,8 +238,8 @@ class TestVORestAPI:
         redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
         if polling:
             assert '_polling' in redirect_url
-
-        assert 'https://redirect.example.com/auth/oidc_redirect?' in redirect_url
+        redirect_uris = mock_idpsecrets_multi_vo['user_auth_client']['redirect_uris']
+        assert f'{redirect_uris}/auth/oidc_redirect?' in redirect_url
 
         redirect_url_parsed = urlparse(redirect_url)
         # Step 2: Follow redirect

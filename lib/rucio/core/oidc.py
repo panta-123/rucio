@@ -15,6 +15,7 @@
 import hashlib
 import json
 import logging
+import os
 import traceback
 import uuid
 from datetime import datetime, timedelta
@@ -89,9 +90,9 @@ class IDPSecretLoad:
     :param config_file: Path to the JSON configuration file.
     """
 
-    def __init__(self, config_file: str = IDPSECRETS):
+    def __init__(self):
         """Initialize with a JSON configuration file."""
-        self.config_file = config_file
+        self.config_file = os.getenv("IDP_SECRETS_FILE", IDPSECRETS)
         self._config = {}
         self._load_config()
 
@@ -119,9 +120,9 @@ class IDPSecretLoad:
             raise ValueError(f"VO '{vo}' not found in the configuration.")
 
         vo_user_auth_config = config["user_auth_client"]
-        if not issuer_nickname:
+        if not issuer_nickname and len(vo_user_auth_config) == 1:
             return vo_user_auth_config[0]
-        if len(vo_user_auth_config) > 1 and issuer_nickname:
+        if len(vo_user_auth_config) > 1 and not issuer_nickname:
                 raise ValueError("issuer nickname is required since server has multiple issuer configured.")
         for issuer_config in vo_user_auth_config:
             if issuer_config["issuer_nickname"] == issuer_nickname:
@@ -183,22 +184,24 @@ class IDPSecretLoad:
             if not isinstance(details, dict):
                 raise ValueError(f"VO '{vo}' must have a dictionary configuration.")
 
-            user_auth_client = details.get("user_auth_client")
-            if not isinstance(user_auth_client, list) or not all(isinstance(entry, dict) for entry in user_auth_client):
-                raise ValueError(f"VO '{vo}' user_auth_client must have a list of user_auth_client dictionaries.")
+            user_auth_client = details.get("user_auth_client", None)
+            if user_auth_client:
+                if not isinstance(user_auth_client, list) or not all(isinstance(entry, dict) for entry in user_auth_client):
+                    raise ValueError(f"VO '{vo}' user_auth_client must have a list of user_auth_client dictionaries.")
 
-            for entry in user_auth_client:
-                if not all(k in entry for k in ["client_id", "client_secret", "issuer", "redirect_uris"]):
-                    raise ValueError(f"VO '{vo}' user_auth_client must have 'issuer', 'client_id' and 'client_secret'.")
+                for entry in user_auth_client:
+                    if not all(k in entry for k in ["client_id", "client_secret", "issuer", "redirect_uris"]):
+                        raise ValueError(f"VO '{vo}' user_auth_client must have 'issuer', 'client_id' and 'client_secret'.")
 
             if len(user_auth_client) > 1:
                 for entry in user_auth_client:
                     if "issuer_nickname" not in entry or not isinstance(entry["issuer_nickname"], str):
                         raise ValueError(f"Each entry in 'user_auth_client' for VO '{vo}' must have a valid 'issuer_nickname' when multiple clients exist.")
 
-            client_credential_client = details.get("client_credential_client")
-            if not client_credential_client or not all(k in client_credential_client for k in ["client_id", "client_secret", "issuer"]):
-                raise ValueError(f"VO '{vo}' client_credential_client must have 'issuer', 'client_id' and 'client_secret'.")
+            client_credential_client = details.get("client_credential_client", None)
+            if client_credential_client:
+                if not all(k in client_credential_client for k in ["client_id", "client_secret", "issuer"]):
+                    raise ValueError(f"VO '{vo}' client_credential_client must have 'issuer', 'client_id' and 'client_secret'.")
 
 
 @METRICS.time_it

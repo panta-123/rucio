@@ -337,7 +337,7 @@ def test_validate_token_extra_acess_token_scope(encode_jwt_with_argument, get_jw
 
 def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument, get_jwks_content):
     account, sub, db_session = setup_test_account()
-    config_set(section='oidc', option='extra_access_token_scope', value='test', session = db_session)
+    config_set(section='oidc', option='extra_access_token_scope', value='test', session=db_session)
     aud = "rucio"
     scope = 'random'
     token = encode_jwt_with_argument(sub, aud, scope)
@@ -350,8 +350,9 @@ def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument
                 token_type="access_token",
                 scopes= [scope]
             )
-    config_remove(section='oidc', option='extra_access_token_scope', session = db_session)
+    config_remove(section='oidc', option='extra_access_token_scope', session=db_session)
     del_account(account, session=db_session)
+    db_session.close()
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')

@@ -294,7 +294,7 @@ class TestVORestAPI:
         get_jwks_content):
 
         dynamic_mock_data = {}
-        dynamic_mock_data[long_vo] = mock_idpsecrets_multi_vo['def']
+        dynamic_mock_data[vo] = mock_idpsecrets_multi_vo['def']
         dynamic_mock_data[second_vo] = mock_idpsecrets_multi_vo['new']
         print(dynamic_mock_data)
         with tempfile.NamedTemporaryFile(mode="w", delete=True, suffix=".json") as tmp_file:

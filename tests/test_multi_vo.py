@@ -241,7 +241,10 @@ class TestVORestAPI:
         redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
         if polling:
             assert '_polling' in redirect_url
-        redirect_uris = mock_idpsecrets_multi_vo[vo]['user_auth_client'][0]['redirect_uris']
+        if use_vo == "vo":
+            redirect_uris = mock_idpsecrets_multi_vo['def']['user_auth_client'][0]['redirect_uris']
+        else:
+            redirect_uris = mock_idpsecrets_multi_vo['new']['user_auth_client'][0]['redirect_uris']
         assert f'{redirect_uris}/auth/oidc_redirect?' in redirect_url
 
         redirect_url_parsed = urlparse(redirect_url)

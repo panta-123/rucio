@@ -229,7 +229,9 @@ def encode_jwt_refresh_token(generate_rsa_keypair):
     token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
     return token
 
-def setup_test_account():
+@pytest.fixture
+def setup_account_and_session():
+    # Set up the account and session
     usr = account_name_generator()
     sub = str(account_name_generator())
     account = InternalAccount(usr)
@@ -239,7 +241,13 @@ def setup_test_account():
     add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider', IdentityType.OIDC, account, 'rucio@email.com', session=db_session)
     db_session.commit()
 
-    return account, sub, db_session
+    # Yield the necessary objects to the test function
+    yield account, sub, db_session
+
+    # Teardown: Clean up the session, account, and configuration
+    config_remove(section='oidc', option='extra_access_token_scope', session=db_session)
+    del_account(account, session=db_session)
+    db_session.remove()
 
 def get_idp_auth_params(auth_url, session):
     urlparsed = urlparse(auth_url)
@@ -313,9 +321,9 @@ def test_validate_token_invalid_nonce(encode_jwt_id_token_with_argument, get_jwk
                 nonce="wrong-nonce"
             )
 
-def test_validate_token_extra_acess_token_scope(encode_jwt_with_argument, get_jwks_content):
+def test_validate_token_extra_acess_token_scope(encode_jwt_with_argument, get_jwks_content, setup_account_and_session):
     """Test failure due to incorrect nonce."""
-    account, sub, db_session = setup_test_account()
+    account, sub, db_session = setup_account_and_session
     config_set(section='oidc', option='extra_access_token_scope', value='test', session = db_session)
     aud = "rucio"
     scope = 'test'
@@ -333,10 +341,9 @@ def test_validate_token_extra_acess_token_scope(encode_jwt_with_argument, get_jw
         # Verify that get_discovery_metadata and get_jwks_content were called
         mock_get_jwks_content.assert_called_once()
     config_remove(section='oidc', option='extra_access_token_scope', session = db_session)
-    del_account(account, session=db_session)
 
-def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument, get_jwks_content):
-    account, sub, db_session = setup_test_account()
+def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument, get_jwks_content, setup_account_and_session):
+    account, sub, db_session = setup_account_and_session
     config_set(section='oidc', option='extra_access_token_scope', value='test', session=db_session)
     aud = "rucio"
     scope = 'random'
@@ -351,8 +358,6 @@ def test_validate_token_extra_invalid_acess_token_scope(encode_jwt_with_argument
                 scopes= [scope]
             )
     config_remove(section='oidc', option='extra_access_token_scope', session=db_session)
-    del_account(account, session=db_session)
-    db_session.close()
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
@@ -396,9 +401,9 @@ def test_request_token_success(mock_post, mock_get_discovery_metadata, idp_secre
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
-@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True) 
-def test_get_auth_oidc(mock_get_discovery_metadata, idp_secrets_mock, get_discovery_metadata):
-    account, _, db_session = setup_test_account()
+@pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
+def test_get_auth_oidc(mock_get_discovery_metadata, idp_secrets_mock, get_discovery_metadata, setup_account_and_session):
+    account, _, db_session = setup_account_and_session
 
     kwargs = {
         'auth_scope': 'openid profile',
@@ -439,13 +444,12 @@ def test_get_auth_oidc(mock_get_discovery_metadata, idp_secrets_mock, get_discov
     new_account = InternalAccount('random')
     auth_url = get_auth_oidc(new_account, session=db_session, **kwargs)
     assert auth_url is None
-    del_account(account, session=db_session)
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
 @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
-def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
-    account, sub, db_session = setup_test_account()
+def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content, setup_account_and_session):
+    account, sub, db_session = setup_account_and_session
 
     kwargs = {
         'auth_scope': 'openid profile',
@@ -487,13 +491,12 @@ def test_get_token_oidc_success(mock_post, mock_get_discovery_metadata, idp_secr
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         with pytest.raises(CannotAuthenticate):
             get_token_oidc(auth_query_string, session=db_session)
-    del_account(account, session=db_session)
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
 @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
-def test_get_token_oidc_wrong_code(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
-    account, sub, db_session = setup_test_account()
+def test_get_token_oidc_wrong_code(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content, setup_account_and_session):
+    account, sub, db_session = setup_account_and_session
 
     kwargs = {
         'auth_scope': 'openid profile',
@@ -519,13 +522,12 @@ def test_get_token_oidc_wrong_code(mock_post, mock_get_discovery_metadata, idp_s
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         with pytest.raises(CannotAuthenticate, match="ID token or access token missing in the response."):
             get_token_oidc(auth_query_string, session=db_session)
-    del_account(account, session=db_session)
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
 @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
-def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content):
-    account, sub, db_session = setup_test_account()
+def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content, setup_account_and_session):
+    account, sub, db_session = setup_account_and_session
 
     kwargs = {
         'auth_scope': 'openid profile',
@@ -554,14 +556,13 @@ def test_get_token_oidc_polling_success(mock_post, mock_get_discovery_metadata, 
         result = get_token_oidc(auth_query_string, session=db_session)
         assert 'polling' in result
         assert result['polling']
-    del_account(account, session=db_session)
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @patch('requests.post')
 @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
-def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, encode_jwt_refresh_token, get_discovery_metadata, get_jwks_content):
-    account, sub, db_session = setup_test_account()
+def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadata, idp_secrets_mock, encode_jwt_id_token_with_argument, encode_jwt_with_argument, encode_jwt_refresh_token, get_discovery_metadata, get_jwks_content, setup_account_and_session):
+    account, sub, db_session = setup_account_and_session
 
     kwargs = {
         'auth_scope': 'openid profile offline_access',
@@ -587,17 +588,16 @@ def test_get_token_oidc_with_refresh_token(mock_post, mock_get_discovery_metadat
     auth_query_string = f"code=test_code&state={state}"
     print(auth_query_string)
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
-        result = get_token_oidc(auth_query_string, session=db_session)
+        get_token_oidc(auth_query_string, session=db_session)
         db_token = get_token_row(access_token, account=account, session=db_session)
         assert db_token
         assert db_token.refresh_token == encode_jwt_refresh_token
-    del_account(account, session=db_session)
 
 
 @patch("rucio.core.oidc.get_discovery_metadata")
 @pytest.mark.parametrize('idp_secrets_mock', [mock_idpsecrets], indirect=True)
-def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argument, idp_secrets_mock, get_discovery_metadata, get_jwks_content):
-    account, sub, db_session = setup_test_account()
+def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argument, idp_secrets_mock, get_discovery_metadata, get_jwks_content, setup_account_and_session):
+    account, sub, db_session = setup_account_and_session
 
     mock_get_discovery_metadata.return_value = get_discovery_metadata
     mock_token = encode_jwt_with_argument(sub, 'rucio', 'openid profile test')
@@ -626,10 +626,9 @@ def test_validate_jwt_sucess(mock_get_discovery_metadata, encode_jwt_with_argume
     mock_token = encode_jwt_with_argument('random','rucio', 'openid profile test')
     with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
         with pytest.raises(IdentityError):
-            res = validate_jwt(mock_token, session=db_session)
+            validate_jwt(mock_token, session=db_session)
     db_token = get_token_row(mock_token, account=account, session=db_session)
     assert not db_token
-    del_account(account, session=db_session)
 
 
 

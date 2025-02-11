@@ -122,7 +122,7 @@ class IDPSecretLoad:
             raise ValueError(f"VO '{vo}' not found in the configuration.")
 
         vo_user_auth_config = config["user_auth_client"]
-        if not issuer_nickname and len(vo_user_auth_config) == 1:
+        if len(vo_user_auth_config) == 1:
             return vo_user_auth_config[0]
         if len(vo_user_auth_config) > 1 and not issuer_nickname:
             raise ValueError("issuer nickname is required since server has multiple issuer configured.")
@@ -449,7 +449,6 @@ def request_token(
         'scope': scope,
         'audience': audience
     }
-
 
     # Request the token
     try:
@@ -1062,7 +1061,11 @@ def validate_jwt(
     :returns: Token validation dictionary.
     :raises: CannotAuthenticate if the token is invalid.
     """
-    unverified_claims = jwt.decode(token, options={"verify_signature": False})
+    try:
+        unverified_claims = jwt.decode(token, options={"verify_signature": False})
+    except Exception as error:
+        raise CannotAuthenticate(f"Invalid token: {error}") from error
+
     exp = unverified_claims.get('exp', 3600)
     iat = unverified_claims.get('iat', 0)
     _lifetime = exp - iat

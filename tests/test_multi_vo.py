@@ -209,6 +209,10 @@ class TestVORestAPI:
         use_vo
     ):
         vo  = vo if use_vo == "vo" else second_vo
+        if use_vo == "vo":
+            issuer_nickname = "example_issuer"
+        else:
+            issuer_nickname = "example_issuer2"
         try:
             add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=vo)
         except Duplicate:
@@ -223,7 +227,7 @@ class TestVORestAPI:
             'X-Rucio-Client-Authorize-Scope': 'openid profile',
             'X-Rucio-Client-Authorize-Refresh-Lifetime': '96',
             'X-Rucio-Client-Authorize-Audience': 'rucio',
-            'X-Rucio-Client-Authorize-Issuer': 'example_issuer'
+            'X-Rucio-Client-Authorize-Issuer': issuer_nickname
         }
 
         # Mock discovery metadata
@@ -237,7 +241,7 @@ class TestVORestAPI:
         redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
         if polling:
             assert '_polling' in redirect_url
-        redirect_uris = mock_idpsecrets_multi_vo['user_auth_client']['redirect_uris']
+        redirect_uris = mock_idpsecrets_multi_vo[vo]['user_auth_client'][0]['redirect_uris']
         assert f'{redirect_uris}/auth/oidc_redirect?' in redirect_url
 
         redirect_url_parsed = urlparse(redirect_url)

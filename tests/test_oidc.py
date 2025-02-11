@@ -237,6 +237,7 @@ def setup_test_account():
 
     add_account(account, AccountType.USER, 'rucio@email.com', session=db_session)
     add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider', IdentityType.OIDC, account, 'rucio@email.com', session=db_session)
+    db_session.commit()
 
     return account, sub, db_session
 

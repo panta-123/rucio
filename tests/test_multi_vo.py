@@ -59,7 +59,7 @@ from rucio.gateway.subscription import add_subscription, list_subscriptions
 from rucio.tests.common import auth, execute, hdrdict, headers, loginhdr, vohdr
 
 from .test_authentication import PRIVATE_KEY, PUBLIC_KEY
-from .test_oidc import encode_jwt_id_token_with_argument, encode_jwt_with_argument, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, mock_idpsecrets_multi_vo
+from .test_oidc import encode_jwt_id_token_with_argument, encode_jwt_with_argument, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, idp_secrets_mock, mock_idpsecrets_multi_vo
 
 LOG = getLogger(__name__)
 

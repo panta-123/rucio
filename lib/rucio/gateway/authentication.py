@@ -110,7 +110,7 @@ def get_auth_oidc(
     # no permission layer for the moment !
 
     internal_account = InternalAccount(account, vo=vo)
-    return oidc.get_auth_oidc(internal_account, session=session, **kwargs)
+    return oidc.get_auth_oidc(internal_account, vo=vo, session=session, **kwargs)
 
 
 @transactional_session

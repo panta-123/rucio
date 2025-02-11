@@ -208,10 +208,15 @@ class TestVORestAPI:
         get_jwks_content,
         use_vo
     ):
+        """Test the complete OIDC authentication flow from /auth/oidc to fetching the token."""
         dynamic_mock_data = {}
-        dynamic_mock_data[long_vo] = mock_idpsecrets_multi_vo['def']
+        dynamic_mock_data[vo] = mock_idpsecrets_multi_vo['def']
         dynamic_mock_data[second_vo] = mock_idpsecrets_multi_vo['new']
-        set_vo  = long_vo if use_vo == "vo" else second_vo
+        print(long_vo)
+        print(vo)
+        print(second_vo)
+        print(dynamic_mock_data)
+        set_vo  = vo if use_vo == "vo" else second_vo
         try:
             add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=set_vo)
         except Duplicate:
@@ -231,7 +236,6 @@ class TestVORestAPI:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setenv("IDP_SECRETS_FILE", tmp_file_name)
 
-                """Test the complete OIDC authentication flow from /auth/oidc to fetching the token."""
                 # Define headers
                 headers_dict = {
                     'X-Rucio-Account': 'root',
@@ -254,7 +258,6 @@ class TestVORestAPI:
                 redirect_url = response.headers.get('X-Rucio-OIDC-Auth-URL')
                 if polling:
                     assert '_polling' in redirect_url
-                
                 assert f'{redirect_uris}/auth/oidc_redirect?' in redirect_url
 
                 redirect_url_parsed = urlparse(redirect_url)

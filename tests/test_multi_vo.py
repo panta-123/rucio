@@ -208,7 +208,7 @@ class TestVORestAPI:
             usr = account_name_generator()
             sub = str(account_name_generator())
             account = usr
-            add_account(account, 'USER', 'rucio@email.com', vo=vo)
+            add_account(account, 'USER', 'rucio@email.com', 'root', vo=vo)
             if issuer_nickname == "example_issuer":
                 add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider', 'OIDC', account, 'rucio_test@test.com', 'root', vo=vo)
             else:

@@ -298,8 +298,8 @@ class TestVORestAPI:
         mock_post,
         mock_get_discovery_metadata, rest_client,
         vo, long_vo, second_vo,
-        encode_jwt_id_token_with_argument,
-        encode_jwt_with_argument,
+        encode_jwt_id_token_with_argument_iss,
+        encode_jwt_with_argument_iss,
         get_discovery_metadata,
         get_jwks_content):
 
@@ -318,16 +318,16 @@ class TestVORestAPI:
                 print(tmp_file_name)
                 self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
                                     rest_client, vo, long_vo, False, "example_issuer", dynamic_mock_data['def']["user_auth_client"][0]["redirect_uris"], \
-                                    encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content)
+                                    encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
                 self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
                                     rest_client, second_vo, second_vo, False, "example_issuer2", dynamic_mock_data['new']["user_auth_client"][0]["redirect_uris"], \
-                                    encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content)
+                                    encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
                 self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
                                     rest_client, vo, long_vo, True, "example_issuer", dynamic_mock_data['def']["user_auth_client"][0]["redirect_uris"], \
-                                    encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content)
+                                    encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
                 self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
                                     rest_client, second_vo, second_vo, True, "example_issuer2", dynamic_mock_data['new']["user_auth_client"][0]["redirect_uris"], \
-                                    encode_jwt_id_token_with_argument, encode_jwt_with_argument, get_discovery_metadata, get_jwks_content)
+                                    encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
 
 
     def test_auth_gss(self, vo, second_vo, account_tst, account_new, rest_client):

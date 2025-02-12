@@ -696,7 +696,7 @@ mock_idpsecrets_multi_vo = {
         "user_auth_client": [
             {
                 "issuer": "https://mock-oidc-provider",
-                "client_id": "mock-client-id2",
+                "client_id": "mock-client-id",
                 "client_secret": "secret",
                 "redirect_uris": "https://redirect.example.com",
                 "issuer_nickname": "example_issuer2"

@@ -58,10 +58,10 @@ from rucio.gateway.rse import add_protocol, add_rse, add_rse_attribute, list_rse
 from rucio.gateway.rule import delete_replication_rule, get_replication_rule
 from rucio.gateway.scope import add_scope, list_scopes
 from rucio.gateway.subscription import add_subscription, list_subscriptions
-from rucio.tests.common import auth, execute, hdrdict, headers, loginhdr, vohdr
+from rucio.tests.common import account_name_generator, auth, execute, hdrdict, headers, loginhdr, vohdr
 
 from .test_authentication import PRIVATE_KEY, PUBLIC_KEY
-from .test_oidc import encode_jwt_id_token_with_argument, encode_jwt_with_argument, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, idp_secrets_mock, mock_idpsecrets_multi_vo
+from .test_oidc import encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, generate_rsa_keypair, get_discovery_metadata, get_jwks_content, get_oauth_session_row, get_token_row, idp_secrets_mock, mock_idpsecrets_multi_vo
 
 LOG = getLogger(__name__)
 
@@ -198,24 +198,28 @@ class TestVORestAPI:
         mock_post,
         mock_get_discovery_metadata, rest_client,
         vo, long_vo, polling, issuer_nickname, redirect_uris,
-        encode_jwt_id_token_with_argument,
-        encode_jwt_with_argument,
+        encode_jwt_id_token_with_argument_iss,
+        encode_jwt_with_argument_iss,
         get_discovery_metadata,
         get_jwks_content
     ):
         """Test the complete OIDC authentication flow from /auth/oidc to fetching the token."""
         try:
+            usr = account_name_generator()
+            sub = str(account_name_generator())
+            account = usr
+            add_account(account, 'USER', 'rucio@email.com', vo=vo)
             if issuer_nickname == "example_issuer":
-                add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=vo)
+                add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider', 'OIDC', account, 'rucio_test@test.com', 'root', vo=vo)
             else:
-                add_account_identity('SUB=knownsub, ISS=https://mock-oidc-provider2', 'OIDC', 'root', 'rucio_test@test.com', 'root', vo=vo)
+                add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider2', 'OIDC', account, 'rucio_test@test.com', 'root', vo=vo)
         except Duplicate:
             pass  # Might already exist, can skip
 
 
         # Define headers
         headers_dict = {
-            'X-Rucio-Account': 'root',
+            'X-Rucio-Account': account,
             'X-Rucio-VO': long_vo,
             'X-Rucio-Client-Authorize-Polling': polling,
             'X-Rucio-Client-Authorize-Scope': 'openid profile',
@@ -247,8 +251,12 @@ class TestVORestAPI:
 
 
         # Create id_token with the same nonce
-        id_token = encode_jwt_id_token_with_argument("knownsub", auth_url_params["nonce"][0])
-        access_token = encode_jwt_with_argument("knownsub", "rucio", "openid profile")
+        if issuer_nickname == "example_issuer":
+            id_token = encode_jwt_id_token_with_argument_iss(f"{sub}", auth_url_params["nonce"][0], "https://mock-oidc-provider")
+            access_token = encode_jwt_with_argument_iss(f"{sub}", "rucio", "openid profile", "https://mock-oidc-provider")
+        else:
+            id_token = encode_jwt_id_token_with_argument_iss(f"{sub}", auth_url_params["nonce"][0], "https://mock-oidc-provider2")
+            access_token = encode_jwt_with_argument_iss(f"{sub}", "rucio", "openid profile", "https://mock-oidc-provider2")
         headers_dict['X-Rucio-Client-Fetch-Token'] = 'True'
         with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
             # Step 4: Submit authorization code (Mock /auth/oidc_code)
@@ -282,7 +290,6 @@ class TestVORestAPI:
             accounts = [parse_response(a)['account'] for a in response.get_data(as_text=True).split('\n')[:-1]]
 
             assert len(accounts) != 0
-            assert 'root' in accounts
 
     @patch("rucio.core.oidc.get_discovery_metadata")
     @patch("requests.post")

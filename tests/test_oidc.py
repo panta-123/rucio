@@ -695,8 +695,8 @@ mock_idpsecrets_multi_vo = {
     "new": {
         "user_auth_client": [
             {
-                "issuer": "https://mock-oidc-provider",
-                "client_id": "mock-client-id",
+                "issuer": "https://mock-oidc-provider2",
+                "client_id": "mock-client-id2",
                 "client_secret": "secret",
                 "redirect_uris": "https://redirect.example.com",
                 "issuer_nickname": "example_issuer2"
@@ -709,3 +709,47 @@ mock_idpsecrets_multi_vo = {
         }
     }
 }
+
+@pytest.fixture
+def encode_jwt_id_token_with_argument_iss(generate_rsa_keypair):
+    """Generate a JWT using the mock JWKS private key with dynamic `aud` and `scope`."""
+    def _generate_jwt(sub, nonce, iss):
+        private_key, _, _, _ = generate_rsa_keypair
+
+        payload = {
+            "sub": sub,
+            "name": "John Doe",
+            "jti": str(uuid.uuid4()),
+            "iat": datetime.utcnow(),
+            "exp": datetime.utcnow() + timedelta(hours=1),
+            "nbf": datetime.utcnow(),
+            "iss": iss,
+            "aud": "mock-client-id",
+            "nonce": nonce,
+        }
+
+        token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+        return token
+    return _generate_jwt
+
+@pytest.fixture
+def encode_jwt_with_argument_iss(generate_rsa_keypair):
+    """Generate a JWT using the mock JWKS private key with dynamic `sub`, `aud` and `scope`."""
+    def _generate_jwt(sub, aud, scope, iss):
+        private_key, _, _, _ = generate_rsa_keypair
+
+        payload = {
+            "sub": sub,
+            "name": "John Doe",
+            "jti": str(uuid.uuid4()),
+            "iat": datetime.utcnow(),
+            "exp": datetime.utcnow() + timedelta(hours=1),
+            "nbf": datetime.utcnow(),
+            "iss": iss,
+            "aud": aud,
+            "scope": scope
+        }
+
+        token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+        return token
+    return _generate_jwt

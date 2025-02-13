@@ -713,7 +713,7 @@ mock_idpsecrets_multi_vo = {
 @pytest.fixture
 def encode_jwt_id_token_with_argument_iss(generate_rsa_keypair):
     """Generate a JWT using the mock JWKS private key with dynamic `aud` and `scope`."""
-    def _generate_jwt(sub, nonce, iss):
+    def _generate_jwt(sub, aud, nonce, iss):
         private_key, _, _, _ = generate_rsa_keypair
 
         payload = {
@@ -724,7 +724,7 @@ def encode_jwt_id_token_with_argument_iss(generate_rsa_keypair):
             "exp": datetime.utcnow() + timedelta(hours=1),
             "nbf": datetime.utcnow(),
             "iss": iss,
-            "aud": "mock-client-id",
+            "aud": aud,
             "nonce": nonce,
         }
 

@@ -209,10 +209,7 @@ class TestVORestAPI:
             sub = str(account_name_generator())
             account = usr
             add_account(account, 'USER', 'rucio@email.com', 'root', vo=vo)
-            if issuer_nickname == "example_issuer":
-                add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider', 'OIDC', account, 'rucio_test@test.com', 'root', vo=vo)
-            else:
-                add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider2', 'OIDC', account, 'rucio_test@test.com', 'root', vo=vo)
+            add_account_identity(f'SUB={sub}, ISS=https://mock-oidc-provider', 'OIDC', account, 'rucio_test@test.com', 'root', vo=vo)
         except Duplicate:
             pass  # Might already exist, can skip
 
@@ -250,13 +247,8 @@ class TestVORestAPI:
         auth_url_params = parse_qs(auth_url_parsed.query)
 
 
-        # Create id_token with the same nonce
-        if issuer_nickname == "example_issuer":
-            id_token = encode_jwt_id_token_with_argument_iss(f"{sub}", "mock-client-id" ,auth_url_params["nonce"][0], "https://mock-oidc-provider")
-            access_token = encode_jwt_with_argument_iss(f"{sub}", "rucio", "openid profile", "https://mock-oidc-provider")
-        else:
-            id_token = encode_jwt_id_token_with_argument_iss(f"{sub}", "mock-client-id2" ,auth_url_params["nonce"][0], "https://mock-oidc-provider2")
-            access_token = encode_jwt_with_argument_iss(f"{sub}", "rucio", "openid profile", "https://mock-oidc-provider2")
+        id_token = encode_jwt_id_token_with_argument_iss(f"{sub}", "mock-client-id" ,auth_url_params["nonce"][0], "https://mock-oidc-provider")
+        access_token = encode_jwt_with_argument_iss(f"{sub}", "rucio", "openid profile", "https://mock-oidc-provider")
         headers_dict['X-Rucio-Client-Fetch-Token'] = 'True'
         with patch('rucio.core.oidc.get_jwks_content', return_value=get_jwks_content) as mock_get_jwks_content:
             # Step 4: Submit authorization code (Mock /auth/oidc_code)
@@ -325,9 +317,9 @@ class TestVORestAPI:
                 self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
                                     rest_client, vo, long_vo, True, "example_issuer", dynamic_mock_data['def']["user_auth_client"][0]["redirect_uris"], \
                                     encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
-                #self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
-                #                    rest_client, second_vo, second_vo, True, "example_issuer2", dynamic_mock_data['new']["user_auth_client"][0]["redirect_uris"], \
-                #                    encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
+                self.oidc_auth_flow(mock_post, mock_get_discovery_metadata,\
+                                    rest_client, second_vo, second_vo, True, "example_issuer2", dynamic_mock_data['new']["user_auth_client"][0]["redirect_uris"], \
+                                    encode_jwt_id_token_with_argument_iss, encode_jwt_with_argument_iss, get_discovery_metadata, get_jwks_content)
 
 
     def test_auth_gss(self, vo, second_vo, account_tst, account_new, rest_client):

@@ -244,7 +244,7 @@ class TestVORestAPI:
         redirect_url_parsed = urlparse(redirect_url)
         # Step 2: Follow redirect
         response = rest_client.get(f'/auth/oidc_redirect?{redirect_url_parsed.query}', headers=headers(hdrdict(headers_dict)))
-        assert response.status_code == 303 
+        assert response.status_code == 303
         auth_url = response.headers.get('location')
         auth_url_parsed = urlparse(auth_url)
         auth_url_params = parse_qs(auth_url_parsed.query)

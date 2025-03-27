@@ -435,6 +435,8 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
         access_msg = rndstr(23)
         if polling:
             access_msg += '_polling'
+        if webhome:
+            access_msg = str(webhome)
         # Making sure refresh_lifetime is an integer or None.
         if refresh_lifetime:
             refresh_lifetime = int(refresh_lifetime)

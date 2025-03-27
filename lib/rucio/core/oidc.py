@@ -648,66 +648,6 @@ def get_token_oidc(
 
 
 @transactional_session
-def __get_admin_token_oidc(account: 'InternalAccount', req_scope, req_audience, issuer, *, session: "Session"):
-    """
-    Get a token for Rucio application to act on behalf of itself.
-    client_credential flow is used for this purpose.
-    No refresh token is expected to be used.
-
-    :param account: the Rucio Admin account name to be used (InternalAccount object expected)
-    :param req_scope: the audience requested for the Rucio client's token
-    :param req_audience: the scope requested for the Rucio client's token
-    :param issuer: the Identity Provider nickname or the Rucio instance in use
-    :param session: The database session in use.
-    :returns: A dict with token and expires_at entries.
-    """
-
-    if not OIDC_ADMIN_CLIENTS:
-        # retry once loading OIDC clients
-        __initialize_oidc_clients()
-        if not OIDC_ADMIN_CLIENTS:
-            raise CannotAuthenticate(traceback.format_exc())
-
-    try:
-
-        oidc_client = OIDC_ADMIN_CLIENTS[issuer]
-        args = {"client_id": oidc_client.client_id,
-                "client_secret": oidc_client.client_secret,
-                "grant_type": "client_credentials",
-                "scope": req_scope,
-                "audience": req_audience}
-        # in the future should use oauth2 pyoidc client (base) instead
-        oidc_tokens = oidc_client.do_any(request=CCAccessTokenRequest,
-                                         request_args=args,
-                                         response=AccessTokenResponse)
-        if 'error' in oidc_tokens:
-            raise CannotAuthorize(oidc_tokens['error'])
-        METRICS.counter(name='IdP_authentication.rucio_admin_token_granted').inc()
-        # save the access token in the Rucio DB
-        if 'access_token' in oidc_tokens:
-            validate_dict = __get_rucio_jwt_dict(oidc_tokens['access_token'], account=account, session=session)
-            if validate_dict:
-                METRICS.counter(name='IdP_authentication.success').inc()
-                new_token = __save_validated_token(oidc_tokens['access_token'], validate_dict, extra_dict={}, session=session)
-                METRICS.counter(name='IdP_authentication.access_token.saved').inc()
-                return new_token
-            else:
-                logging.debug("Rucio could not get a valid admin token from the Identity Provider.")
-                return None
-        else:
-            logging.debug("Rucio could not get its admin access token from the Identity Provider.")
-            return None
-
-    except Exception:
-        # TO-DO catch different exceptions - InvalidGrant etc. ...
-        METRICS.counter(name='IdP_authorization.access_token.exception').inc()
-        logging.debug(traceback.format_exc())
-        return None
-        # raise CannotAuthenticate(traceback.format_exc())
-
-
-
-@transactional_session
 def __change_refresh_state(token: str, refresh: bool = False, *, session: "Session"):
     """
     Changes token refresh state to True/False.

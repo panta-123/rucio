@@ -314,7 +314,7 @@ class TestAuthCoreAPIoidc:
     def teardown_method(self):
         self.db_session.remove()
 
-    def get_auth_init_and_mock_response(self, code_response, account=None, polling=False, auto=True, session=None):
+    def get_auth_init_and_mock_response(self, code_response, account=None, polling=False, session=None):
         """
         OIDC creates entry in oauth_requests table
 
@@ -330,7 +330,6 @@ class TestAuthCoreAPIoidc:
             'auth_scope': 'openid profile',
             'audience': 'rucio',
             'issuer': 'dummy_admin_iss_nickname',
-            'auto': auto,
             'polling': polling,
             'refresh_lifetime': 96,
             'ip': None,
@@ -341,7 +340,7 @@ class TestAuthCoreAPIoidc:
         # get the state from the auth_url and add an arbitrary code value to the query string
         # to mimic a return of IdP with authz_code
         urlparsed = urlparse(auth_url)
-        if ('_polling' in auth_url) or (not polling and not auto):
+        if ('_polling' in auth_url) or (not polling):
             auth_url = redirect_auth_oidc(urlparsed.query, session=session)
             print("[get_auth_init_and_mock_response] got redirect auth_url:", auth_url)
             urlparsed = urlparse(auth_url)

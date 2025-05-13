@@ -22,9 +22,11 @@ import urllib.parse as urlparse
 from threading import Timer
 
 from rucio.common import config, exception
-from rucio.common.checksum import GLOBALLY_SUPPORTED_CHECKSUMS, PREFERRED_CHECKSUM
+from rucio.common.checksum import GLOBALLY_SUPPORTED_CHECKSUMS
 from rucio.common.constraints import STRING_TYPES
 from rucio.rse.protocols import protocol
+import rucio.common.checksum as checksum
+checksum.PREFERRED_CHECKSUM = 'crc32'
 
 try:
     import gfal2  # pylint: disable=import-error
@@ -404,10 +406,13 @@ class Default(protocol.RSEProtocol):
 
         message = "\n"
         try:
-            ret[PREFERRED_CHECKSUM] = ctx.checksum(path, str(PREFERRED_CHECKSUM.upper()))
+            ret[checksum.PREFERRED_CHECKSUM] = ctx.checksum(path, str(checksum.PREFERRED_CHECKSUM.upper()))
             return ret
         except Exception as error:
-            message += 'Error while processing gfal checksum call (%s). Error: %s \n' % (PREFERRED_CHECKSUM, str(error))
+            message += 'Error while processing gfal checksum call (%s). Error: %s \n' % (checksum.PREFERRED_CHECKSUM, str(error))
+        if ret[checksum.PREFERRED_CHECKSUM]:
+            ret['adler32'] = ret[checksum.PREFERRED_CHECKSUM]
+            del ret[checksum.PREFERRED_CHECKSUM]
 
         for checksum_name in GLOBALLY_SUPPORTED_CHECKSUMS:
             if checksum_name == PREFERRED_CHECKSUM:

@@ -16,10 +16,10 @@ import logging
 import os
 
 from rucio.common import exception
-from rucio.common.checksum import PREFERRED_CHECKSUM
 from rucio.common.utils import execute
 from rucio.rse.protocols import protocol
-
+import rucio.common.checksum as checksum
+checksum.PREFERRED_CHECKSUM = 'crc32'
 
 class Default(protocol.RSEProtocol):
     """ Implementing access to RSEs using the XRootD protocol using GSI authentication."""
@@ -125,10 +125,12 @@ class Default(protocol.RSEProtocol):
 
         if 'filesize' not in ret:
             raise exception.ServiceUnavailable('Filesize could not be retrieved.')
-        if PREFERRED_CHECKSUM != chsum or not chsum:
-            msg = '{} does not match with {}'.format(chsum, PREFERRED_CHECKSUM)
+        if checksum.PREFERRED_CHECKSUM != chsum or not chsum:
+            msg = '{} does not match with {}'.format(chsum, checksum.PREFERRED_CHECKSUM )
             raise exception.RSEChecksumUnavailable(msg)
-
+        if ret[checksum.PREFERRED_CHECKSUM]:
+            ret['adler32'] = ret[checksum.PREFERRED_CHECKSUM]
+            del ret[checksum.PREFERRED_CHECKSUM]
         return ret
 
     def pfn2path(self, pfn):

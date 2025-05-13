@@ -300,7 +300,7 @@ def _pick_fts_checksum(
         if checksum_name == PREFERRED_CHECKSUM:
             break
 
-    return checksum_to_use
+    return CRC32
 
 
 def _use_tokens(transfer_hop: "DirectTransfer"):
@@ -654,7 +654,8 @@ class Fts3TransferStatusReport(TransferStatusReport):
         if (request and dst_file and (
                 dst_file.get('file_size') is not None and dst_file['file_size'] != request.get('bytes')
                 or dst_file.get('checksum_type', '').lower() == 'adler32' and dst_file.get('checksum_value') != request.get('adler32')
-                or dst_file.get('checksum_type', '').lower() == 'md5' and dst_file.get('checksum_value') != request.get('md5'))):
+                or dst_file.get('checksum_type', '').lower() == 'md5' and dst_file.get('checksum_value') != request.get('md5'),
+                or dst_file.get('checksum_type', '').lower() == 'crc32' and dst_file.get('checksum_value') == request.get('crc32'))):
             return True
         return False
 
@@ -668,7 +669,8 @@ class Fts3TransferStatusReport(TransferStatusReport):
                 and dst_file.get('file_size')
                 and dst_file.get('file_size') == request.get('bytes')
                 and (dst_file.get('checksum_type', '').lower() == 'adler32' and dst_file.get('checksum_value') == request.get('adler32')
-                     or dst_file.get('checksum_type', '').lower() == 'md5' and dst_file.get('checksum_value') == request.get('md5'))):
+                     or dst_file.get('checksum_type', '').lower() == 'md5' and dst_file.get('checksum_value') == request.get('md5'),
+                     or dst_file.get('checksum_type', '').lower() == 'crc32' and dst_file.get('checksum_value') == request.get('crc32'))):
             return True
         return False
 
@@ -1019,7 +1021,8 @@ class FTS3Transfertool(Transfertool):
                 'dest_rse_id': transfer.dst.rse.id,
                 'filesize': rws.byte_count,
                 'md5': rws.md5,
-                'adler32': rws.adler32
+                'adler32': rws.adler32,
+                'crc32': rws.adler32
             },
             'filesize': rws.byte_count,
             'checksum': checksum_to_use,

@@ -1103,7 +1103,7 @@ class FTS3Transfertool(Transfertool):
         # this tells FTS not to refresh transfer tokens
         if self.token:
             fts_unmanaged_token = config_get_bool('conveyor', 'fts_unmanaged_token', default=False)
-            if fts_unmanagd_token:
+            if fts_unmanaged_token:
                 job_params['unmanaged_tokens'] = fts_unmanaged_token
 
         # bulk submission

@@ -1099,6 +1099,13 @@ class FTS3Transfertool(Transfertool):
             expected_transfer_id = self.__get_deterministic_id(job_params["sid"])
             self.logger(logging.DEBUG, "Submit bulk transfers in deterministic mode, sid %s, expected transfer id: %s", job_params["sid"], expected_transfer_id)
 
+        # add unmanaged token option if true
+        # this tells FTS not to refresh transfer tokens
+        if self.token:
+            fts_unmanaged_token = config_get_bool('conveyor', 'fts_unmanaged_token', default=False)
+            if fts_unmanagd_token:
+                job_params['unmanaged_tokens'] = fts_unmanaged_token
+
         # bulk submission
         params_dict = {'files': files, 'params': job_params}
         params_str = json.dumps(params_dict, cls=APIEncoder)

@@ -1669,10 +1669,10 @@ def test_transfer_with_tokens(vo, did_factory, root_account, caches_mock, file_c
 @pytest.mark.needs_iam
 @pytest.mark.noparallel(groups=[NoParallelGroups.XRD, NoParallelGroups.SUBMITTER, NoParallelGroups.RECEIVER])
 @pytest.mark.parametrize("file_config_mock", [
-    {"overrides": [('oidc', 'admin_issuer', 'indigoiam')]},
-], indirect=True)
-@pytest.mark.parametrize("file_config_mock", [
-    {"overrides": [('conveyor', 'fts_unmanaged_token', 'true')]},
+    {"overrides": [
+        ('oidc', 'admin_issuer', 'indigoiam'),
+        ('conveyor', 'fts_unmanaged_token', 'true')
+    ]},
 ], indirect=True)
 def test_transfer_with_unmanaged_tokens(vo, did_factory, root_account, caches_mock, file_config_mock):
     src_rse = 'WEB1'

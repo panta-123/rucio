@@ -20,6 +20,11 @@ MonitoringMessaging=false
 
 OAuth2 = True
 
+# Allow non managed tokens
+# FTS will not do token refresh
+AllowNonManagedTokens = True
+
+
 [sqlalchemy]
 pool_timeout=10
 pool_size=10

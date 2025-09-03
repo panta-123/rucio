@@ -25,34 +25,44 @@ if [[ ${#@} -eq 0 ]]; then
   ARGS=(".")
 else
   echo "Running pytest with extra arguments: $@"
-  ARGS=($@)
+  # Convert /opt/rucio/tests/ paths to relative paths when in /rucio_source
+  ARGS=()
+  for arg in "$@"; do
+    if [[ "$arg" =~ ^/opt/rucio/tests/ ]]; then
+      # Convert /opt/rucio/tests/test_file.py to tests/test_file.py
+      relative_path="${arg#/opt/rucio/}"
+      ARGS+=("$relative_path")
+    else
+      ARGS+=("$arg")
+    fi
+  done
 fi
 
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD="True"
 
-NO_XDIST="${NO_XDIST:-False}"
+RUN_XDIST="${RUN_XDIST:-True}"
 if [[ "${RDBMS:-}" == "sqlite" ]]; then
   # no parallel tests on sqlite, because of random "sqlite3.OperationalError: database is locked"
   echo "Disabling parallel testing for sqlite"
-  NO_XDIST="True"
+  RUN_XDIST="False"
 elif [[ "${RDBMS:-}" =~ mysql.* ]]; then
   # no parallel tests on mysql, because of random "pymysql.err.OperationalError:
   # (1213, 'Deadlock found when trying to get lock; try restarting transaction')"
   echo "Disabling parallel testing for mysql"
-  NO_XDIST="True"
+  RUN_XDIST="False"
 elif [[ "${RDBMS:-}" == "oracle" ]]; then
-  # no parallel tests on oracle, because of random "cx_Oracle.DatabaseError:
-  # ORA-00060: deadlock detected while waiting for resource"
+  # no parallel tests on oracle, because of potential database deadlock errors.
   echo "Disabling parallel testing for oracle"
-  NO_XDIST="True"
+  RUN_XDIST="False"
 fi
 
-if [[ "$NO_XDIST" == "False" ]]; then
-  NO_XDIST="$(python -c 'import xdist; print(False)' ||:)"
+if [[ "$RUN_XDIST" == "True" ]] && ! python -c 'import xdist' &>/dev/null 2>&1; then
+    echo "xdist is not installed, disabling parallel testing"
+    RUN_XDIST="False"
 fi
 
 XDIST_ARGS=()
-if [[ "$NO_XDIST" == "False" ]]; then
+if [[ "$RUN_XDIST" == "True" ]]; then
   if [[ "${GITHUB_ACTIONS:-false}" == "true" ]]; then
     # run on 3 processes instead of 2 on GitHub Actions
     PROCESS_COUNT="3"
@@ -63,4 +73,4 @@ if [[ "$NO_XDIST" == "False" ]]; then
   echo "Running pytest with pytest-xdist: " "${XDIST_ARGS[@]}"
 fi
 
-exec python -bb -m pytest -r fExX --log-level=DEBUG ${XDIST_ARGS[@]+"${XDIST_ARGS[@]}"} ${ARGS[@]}
+exec python -bb -m pytest --rootdir=${RUCIO_DIR} -c tools/pytest.ini -r fExX --log-level=DEBUG ${XDIST_ARGS[@]+"${XDIST_ARGS[@]}"} ${ARGS[@]}

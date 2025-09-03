@@ -4,8 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 pythonpath = [
-  ".",
-  "lib",
+    ".",
+    "lib",
+]
+testpaths = [
+    "tests",
+]
+filterwarnings = [
+    "ignore::BytesWarning",
 ]
 
 [tool.coverage.report]

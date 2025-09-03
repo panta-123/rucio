@@ -100,21 +100,22 @@ class AutoApprove(PolicyPackageAlgorithms):
 
     _algorithm_type = 'auto_approve'
 
-    def __init__(self, rule: models.ReplicationRule, did: models.DataIdentifier, session: 'Session') -> None:
+    def __init__(self, rule: models.ReplicationRule, did: models.DataIdentifier, session: 'Session', vo: str = DEFAULT_VO) -> None:
         super().__init__()
         self.rule = rule
         self.did = did
         self.session = session
+        self.vo = vo
         self.register("default", self.default)
 
     def evaluate(self) -> bool:
         """
         Evaluate the auto-approve algorithm
         """
-        return self.get_configured_algorithm()(self.rule, self.did, self.session)
+        return self.get_configured_algorithm(self.vo)(self.rule, self.did, self.session)
 
     @classmethod
-    def get_configured_algorithm(cls: type[AutoApproveT]) -> "Callable[[models.ReplicationRule, models.DataIdentifier, Session], bool]":
+    def get_configured_algorithm(cls: type[AutoApproveT], vo: str) -> "Callable[[models.ReplicationRule, models.DataIdentifier, Session], bool]":
         """
         Get the configured auto-approve algorithm
         """
@@ -123,7 +124,12 @@ class AutoApprove(PolicyPackageAlgorithms):
         except (NoOptionError, NoSectionError, RuntimeError):
             configured_algorithm = 'default'
 
-        return super()._get_one_algorithm(cls._algorithm_type, configured_algorithm)
+        result = None
+        if configured_algorithm == 'default':
+            result = super()._get_default_algorithm(cls._algorithm_type, vo)
+        if result is None:
+            result = super()._get_one_algorithm(cls._algorithm_type, configured_algorithm)
+        return result
 
     @classmethod
     def register(cls: type[AutoApproveT], name: str, fn_auto_approve: "Callable[[models.ReplicationRule, models.DataIdentifier, Session], bool]") -> None:
@@ -390,7 +396,7 @@ def add_rule(
             if ask_approval:
                 new_rule.state = RuleState.WAITING_APPROVAL
                 # Use the new rule as the argument here
-                auto_approver = AutoApprove(new_rule, did, session=session)
+                auto_approver = AutoApprove(new_rule, did, session=session, vo=account.vo)
                 if auto_approver.evaluate():
                     logger(logging.DEBUG, "Auto approving rule %s", str(new_rule.id))
                     logger(logging.DEBUG, "Created rule %s for injection", str(new_rule.id))
@@ -1261,6 +1267,7 @@ def repair_rule(
     #     created.
     # (C) Transfers fail and mark locks (and the rule) as STUCK. All STUCK locks have to be repaired.
     # (D) Files are declared as BAD.
+    # (E) Stuck locks are found on RSEs that do not belong to the target RSEs.
 
     # start_time = time.time()
     try:
@@ -1314,6 +1321,43 @@ def repair_rule(
             logger(logging.DEBUG, '%s while repairing rule %s', str(error), rule_id)
             return
 
+        # Get all stuck locks for this rule ID
+        stmt = select(
+            models.ReplicaLock.rse_id,
+            func.count().label('lock_count')
+        ).where(
+            and_(models.ReplicaLock.rule_id == rule.id,
+                 models.ReplicaLock.state == LockState.STUCK)
+        ).group_by(
+            models.ReplicaLock.rse_id
+        )
+        stuck_locks_by_rse = session.execute(stmt).all()
+
+        stuck_locks_on_nontarget_rses = []
+
+        # Check if any of the locks found are not on our target RSEs
+        target_rse_ids = {rse['id'] for rse in target_rses}
+        for stuck_lock in stuck_locks_by_rse:
+            if stuck_lock.rse_id not in target_rse_ids:
+                rse_name = get_rse_name(rse_id=stuck_lock.rse_id, session=session)
+                stuck_locks_on_nontarget_rses.append({
+                    'rse_id': stuck_lock.rse_id,
+                    'rse_name': rse_name,
+                    'lock_count': stuck_lock.lock_count
+                })
+
+        # Add to rule error if found
+        if stuck_locks_on_nontarget_rses:
+            error_msg = "Found stuck locks on RSEs not matching target expression: "
+            error_msg += ", ".join([f"{rse['rse_name']} ({rse['lock_count']})" for rse in stuck_locks_on_nontarget_rses])
+
+            if rule.error:
+                error_msg = rule.error + '|' + error_msg
+
+            rule.error = (error_msg[:245] + '...') if len(error_msg) > 245 else error_msg
+
+            logger(logging.WARNING, "Rule %s: %s", str(rule.id), error_msg)
+
         # Create the RSESelector
         try:
             rseselector = RSESelector(account=rule.account,
@@ -1324,7 +1368,12 @@ def repair_rule(
                                       session=session)
         except (InvalidRuleWeight, InsufficientTargetRSEs, InsufficientAccountLimit) as error:
             rule.state = RuleState.STUCK
-            rule.error = (str(error)[:245] + '...') if len(str(error)) > 245 else str(error)
+
+            error_msg = str(error)
+            if rule.error:
+                error_msg = rule.error + '|' + error_msg
+            rule.error = (error_msg[:245] + '...') if len(error_msg) > 245 else error_msg
+
             rule.save(session=session)
             # Insert rule history
             insert_rule_history(rule=rule, recent=True, longterm=False, session=session)
@@ -1410,7 +1459,10 @@ def repair_rule(
                                                      session=session)
             except (InsufficientAccountLimit, InsufficientTargetRSEs) as error:
                 rule.state = RuleState.STUCK
-                rule.error = (str(error)[:245] + '...') if len(str(error)) > 245 else str(error)
+                error_msg = str(error)
+                if rule.error:
+                    error_msg = rule.error + '|' + error_msg
+                rule.error = (error_msg[:245] + '...') if len(error_msg) > 245 else error_msg
                 rule.save(session=session)
                 # Insert rule history
                 insert_rule_history(rule=rule, recent=True, longterm=False, session=session)
@@ -1450,7 +1502,10 @@ def repair_rule(
                                                session=session)
         except (InsufficientAccountLimit, InsufficientTargetRSEs) as error:
             rule.state = RuleState.STUCK
-            rule.error = (str(error)[:245] + '...') if len(str(error)) > 245 else str(error)
+            error_msg = str(error)
+            if rule.error:
+                error_msg = rule.error + '|' + error_msg
+            rule.error = (error_msg[:245] + '...') if len(error_msg) > 245 else error_msg
             rule.save(session=session)
             # Insert rule history
             insert_rule_history(rule=rule, recent=True, longterm=False, session=session)

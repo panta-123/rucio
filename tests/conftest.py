@@ -17,8 +17,8 @@ import os
 import re
 import traceback
 from os import environ
-from random import choice
-from string import ascii_uppercase
+from random import choice, choices
+from string import ascii_letters, ascii_uppercase, digits
 from typing import TYPE_CHECKING, Any, Optional
 
 import pytest
@@ -55,10 +55,24 @@ pytest_plugins = ('tests.ruciopytest.artifacts_plugin', )
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line('markers', 'dirty: marks test as dirty, i.e. tests are leaving structures behind')
     config.addinivalue_line('markers', 'noparallel(reason, groups): marks test being unable to run in parallel to other tests')
+    config.addinivalue_line('markers', 'needs_iam: requires the dev iam profile (OIDC/IdP)')
 
     if config.pluginmanager.hasplugin("xdist"):
         from .ruciopytest import xdist_noparallel_scheduler
         config.pluginmanager.register(xdist_noparallel_scheduler)
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """
+    Skip tests marked with 'needs_iam' if the IAM profile is not available in the dev environment.
+    """
+    if item.get_closest_marker("needs_iam"):
+        # Check if we're running in a dev environment with IAM profile available
+        dev_profiles = environ.get('DEV_PROFILES', '').split(',')
+        dev_profiles = [profile.strip() for profile in dev_profiles if profile.strip()]
+        
+        if 'iam' not in dev_profiles:
+            pytest.skip("Test requires IAM profile - start dev environment with: --profile iam")
 
 
 def pytest_make_parametrize_id(
@@ -758,3 +772,41 @@ def rse_protocol() -> "Iterator[dict[str, Any]]":
             }
         },
     }
+
+
+@pytest.fixture
+def doi_factory() -> "Callable[[], str]":
+    """Fixture that returns a function to generate random DOIs."""
+
+    def generate_doi() -> str:
+        return '10.1234/' + ''.join(choices(ascii_letters + digits, k=10))  # noqa: S311
+
+    return generate_doi
+
+
+@pytest.fixture
+def db_read_session():
+    from rucio.db.sqla.constants import DatabaseOperationType
+    from rucio.db.sqla.session import db_session
+
+    """
+    Fixture to provide a read-only database session.
+    This session is used for read operations and should not modify the database.
+    """
+
+    with db_session(DatabaseOperationType.READ) as session:
+        yield session
+
+
+@pytest.fixture
+def db_write_session():
+    from rucio.db.sqla.constants import DatabaseOperationType
+    from rucio.db.sqla.session import db_session
+
+    """
+    Fixture to provide a write database session.
+    This session is used for write operations and can modify the database.
+    """
+
+    with db_session(DatabaseOperationType.WRITE) as session:
+        yield session

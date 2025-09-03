@@ -19,7 +19,7 @@ jobs:
             python-version: ["3.9", "3.10", "3.11", "3.12"]
 
       steps:
-          - uses: actions/checkout@v4
+          - uses: actions/checkout@v5.0.0
 
           - name: Set up Python ${{ matrix.python-version }}
             uses: actions/setup-python@v5
@@ -40,6 +40,6 @@ jobs:
             run: pytest tests/rucio --cov=lib/rucio
 
           - name: Upload coverage reports to Codecov
-            uses: codecov/codecov-action@v5.4.3
+            uses: codecov/codecov-action@v5.5.0
             with:
               token: ${{ secrets.CODECOV_TOKEN }}

@@ -32,7 +32,6 @@ from rich.status import Status
 from rich.text import Text
 from rich.theme import Theme
 from rich.traceback import install
-from rich.tree import Tree
 from tabulate import tabulate
 
 # rucio module has the same name as this executable module, so this rule fails. pylint: disable=no-name-in-module
@@ -516,7 +515,7 @@ def list_scopes(args, client, logger, console, spinner):
 
     List scopes.
     """
-    if cli_config == 'rich':
+    if (cli_config == 'rich') or (not args.csv):
         spinner.update(status='Fetching scopes')
         spinner.start()
 
@@ -524,8 +523,8 @@ def list_scopes(args, client, logger, console, spinner):
         scopes = client.list_scopes_for_account(args.account)
     else:
         scopes = client.list_scopes()
-    if cli_config == 'rich':
-        scopes = [[scope] for scope in sorted(scopes) if 'mock' not in scope]
+    if (cli_config == 'rich') and (not args.csv):
+        scopes = [[scope] for scope in sorted(scopes)]
         table = generate_table(scopes, headers=['SCOPE'], col_alignments=['left'])
         spinner.stop()
         print_output(table, console=console, no_pager=args.no_pager)
@@ -716,64 +715,7 @@ def list_parent_dids(args, client, logger, console, spinner):
         spinner.update(status='Fetching parent DIDs')
         spinner.start()
 
-    if args.pfns:
-        dict_datasets = {}
-        output = []
-        for res in client.get_did_from_pfns(args.pfns):
-            for key in res:
-                if key not in dict_datasets:
-                    dict_datasets[key] = []
-                for rule in client.list_associated_rules_for_file(res[key]['scope'], res[key]['name']):
-                    if f"{rule['scope']}:{rule['name']}" not in dict_datasets[key]:
-                        dict_datasets[key].append(f"{rule['scope']}:{rule['name']}")
-
-        for i, pfn in enumerate(dict_datasets):
-            if cli_config == 'rich':
-                parent_tree = Tree('')
-                for parent in dict_datasets[pfn]:
-                    parent_tree.add(parent)
-                table = generate_table([['PFN', pfn], ['Parents', parent_tree]], col_alignments=['left', 'left'], row_styles=['none'])
-                output.append(table)
-            else:
-                print('PFN: ', pfn)
-                print('Parents: ', ','.join(dict_datasets[pfn]))
-
-        if cli_config == 'rich':
-            spinner.stop()
-            print_output(*output, console=console, no_pager=args.no_pager)
-    elif args.guids:
-        output = []
-        guids = []
-        for input_ in args.guids:
-            try:
-                uuid.UUID(input_)
-            except ValueError:
-                print(f'Ignoring invalid GUID: {input_}')
-                continue
-        dict_datasets = {}
-        for guid in guids:
-            for did in client.get_dataset_by_guid(guid):
-                if guid not in dict_datasets:
-                    dict_datasets[guid] = []
-                for rule in client.list_associated_rules_for_file(did['scope'], did['name']):
-                    if f"{rule['scope']}:{rule['name']}" not in dict_datasets[guid]:
-                        dict_datasets[guid].append(f"{rule['scope']}:{rule['name']}")
-
-        for i, guid in enumerate(dict_datasets):
-            if cli_config == 'rich':
-                parent_tree = Tree('')
-                for parent in dict_datasets[guid]:
-                    parent_tree.add(parent)
-                table = generate_table([['GUID', guid], ['Parents', parent_tree]], col_alignments=['left', 'left'], row_styles=['none'])
-                output.append(table)
-            else:
-                print('GUID: ', guid)
-                print('Parents : ', ','.join(dict_datasets[guid]))
-
-        if cli_config == 'rich':
-            spinner.stop()
-            print_output(*output, console=console, no_pager=args.no_pager)
-    elif args.did:
+    if args.did:
         table_data = []
         scope, name = get_scope(args.did, client)
         for dataset in client.list_parent_dids(scope=scope, name=name):
@@ -789,7 +731,7 @@ def list_parent_dids(args, client, logger, console, spinner):
         else:
             print(tabulate(table_data, tablefmt=tablefmt, headers=['SCOPE:NAME', '[DID TYPE]']))
     else:
-        raise InputValidationError('At least one option has to be given. Use -h to list the options.')
+        raise InputValidationError('A DID must be provided. Use -h to list the options.')
     return SUCCESS
 
 
@@ -1538,8 +1480,8 @@ def list_rules(args, client, logger, console, spinner):
     elif args.rule_account:
         rules = client.list_account_rules(account=args.rule_account)
     elif args.subscription:
-        account = args.subscription[0]
-        name = args.subscription[1]
+        account = args.rule_account if args.rule_account else client.account
+        name = args.subscription
         rules = client.list_subscription_rules(account=account, name=name)
     else:
         raise InputValidationError('At least one option has to be given. Use -h to list the options.')
@@ -2403,8 +2345,6 @@ You can filter by key/value, e.g.::
     ''')
     list_parent_parser.set_defaults(function=list_parent_dids)
     list_parent_parser.add_argument(dest='did', action='store', nargs='?', default=None, help='Data identifier.')
-    list_parent_parser.add_argument('--pfn', dest='pfns', action='store', nargs='+', help='List parent dids for these pfns.')
-    list_parent_parser.add_argument('--guid', dest='guids', action='store', nargs='+', help='List parent dids for these guids.')
 
     # argparse 2.7 does not allow aliases for commands, thus the list-parent-datasets is a copy&paste from list-parent-dids
     list_parent_datasets_parser = subparsers.add_parser('list-parent-datasets', help='List parent DIDs for a given DID', description='List all parents Data IDentifier that contains the target Data IDentifier.',
@@ -2423,8 +2363,6 @@ You can filter by key/value, e.g.::
 
     list_parent_datasets_parser.set_defaults(function=list_parent_dids)
     list_parent_datasets_parser.add_argument(dest='did', action='store', nargs='?', default=None, help='Data identifier.')
-    list_parent_datasets_parser.add_argument('--pfn', dest='pfns', action='store', nargs='+', help='List parent dids for these pfns.')
-    list_parent_datasets_parser.add_argument('--guid', dest='guids', action='store', nargs='+', help='List parent dids for these guids.')
 
     # The list-scopes command
     scope_list_parser = subparsers.add_parser('list-scopes', help='List all available scopes.',
@@ -2441,6 +2379,7 @@ You can filter by key/value, e.g.::
     ''')
 
     scope_list_parser.set_defaults(function=list_scopes)
+    scope_list_parser.add_argument("--csv", action="store_true", default=False, help="Comma Separated Value output.")
     scope_list_parser.add_argument('--account', help='Filter scopes by account')
 
     # The close command
@@ -2642,7 +2581,7 @@ You can filter by account::
     list_rules_parser.add_argument('--csv', dest='csv', action='store_true', default=False, help='Comma Separated Value output')
     list_rules_parser.add_argument('--file', dest='file', action='store', help='List associated rules of an affected file')
     list_rules_parser.add_argument('--account', dest='rule_account', action='store', help='List by account')
-    list_rules_parser.add_argument('--subscription', dest='subscription', action='store', help='List by account and subscription name', metavar=('ACCOUNT', 'SUBSCRIPTION'), nargs=2)
+    list_rules_parser.add_argument('--subscription', dest='subscription', action='store', help='List by subscription name')
 
     # The list_rules_history command
     list_rules_history_parser = subparsers.add_parser('list-rules-history', help='List replication rules history for a DID.')

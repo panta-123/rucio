@@ -1105,7 +1105,7 @@ class FTS3Transfertool(Transfertool):
         if self.token:
             fts_unmanaged_token = config_get_bool('conveyor', 'fts_unmanaged_token', default=False)
             if fts_unmanaged_token:
-                job_params['unmanaged_tokens'] = fts_unmanaged_token
+                job_params['unmanaged_tokens'] = fts_unmanaged_token # type: ignore[assignment]
 
         # bulk submission
         params_dict = {'files': files, 'params': job_params}

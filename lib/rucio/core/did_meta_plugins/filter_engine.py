@@ -17,6 +17,7 @@ import fnmatch
 import operator
 from datetime import date, datetime, timedelta
 from importlib import import_module
+from psycopg import sql
 from typing import TYPE_CHECKING, Any, Optional, TypeVar, Union
 
 import sqlalchemy
@@ -24,7 +25,7 @@ from sqlalchemy import Select, and_, cast, or_, select
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.expression import text
 
-from rucio.common import exception
+from rucio.common import config, exception
 from rucio.common.utils import parse_did_filter_from_string_fe
 from rucio.db.sqla.constants import DIDType
 from rucio.db.sqla.session import read_session
@@ -407,81 +408,108 @@ class FilterEngine:
 
     def create_postgres_query(
         self,
-        additional_filters: Optional["Iterable[FilterTuple]"] = None,
-        fixed_table_columns: Union[tuple[str, ...], dict[str, str]] = ('scope', 'name', 'vo'),
-        jsonb_column: str = 'data'
-    ) -> str:
+        additional_filters=None,
+        fixed_table_columns=(),
+        jsonb_column='data',
+    ):
         """
-        Returns a single postgres query describing the filters expression.
+        Builds a PostgreSQL WHERE clause with parameters using the FilterEngine's filters.
 
-        :param additional_filters: additional filters to be applied to all clauses.
-        :param fixed_table_columns: the table columns
-        :returns: a postgres query string describing the filters expression.
+        :param additional_filters: A list of filter tuples to be AND-ed with every OR clause.
+        :param fixed_table_columns: A tuple of column names that are not in the JSONB field.
+        :param jsonb_column: The name of the JSONB column.
+        :returns: A tuple containing a psycopg2.sql.SQL object for the WHERE clause
+                and a list of parameters for safe query execution.
         """
-        additional_filters = additional_filters or []
-        # Add additional filters, applied as AND clauses to each OR group.
-        for or_group in self._filters:
-            for _filter in additional_filters:
-                or_group.append(list(_filter))  # type: ignore
+        use_jsonb_optimization = config.config_get('metadata', 'postgres_jsonb_indexing', default=False)
+        # Use self._filters for the filter groups
+        all_filters = [list(or_group) for or_group in self._filters] if self._filters else []
 
-        or_expressions: list[str] = []
-        for or_group in self._filters:
-            and_expressions: list[str] = []
-            for and_group in or_group:
-                key, oper, value = and_group
-                if key in fixed_table_columns:                                              # is this key filtering on a column or in the jsonb?
-                    is_in_json_column = False
-                else:
-                    is_in_json_column = True
-                if isinstance(value, str) and any([char in value for char in ['*', '%']]):  # wildcards
-                    if value in ('*', '%', '*', '%'):                                       # match wildcard exactly == no filtering on key
+        if not all_filters and not additional_filters:
+            return sql.SQL("TRUE"), []
+
+        # Add additional filters to each OR group
+        if additional_filters:
+            for or_group in all_filters:
+                or_group.extend(additional_filters)
+
+        if not all_filters:
+            all_filters.append([])
+
+        or_expressions = []
+        all_params = []
+
+        for or_group in all_filters:
+            and_expressions = []
+
+            for key, oper, value in or_group:
+                if isinstance(value, str) and value in ('*', '%'):
+                    continue  # Skip wildcard-only filters
+
+                is_in_json = key not in fixed_table_columns
+                col_identifier = sql.Identifier(jsonb_column if is_in_json else key)
+
+                # =======================================================================
+                # OPTIONAL OPTIMIZATION: Use @> for exact JSON matches (GIN indexable)
+                # =======================================================================
+                if use_jsonb_optimization and oper == operator.eq and is_in_json:
+                    expression = sql.SQL("{} @> %s").format(col_identifier)
+                    all_params.append(json.dumps({key: value}))
+                    and_expressions.append(expression)
+                    continue
+
+                # Wildcard LIKE patterns (always secure with parameters)
+                if isinstance(value, str) and any(c in value for c in ['*', '%']):
+                    if oper not in (operator.eq, operator.ne):
                         continue
-                    else:                                                                   # partial match with wildcard == like || notlike
-                        if oper == operator.eq:
-                            if is_in_json_column:
-                                expression = "{}->>'{}' LIKE '{}' ".format(jsonb_column, key, value.replace('*', '%').replace('_', '\_'))       # NOQA: W605
-                            else:
-                                expression = "{} LIKE '{}' ".format(key, value.replace('*', '%').replace('_', '\_'))                            # NOQA: W605
-                        elif oper == operator.ne:
-                            if is_in_json_column:
-                                expression = "{}->>'{}' NOT LIKE '{}' ".format(jsonb_column, key, value.replace('*', '%').replace('_', '\_'))   # NOQA: W605
-                            else:
-                                expression = "{} NOT LIKE '{}' ".format(key, value.replace('*', '%').replace('_', '\_'))                        # NOQA: W605
+                    sql_op = sql.SQL('LIKE') if oper == operator.eq else sql.SQL('NOT LIKE')
+                    like_value = value.replace('*', '%').replace('_', r'\_')
+
+                    if is_in_json:
+                        expression = sql.SQL("({}->>%s) {op} %s").format(col_identifier, op=sql_op)
+                        all_params.extend([key, like_value])
+                    else:
+                        expression = sql.SQL("{} {op} %s").format(col_identifier, op=sql_op)
+                        all_params.append(like_value)
+                    and_expressions.append(expression)
+                    continue
+
+                # Standard operators with type casting
+                if oper not in POSTGRES_OP_MAP:
+                    continue
+                sql_op = sql.SQL(POSTGRES_OP_MAP[oper])
+
+                cast_type = None
+                if isinstance(value, bool):
+                    cast_type = sql.SQL('::boolean')
+                elif isinstance(value, (int, float)):
+                    cast_type = sql.SQL('::numeric')
+                elif isinstance(value, datetime):
+                    cast_type = sql.SQL('::timestamp')
+
+                if is_in_json:
+                    if cast_type:
+                        expression = sql.SQL("(({}->>%s){cast}) {op} %s").format(
+                            col_identifier, cast=cast_type, op=sql_op
+                        )
+                    else:
+                        expression = sql.SQL("({}->>%s) {op} %s").format(col_identifier, op=sql_op)
+                    all_params.extend([key, value])
                 else:
-                    # Infer what type key should be cast to from typecasting the value in the expression.
-                    try:
-                        if isinstance(value, int):                                          # this could be bool or int (as bool subclass of int)
-                            if isinstance(value, bool):
-                                if is_in_json_column:
-                                    expression = "({}->>'{}')::boolean {} {}".format(jsonb_column, key, POSTGRES_OP_MAP[oper], str(value).lower())
-                                else:
-                                    expression = "{}::boolean {} {}".format(key, POSTGRES_OP_MAP[oper], str(value).lower())
-                            else:
-                                # cast as float, not integer, to avoid potentially losing precision in key
-                                if is_in_json_column:
-                                    expression = "({}->>'{}')::float {} {}".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)
-                                else:
-                                    expression = "{}::float {} {}".format(key, POSTGRES_OP_MAP[oper], value)
-                        elif isinstance(value, float):
-                            if is_in_json_column:
-                                expression = "({}->>'{}')::float {} {}".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)
-                            else:
-                                expression = "{}::float {} {}".format(key, POSTGRES_OP_MAP[oper], value)
-                        elif isinstance(value, datetime):
-                            if is_in_json_column:
-                                expression = "({}->>'{}')::timestamp {} '{}'".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)
-                            else:
-                                expression = "{}::timestamp {} '{}'".format(key, POSTGRES_OP_MAP[oper], value)
-                        else:
-                            if is_in_json_column:
-                                expression = "{}->>'{}' {} '{}'".format(jsonb_column, key, POSTGRES_OP_MAP[oper], value)
-                            else:
-                                expression = "{} {} '{}'".format(key, POSTGRES_OP_MAP[oper], value)
-                    except Exception as e:
-                        raise exception.FilterEngineGenericError(e)
+                    expression = sql.SQL("{} {op} %s").format(col_identifier, op=sql_op)
+                    all_params.append(value)
+
                 and_expressions.append(expression)
-            or_expressions.append(' AND '.join(and_expressions))
-        return ' OR '.join(or_expressions)
+
+            if and_expressions:
+                or_expressions.append(sql.SQL('(') + sql.SQL(' AND ').join(and_expressions) + sql.SQL(')'))
+
+        if not or_expressions:
+            return sql.SQL("TRUE"), []
+
+        final_query = sql.SQL(' OR ').join(or_expressions)
+        return final_query, all_params
+
 
     @read_session
     def create_sqla_query(

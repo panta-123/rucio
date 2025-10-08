@@ -39,7 +39,7 @@ class ExternalPostgresDidMeta(DidMetaPlugin):
 class ExternalPostgresJSONDidMeta(DidMetaPlugin):
     def __init__(self, host=None, port=None, db=None, user=None, password=None, db_schema=None, table=None,
                  table_is_managed=None, table_column_vo=None, table_column_scope=None, table_column_name=None,
-                 table_column_data=None):
+                 table_column_data=None, postgres_jsonb_indexing=None):
         super(ExternalPostgresJSONDidMeta, self).__init__()
         if host is None:
             host = config.config_get('metadata', 'postgres_service_host')
@@ -65,6 +65,8 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             table_column_name = config.config_get('metadata', 'postgres_table_column_name', default='name')
         if table_column_data is None:
             table_column_data = config.config_get('metadata', 'postgres_table_column_data', default='data')
+        if not postgres_jsonb_indexing:
+            jsonb_indexing = config.config_get('metadata', 'postgres_jsonb_indexing', default=False)
 
         self.fixed_table_columns = {
             'vo': table_column_vo,
@@ -72,7 +74,7 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             'name': table_column_name
         }
         self.jsonb_column = table_column_data
-
+        self.jsonb_indexing = postgres_jsonb_indexing
         self.table = table
         self.client = psycopg.connect(
             host=host,
@@ -118,6 +120,20 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         cur.execute(statement)
         cur.close()
         self.client.commit()
+
+        if self.jsonb_indexing:
+            index_name = f"{self.table}_{self.jsonb_column}_idx"
+            
+            create_index_statement = sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} USING GIN ({})").format(
+                sql.Identifier(index_name),
+                sql.Identifier(self.table),
+                sql.Identifier(self.jsonb_column)
+            )
+            
+            cur = self.client.cursor()
+            cur.execute(create_index_statement)
+            cur.close()
+            self.client.commit()
 
     def _verify_table_schema(self, table_column_vo, table_column_scope, table_column_name, table_column_data):
         """
@@ -291,7 +307,7 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         try:
             # instantiate fe and create postgres query
             fe = FilterEngine(filters, model_class=None, strict_coerce=False)
-            postgres_query_str = fe.create_postgres_query(
+            where_clause, params = fe.create_postgres_query(
                 additional_filters=[
                     ('scope', operator.eq, scope.internal),
                     ('vo', operator.eq, scope.vo)
@@ -309,14 +325,21 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
                 "'{}' metadata module does not currently support recursive searches".format(self.plugin_name.lower())
             )
 
-        statement = sql.SQL("SELECT * FROM {} WHERE {} {}").format(
-            sql.Identifier(self.table),
-            sql.SQL(postgres_query_str),  # type: ignore
-            sql.SQL("LIMIT {}").format(sql.Literal(limit)) if limit else sql.SQL("")
-        )
+        if long:
+            statement = sql.SQL("SELECT * FROM {} WHERE {} {} ").format(
+                sql.Identifier(self.table),
+                where_clause,
+                sql.SQL("LIMIT {}".format(limit)) if limit else sql.SQL("")
+            )
+        else:
+            statement = sql.SQL("SELECT name FROM {} WHERE {} {} ").format(
+                sql.Identifier(self.table),
+                where_clause,
+                sql.SQL("LIMIT {}".format(limit)) if limit else sql.SQL("")
+            )
 
         cur = self.client.cursor(row_factory=dict_row)
-        cur.execute(statement)
+        cur.execute(statement, params)
         query_result = cur.fetchall()
         cur.close()
 
@@ -334,8 +357,8 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
                     }
         else:
             for row in query_result:
-                did = "{}:{}".format(row['scope'], row['name'])
-                if did not in ignore_dids:         # aggregating recursive queries may contain duplicate DIDs
+                did = row['name']
+                if did not in ignore_dids:
                     ignore_dids.add(did)
                     yield row['name']
 

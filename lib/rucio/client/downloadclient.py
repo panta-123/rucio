@@ -24,10 +24,14 @@ import signal
 import subprocess
 import time
 from queue import Empty, Queue, deque
-from threading import Thread
+from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any, Optional
 
+import jwt  # PyJWT library
+import requests
+
 from rucio import version
+from rucio.client.baseclient import choice
 from rucio.client.client import Client
 from rucio.common.checksum import CHECKSUM_ALGO_DICT, GLOBALLY_SUPPORTED_CHECKSUMS, PREFERRED_CHECKSUM, adler32
 from rucio.common.client import detect_client_location
@@ -36,7 +40,7 @@ from rucio.common.constants import DEFAULT_VO
 from rucio.common.didtype import DID
 from rucio.common.exception import InputValidationError, NoFilesDownloaded, NotAllFilesDownloaded, RucioException
 from rucio.common.pcache import Pcache
-from rucio.common.utils import execute, extract_scope, generate_uuid, parse_replicas_from_file, parse_replicas_from_string, send_trace, sizefmt
+from rucio.common.utils import build_url, execute, extract_scope, generate_uuid, parse_replicas_from_file, parse_replicas_from_string, send_trace, sizefmt
 from rucio.rse import rsemanager as rsemgr
 
 if TYPE_CHECKING:
@@ -60,6 +64,118 @@ class FileDownloadState(str, enum.Enum):
     FILE_NOT_FOUND = "FILE_NOT_FOUND"
     FAIL_VALIDATE = "FAIL_VALIDATE"
     FAILED = "FAILED"
+
+
+class OIDCTokenManager:
+    """
+    Requests OIDC tokens from the API and caches them until expiration.
+    Automatically refreshes the token if expired or near expiry.
+    Thread-safe for concurrent downloads.
+    """
+
+    def __init__(self, api_url: str, vo: str = "def", min_lifetime: int = 60):
+        """
+        api_url      -- URL to your gateway API (e.g., https://rucio-gw/api)
+        vo           -- Rucio VO
+        min_lifetime -- Refresh token if less than this many seconds left
+        """
+        self.api_url = api_url.rstrip("/")
+        self.vo = vo
+        self.min_lifetime = min_lifetime
+        # token cache keyed by (rse, operation) -> (token, expiry)
+        self._token_expiry = 0
+        self._lock = Lock()
+        self._tokens: dict[tuple[str, str], tuple[str, float]] = {}
+
+    # ------------------------------
+    # Internal utilities
+    # ------------------------------
+
+    def _decode_expiry(self, token: str) -> int:
+        """Decode JWT expiration without verifying signature."""
+        try:
+            payload = jwt.decode(token, options={"verify_signature": False})
+            return payload.get("exp", 0)
+        except Exception:
+            return 0
+
+
+    def _needs_refresh_key(self, rse: str, operation: str) -> bool:
+        """Check if cached token for (rse, operation) is expired or near expiry."""
+        key = (rse, operation)
+        if key not in self._tokens:
+            return True
+
+        expiry = self._tokens[key][1]
+        return (time.time() + self.min_lifetime) >= expiry
+
+    # ------------------------------
+    # Public method workers will call
+    # ------------------------------
+
+    def get_token(self, rse: str, operation: str) -> Optional[str]:
+        """
+        Return a valid token for this RSE + operation.
+        Refreshes automatically if expired or missing.
+        """
+        key = (rse, operation)
+        with self._lock:
+            if self._needs_refresh_key(rse, operation):
+                try:
+                    token, exp = self._refresh_token(rse, operation)
+                except Exception as err:
+                    logging.getLogger(__name__).debug("OIDC token refresh unavailable: %s", err)
+                    # Don't overwrite existing token entry; return None to indicate no token available
+                    return None
+                # store refreshed token
+                self._tokens[key] = (token, exp)
+
+            # return token if present
+            return self._tokens.get(key, (None, 0))[0]
+
+    # ------------------------------
+    # Private: Fetch from REST API
+    # ------------------------------
+
+    def _refresh_token(self, rse: str, operation: str):
+        """Call REST API to fetch new token and update cache."""
+        payload = {
+            "rse": rse,
+            "operation": operation,
+            "vo": self.vo,
+        }
+        headers = {"Content-Type": "application/json"}
+
+        # Build URL defensively: accept either a base api_url or a full
+        # token endpoint passed in during initialization.
+        if self.api_url.rstrip('/').endswith('/token/request'):
+            url = self.api_url
+        else:
+            url = f"{self.api_url.rstrip('/')}/token/request"
+
+        try:
+            # Add a short timeout and let callers handle retries if needed
+            response = requests.post(url, json=payload, headers=headers, timeout=5)
+        except requests.RequestException as err:
+            raise RuntimeError(f"Token request failed: {err}")
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Token request failed: {response.status_code}, {response.text}"
+            )
+
+        body = {}
+        try:
+            body = response.json()
+        except Exception:
+            raise RuntimeError("Token request returned invalid JSON")
+
+        token = body.get("token")
+        if not token:
+            raise RuntimeError("Token request returned no token")
+
+        token_expiry = self._decode_expiry(token) or 0
+        return token, token_expiry
 
 
 class BaseExtractionTool:
@@ -194,8 +310,9 @@ class DownloadClient:
         self.is_human_readable = True
         self.client = client if client else Client()
         # if token should be used, use only JWT tokens
-        self.auth_token = self.client.auth_token if len(self.client.auth_token.split(".")) == 3 else None
-
+        self.auth_token = None #self.client.auth_token if len(self.client.auth_token.split(".")) == 3 else None
+        url = build_url(choice(self.client.list_hosts), path='/token/request')
+        self._token_manager = OIDCTokenManager(api_url=url, min_lifetime=1200)
         self.client_location = detect_client_location()
 
         self.is_tape_excluded = True
@@ -851,8 +968,12 @@ class DownloadClient:
             if impl:
                 logger(logging.INFO, '%sUsing Implementation (impl): %s ' % (log_prefix, impl))
 
+            auth_token = self._token_manager.get_token(rse=rse_name, operation="download")
+            if not auth_token:
+                # Token API unavailable or not providing a token; proceed without token (e.g., X.509)
+                logger(logging.DEBUG, '%sNo OIDC token available; proceeding without auth token' % log_prefix)
             try:
-                protocol = rsemgr.create_protocol(rse, operation='read', scheme=scheme, impl=impl, auth_token=self.auth_token, logger=logger)
+                protocol = rsemgr.create_protocol(rse, operation='read', scheme=scheme, impl=impl, auth_token=auth_token, logger=logger)
                 protocol.connect()
             except Exception as error:
                 logger(logging.WARNING, '%sFailed to create protocol for PFN: %s' % (log_prefix, pfn))
@@ -867,6 +988,31 @@ class DownloadClient:
             while not success and attempt < retries:
                 attempt += 1
                 item['attemptnr'] = attempt
+                # Ensure we have a valid token for every attempt. `get_token`
+                # is thread-safe and will refresh the token if needed. If the
+                # token changed, recreate the protocol and reconnect.
+                try:
+                    new_token = self._token_manager.get_token(rse=rse_name, operation="download")
+                except Exception as token_err:
+                    logger(logging.ERROR, '%sToken refresh failed: %s' % (log_prefix, token_err))
+                    trace['stateReason'] = 'TokenRefreshError: %s' % token_err
+                    break
+
+                # Only attempt protocol swap when we actually received a refreshed token.
+                if new_token and new_token != auth_token:
+                    # Attempt to create and connect a new protocol using the
+                    # refreshed token before replacing the active protocol.
+                    try:
+                        new_protocol = rsemgr.create_protocol(rse, operation='read',
+                                                              scheme=scheme, impl=impl,
+                                                              auth_token=new_token,
+                                                              logger=logger)
+                        new_protocol.connect()
+                    except Exception as conn_err:
+                        logger(logging.WARNING, '%sProtocol reconnect after token refresh failed: %s' % (log_prefix, conn_err))
+                        trace['stateReason'] = 'ProtocolConnectError: %s' % conn_err
+                        # Keep using the existing protocol for this attempt and
+                        # proceed to try downloading; next retry may succeed.
 
                 if os.path.isfile(temp_file_path):
                     logger(logging.DEBUG, '%sDeleting existing temporary file: %s' % (log_prefix, temp_file_path))

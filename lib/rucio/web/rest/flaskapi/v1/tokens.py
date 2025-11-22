@@ -14,7 +14,7 @@
 
 from flask import jsonify, request
 
-from rucio.common.constants import HTTPMethod
+from rucio.common.constants import DEFAULT_VO, HTTPMethod
 from rucio.common.exception import AccessDenied, RucioException
 from rucio.common.utils import parse_response
 from rucio.gateway.tokens import request_token
@@ -68,9 +68,9 @@ class RequestToken(ErrorHandlingMethodView):
         parameters = json_parameters(parse_response)
         rse = param_get(parameters, "rse")
         operation = param_get(parameters, "operation")
-
+        vo = request.environ.get("vo", DEFAULT_VO)
         try:
-            token = request_token(rse=rse, operation=operation, vo=request.environ.get("vo"))
+            token = request_token(rse=rse, operation=operation, vo=vo)
         except AccessDenied as error:
             return generate_http_error_flask(401, error)
         except RucioException as error:

@@ -16,10 +16,10 @@ from flask import jsonify, request
 
 from rucio.common.constants import HTTPMethod
 from rucio.common.exception import AccessDenied, RucioException
-from rucio.common.utils import json_parameters, param_get, parse_response
-from rucio.gateway.token import request_token
+from rucio.common.utils import parse_response
+from rucio.gateway.tokens import request_token
 from rucio.web.rest.flaskapi.authenticated_bp import AuthenticatedBlueprint
-from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, generate_http_error_flask, response_headers
+from rucio.web.rest.flaskapi.v1.common import ErrorHandlingMethodView, generate_http_error_flask, json_parameters, param_get, response_headers
 
 
 class RequestToken(ErrorHandlingMethodView):
@@ -70,11 +70,7 @@ class RequestToken(ErrorHandlingMethodView):
         operation = param_get(parameters, "operation")
 
         try:
-            token = request_token(
-                rse=rse,
-                operation=operation,
-                vo=request.environ.get("vo")
-            )
+            token = request_token(rse=rse, operation=operation, vo=request.environ.get("vo"))
         except AccessDenied as error:
             return generate_http_error_flask(401, error)
         except RucioException as error:
@@ -94,7 +90,7 @@ def blueprint(with_doc=False):
 
 
 def make_doc():
-    """ Only used for sphinx documentation """
+    """Only used for sphinx documentation"""
     from flask import Flask
 
     doc_app = Flask(__name__)

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from rucio.common.constants import DEFAULT_VO, RseAttr
 from rucio.common.exception import RucioException
@@ -21,14 +21,11 @@ from rucio.core import rse as rse_core
 from rucio.db.sqla.constants import DatabaseOperationType
 from rucio.db.sqla.session import db_session
 
-if TYPE_CHECKING:
-    pass
-
 
 def request_token(
-        rse: str,
-        operation: Literal["download", "upload"],
-        vo: str = DEFAULT_VO,
+    rse: str,
+    operation: Literal["download", "upload"],
+    vo: str = DEFAULT_VO,
 ) -> str:
     """
     Gateway for requesting an OIDC token.
@@ -42,13 +39,13 @@ def request_token(
             audience = rse_core.determine_audience_for_rse(rse_id=rse_id)
             scopes = ["storage.read"]
             rse_protocols = rse_core.get_rse_protocols(rse_id, session=session)
-            for protocol in rse_protocols['protocols']:
-                prefix = protocol['prefix']
+            for protocol in rse_protocols["protocols"]:
+                prefix = protocol["prefix"]
                 if base_path := rse_core.get_rse_attribute(rse_id, RseAttr.OIDC_BASE_PATH):  # type: ignore (session parameter missing)
                     prefix = prefix.removeprefix(base_path)
                 filtered_prefixes.add(prefix)
-            all_scopes = [f'{s}:{p}' for s in scopes for p in filtered_prefixes]
-            scope_request = ' '.join(sorted(all_scopes))
+            all_scopes = [f"{s}:{p}" for s in scopes for p in filtered_prefixes]
+            scope_request = " ".join(sorted(all_scopes))
 
     else:
         raise RucioException("upload operation is not permitted now.")
@@ -62,4 +59,3 @@ def request_token(
         raise RucioException(f"Failed to obtain token: received None for audience='{audience}', scope='{scope_request}'")
 
     return token
-

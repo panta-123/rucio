@@ -121,6 +121,8 @@ def _token_cache_set(key: str, value: str) -> None:
     """Store a token in the cache."""
     REGION.set(key, value)
 
+CC_CLIENT_ID = None
+CC_CLIENT_SECRET = None
 
 def request_token(audience: str, scope: str, use_cache: bool = True) -> Optional[str]:
     """Request a token from the provider.
@@ -128,6 +130,27 @@ def request_token(audience: str, scope: str, use_cache: bool = True) -> Optional
     Return ``None`` if the configuration was not loaded properly or the request
     was unsuccessful.
     """
+    global CC_CLIENT_ID, CC_CLIENT_SECRET
+
+    # Load SCIM credentials once
+    if not CC_CLIENT_ID or not CC_CLIENT_SECRET:
+        try:
+            with open(IDPSECRETS) as f:
+                data = json.load(f)
+                issuer_data = data.get(ADMIN_ISSUER_ID)
+                if not issuer_data:
+                    logging.error('Issuer "%s" not found in idpsecrets', ADMIN_ISSUER_ID)
+                    return None
+                scim_data = issuer_data.get("SCIM")
+                if not scim_data or not scim_data.get("client_id") or not scim_data.get("client_secret"):
+                    logging.error('SCIM credentials missing for issuer "%s"', ADMIN_ISSUER_ID)
+                    return None
+                CC_CLIENT_ID = scim_data["client_id"]
+                CC_CLIENT_SECRET = scim_data["client_secret"]
+        except Exception:
+            logging.error('Failed to read or parse idpsecrets file "%s"', IDPSECRETS, exc_info=True)
+            return None
+
     if not all([OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_PROVIDER_ENDPOINT]):
         if OIDC_CONFIGURATION_RUN or not __load_oidc_configuration():
             return None
@@ -139,7 +162,7 @@ def request_token(audience: str, scope: str, use_cache: bool = True) -> Optional
 
     try:
         response = requests.post(url=OIDC_PROVIDER_ENDPOINT,
-                                 auth=(OIDC_CLIENT_ID, OIDC_CLIENT_SECRET),
+                                 auth=(CC_CLIENT_ID, CC_CLIENT_SECRET),
                                  data={'grant_type': 'client_credentials',
                                        'audience': audience,
                                        'scope': scope})
@@ -147,7 +170,7 @@ def request_token(audience: str, scope: str, use_cache: bool = True) -> Optional
         payload = response.json()
         token = payload['access_token']
     except Exception:
-        logging.debug('Failed to procure a token', exc_info=True)
+        logging.error('Failed to procure a token', exc_info=True)
         return None
 
     if use_cache:

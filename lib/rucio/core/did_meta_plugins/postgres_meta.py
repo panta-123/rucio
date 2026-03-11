@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from rucio.common import config, exception
 from rucio.common.types import InternalScope
@@ -72,23 +73,12 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             'name': table_column_name
         }
         self.jsonb_column = table_column_data
-
+        self.db_schema = db_schema
         self.table = table
-        self.client = psycopg.connect(
-            host=host,
-            port=port,
-            dbname=db,
-            user=user,
-            password=password)
 
-        # set search_path to include database schema by default
-        cur = self.client.cursor()
-        cur.execute(
-            sql.SQL("SET search_path TO {}").format(
-                sql.Identifier(db_schema)
-            )
-        )
-        cur.close()
+        # Set search_path in connection string - applied to all connections automatically
+        conninfo = f"host={host} port={port} dbname={db} user={user} password={password} options='-c search_path={db_schema}'"
+        self.pool = ConnectionPool(conninfo=conninfo, min_size=2, max_size=20)
 
         if not table_is_managed:                    # not managed by Rucio, so just verify table schema
             self._verify_table_schema(table_column_vo, table_column_scope, table_column_name, table_column_data)
@@ -107,17 +97,18 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             sql.SQL("scope varchar NOT NULL"),
             sql.SQL("name varchar NOT NULL"),
             sql.SQL("data jsonb DEFAULT '{}'::jsonb"),
-            sql.SQL("UNIQUE (scope, name)")  # unique scope+name table constraint, required for ON CONFLICT
+            sql.SQL("UNIQUE (scope, name)")
         ]
-        statement = sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(
+        statement = sql.SQL("CREATE TABLE IF NOT EXISTS {}.{} ({})").format(
+            sql.Identifier(self.db_schema),
             sql.Identifier(self.table),
             sql.SQL(', ').join(table_clauses)
         )
 
-        cur = self.client.cursor()
-        cur.execute(statement)
-        cur.close()
-        self.client.commit()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(statement)
+            conn.commit()
 
     def _verify_table_schema(self, table_column_vo, table_column_scope, table_column_name, table_column_data):
         """
@@ -137,11 +128,32 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             sql.Literal(self.table)
         )
 
-        cur = self.client.cursor()
-        cur.execute(statement)
-        existing_table_columns = cur.fetchall()
-        cur.close()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(statement)
+                existing_table_columns = cursor.fetchall()
 
+            # Check required table constraints exist.
+            statement = sql.SQL(
+                "SELECT con.contype AS constraint_type, "  # type: ignore
+                "(SELECT array_agg(att.attname) FROM pg_attribute att "
+                " INNER JOIN unnest(con.conkey) unnest(conkey) ON unnest.conkey = att.attnum "
+                " WHERE att.attrelid = con.conrelid) AS columns "
+                "FROM pg_constraint con "
+                "INNER JOIN pg_class rel ON rel.oid = con.conrelid "
+                "INNER JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace "
+                "WHERE rel.relname = {}"
+            ).format(
+                sql.Literal(self.table)
+            )
+
+            with conn.cursor() as cursor:
+                cursor.execute(statement)
+                existing_table_constraints = cursor.fetchall()
+
+            conn.commit()
+
+        # Validate columns
         mandatory_column_specifications = [
             (table_column_vo, "character varying", "NO"),
             (table_column_scope, "character varying", "NO"),
@@ -154,25 +166,7 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
                     "mandatory table column {} does not match that defined in the required table schema {}".format(
                         specification, existing_table_columns))
 
-        # Check required table constraints exist.
-        statement = sql.SQL(
-            "SELECT con.contype AS constraint_type, "  # type: ignore
-            "(SELECT array_agg(att.attname) FROM pg_attribute att "
-            " INNER JOIN unnest(con.conkey) unnest(conkey) ON unnest.conkey = att.attnum "
-            " WHERE att.attrelid = con.conrelid) AS columns "
-            "FROM pg_constraint con "
-            "INNER JOIN pg_class rel ON rel.oid = con.conrelid "
-            "INNER JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace "
-            "WHERE rel.relname = {}"
-        ).format(
-            sql.Literal(self.table)
-        )
-
-        cur = self.client.cursor()
-        cur.execute(statement)
-        existing_table_constraints = cur.fetchall()  # list of (constraint_type, [columns])
-        cur.close()
-
+        # Validate constraints
         mandatory_table_constraints = [
             ("u", [table_column_scope, table_column_name]),  # unique scope+name table constraint
         ]
@@ -183,14 +177,14 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
                         constraint, len(existing_table_constraints)))
 
     def _drop_metadata_table(self):
-        cur = self.client.cursor()
-        cur.execute(
-            sql.SQL("DROP TABLE IF EXISTS {}").format(
-                sql.Identifier(self.table)
-            )
-        )
-        cur.close()
-        self.client.commit()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("DROP TABLE IF EXISTS {}").format(
+                        sql.Identifier(self.table)
+                    )
+                )
+            conn.commit()
 
     def get_metadata(self, scope, name, *, session: "Optional[Session]" = None):
         """
@@ -207,13 +201,14 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             sql.Literal(name)
         )
 
-        cur = self.client.cursor()
-        cur.execute(statement)
-        metadata = cur.fetchone()
-        cur.close()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(statement)
+                metadata = cursor.fetchone()
+            conn.commit()
 
         if not metadata:
-            raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}".format(scope, name))
+            raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}'".format(scope, name))
 
         return metadata[0]
 
@@ -253,10 +248,10 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             sql.Identifier(self.table)
         )
 
-        cur = self.client.cursor()
-        cur.execute(statement)
-        cur.close()
-        self.client.commit()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(statement)
+            conn.commit()
 
     def delete_metadata(self, scope, name, key, *, session: "Optional[Session]" = None):
         """
@@ -267,16 +262,18 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         :param key: the key to be deleted
         :param session: the database session in use
         """
-        statement = sql.SQL("UPDATE {} SET data = {}.data - {}").format(
+        statement = sql.SQL("UPDATE {} SET data = {}.data - {} WHERE scope = {} AND name = {}").format(
             sql.Identifier(self.table),
             sql.Identifier(self.table),
-            sql.Literal(key)
+            sql.Literal(key),
+            sql.Literal(scope.internal),
+            sql.Literal(name)
         )
 
-        cur = self.client.cursor()
-        cur.execute(statement)
-        cur.close()
-        self.client.commit()
+        with self.pool.connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(statement)
+            conn.commit()
 
     def list_dids(self, scope, filters, did_type='collection', ignore_case=False, limit=None,
                   offset=None, long=False, recursive=False, ignore_dids=None, *, session: "Optional[Session]" = None):
@@ -315,10 +312,11 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             sql.SQL("LIMIT {}").format(sql.Literal(limit)) if limit else sql.SQL("")
         )
 
-        cur = self.client.cursor(row_factory=dict_row)
-        cur.execute(statement)
-        query_result = cur.fetchall()
-        cur.close()
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(statement)
+                query_result = cursor.fetchall()
+            conn.commit()
 
         if long:
             for row in query_result:

@@ -77,8 +77,18 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
         self.table = table
 
         # Set search_path in connection string - applied to all connections automatically
-        conninfo = f"host={host} port={port} dbname={db} user={user} password={password} options='-c search_path={db_schema}'"
-        self.pool = ConnectionPool(conninfo=conninfo, min_size=2, max_size=20)
+        conninfo = (
+            f"host={host} port={port} dbname={db} user={user} password={password} "
+            f"options='-c search_path={db_schema}' "
+            f"keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=3"
+        )
+        self.pool = ConnectionPool(
+            conninfo=conninfo,
+            min_size=2,
+            max_size=20,
+            max_lifetime=3600,  # Recycle after 1 hour
+            max_idle=300        # Close if idle for 5 minutes
+        )
 
         if not table_is_managed:                    # not managed by Rucio, so just verify table schema
             self._verify_table_schema(table_column_vo, table_column_scope, table_column_name, table_column_data)
@@ -184,7 +194,6 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
                         sql.Identifier(self.table)
                     )
                 )
-            conn.commit()
 
     def get_metadata(self, scope, name, *, session: "Optional[Session]" = None):
         """
@@ -205,7 +214,6 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             with conn.cursor() as cursor:
                 cursor.execute(statement)
                 metadata = cursor.fetchone()
-            conn.commit()
 
         if not metadata:
             raise exception.DataIdentifierNotFound("No metadata found for did '{}:{}'".format(scope, name))
@@ -316,7 +324,6 @@ class ExternalPostgresJSONDidMeta(DidMetaPlugin):
             with conn.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(statement)
                 query_result = cursor.fetchall()
-            conn.commit()
 
         if long:
             for row in query_result:

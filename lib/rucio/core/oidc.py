@@ -370,12 +370,6 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
                        defines which user's info the user allows to provide
                        to the Rucio Client.
     :param audience: audience for which tokens are requested (EXPECTED_OIDC_AUDIENCE is the default)
-    :param auto: If True, the function will return authorization URL to the Rucio Client
-                 which will log-in with user's IdP credentials automatically.
-                 Also it will instruct the IdP to return an AuthZ code to another Rucio REST
-                 endpoint /oidc_token. If False, the function will return a URL
-                 to be used by the user in the browser in order to authenticate via IdP
-                 (which will then return with AuthZ code to /oidc_code REST endpoint).
     :param polling: If True, '_polling' string will be appended to the access_msg
                     in the DB oauth_requests table to inform the authorization stage
                     that the Rucio Client is polling the server for a token
@@ -402,7 +396,6 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
     issuer_id = kwargs.get('issuer', ADMIN_ISSUER_ID)
     if not issuer_id:
         issuer_id = ADMIN_ISSUER_ID
-    auto = kwargs.get('auto', False)
     polling = kwargs.get('polling', False)
     refresh_lifetime = kwargs.get('refresh_lifetime', REFRESH_LIFETIME_H)
     ip = kwargs.get('ip', None)
@@ -422,8 +415,6 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
         # redirect_url needs to be specified & one of those defined
         # in the Rucio OIDC Client configuration
         redirect_to = "auth/oidc_code"
-        if auto:
-            redirect_to = "auth/oidc_token"
         # random strings in order to keep track of responses to outstanding requests (state)
         # and to associate a client session with an ID Token and to mitigate replay attacks (nonce).
         state, nonce = rndstr(50), rndstr(50)
@@ -434,13 +425,12 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
                                            scope=auth_scope, audience=audience, first_init=True)
         auth_url = oidc_dict['auth_url']
         redirect_url = oidc_dict['redirect']
-        # redirect code is put in access_msg and returned to the user (if auto=False)
+        # redirect code is put in access_msg and returned to the user
         access_msg = None
-        if not auto:
-            access_msg = rndstr(23)
-            if polling:
-                access_msg += '_polling'
-        if auto and webhome:
+        access_msg = rndstr(23)
+        if polling:
+            access_msg += '_polling'
+        if webhome:
             access_msg = str(webhome)
         # Making sure refresh_lifetime is an integer or None.
         if refresh_lifetime:
@@ -462,12 +452,11 @@ def get_auth_oidc(account: str, *, session: "Session", **kwargs) -> str:
 
         # If user selected authentication via web browser, a redirection
         # URL is returned instead of the direct URL pointing to the IdP.
-        if not auto:
-            # the following takes into account deployments where the base url of the rucio server is
-            # not equivalent to the network location, e.g. if the server is proxied
-            auth_server = urlparse(redirect_url)
-            auth_url = build_url('https://' + auth_server.netloc, path='{}auth/oidc_redirect'.format(
-                auth_server.path.split('auth/')[0].lstrip('/')), params=access_msg)
+        # the following takes into account deployments where the base url of the rucio server is
+        # not equivalent to the network location, e.g. if the server is proxied
+        auth_server = urlparse(redirect_url)
+        auth_url = build_url('https://' + auth_server.netloc, path='{}auth/oidc_redirect'.format(
+            auth_server.path.split('auth/')[0].lstrip('/')), params=access_msg)
 
         METRICS.timer('IdP_authentication.request').observe(stopwatch.elapsed)
         return auth_url
@@ -494,7 +483,7 @@ def get_token_oidc(
 
     :returns: One of the following tuples: ("fetchcode", <code>); ("token", <token>);
               ("polling", True); The result depends on the authentication strategy being used
-              (no auto, auto, polling).
+              (no polling, polling).
     """
     try:
         stopwatch = Stopwatch()

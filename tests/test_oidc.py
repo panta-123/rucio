@@ -314,7 +314,7 @@ class TestAuthCoreAPIoidc:
     def teardown_method(self):
         self.db_session.remove()
 
-    def get_auth_init_and_mock_response(self, code_response, account=None, polling=False, auto=True, session=None):
+    def get_auth_init_and_mock_response(self, code_response, account=None, polling=False, session=None):
         """
         OIDC creates entry in oauth_requests table
 
@@ -330,7 +330,6 @@ class TestAuthCoreAPIoidc:
             'auth_scope': 'openid profile',
             'audience': 'rucio',
             'issuer': 'dummy_admin_iss_nickname',
-            'auto': auto,
             'polling': polling,
             'refresh_lifetime': 96,
             'ip': None,
@@ -341,7 +340,7 @@ class TestAuthCoreAPIoidc:
         # get the state from the auth_url and add an arbitrary code value to the query string
         # to mimic a return of IdP with authz_code
         urlparsed = urlparse(auth_url)
-        if ('_polling' in auth_url) or (not polling and not auto):
+        if ('_polling' in auth_url) or (not polling):
             auth_url = redirect_auth_oidc(urlparsed.query, session=session)
             print("[get_auth_init_and_mock_response] got redirect auth_url:", auth_url)
             urlparsed = urlparse(auth_url)
@@ -373,7 +372,6 @@ class TestAuthCoreAPIoidc:
             kwargs = {'auth_scope': 'openid profile',
                       'audience': 'rucio',
                       'issuer': 'dummy_admin_iss_nickname',
-                      'auto': False,
                       'polling': False,
                       'refresh_lifetime': 96,
                       'ip': None,
@@ -389,19 +387,6 @@ class TestAuthCoreAPIoidc:
             kwargs['polling'] = True
             auth_url = get_auth_oidc(self.account, session=self.db_session, **kwargs)
             assert 'https://test_redirect_string/auth/oidc_redirect?' in auth_url and '_polling' in auth_url
-
-            # testing classical CLI login init, with the Rucio Client being
-            # trusted with IdP user credentials (auto = True). Rucio Client
-            # gets directly the auth_url pointing it to the IdP
-            kwargs['polling'] = False
-            kwargs['auto'] = True
-            auth_url = get_auth_oidc(self.account, session=self.db_session, **kwargs)
-            assert 'https://test_auth_url_string' in auth_url
-
-            # testing webui login URL (auto = True, polling = False)
-            kwargs['webhome'] = 'https://back_to_rucio_ui_page'
-            auth_url = get_auth_oidc(InternalAccount('webui', **self.vo), session=self.db_session, **kwargs)
-            assert 'https://test_auth_url_string' in auth_url
 
         except Exception:
             print(traceback.format_exc())
@@ -610,7 +595,7 @@ class TestAuthCoreAPIoidc:
             - checking if the token is in the DB and no token is being returned from the core function
         """
         mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), polling=True, auto=False, session=self.db_session)
+        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), polling=True, session=self.db_session)
         oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
         assert oauth_session_row
         # mocking the token response
@@ -644,7 +629,7 @@ class TestAuthCoreAPIoidc:
             - fetching the token
         """
         mock_oidc_client.side_effect = get_mock_oidc_client
-        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), polling=False, auto=False, session=self.db_session)
+        auth_init_response = self.get_auth_init_and_mock_response(code_response=rndstr(), polling=False, session=self.db_session)
         oauth_session_row = get_oauth_session_row(self.account, state=auth_init_response['state'], session=self.db_session)
         assert oauth_session_row
         # mocking the token response

@@ -1871,3 +1871,278 @@ def clone_function(
         delattr(new, "__wrapped__")
 
     return cast('Callable[P, R]', new)
+
+OidcAudienceAlgorithmT = TypeVar('OidcAudienceAlgorithmT', bound='OidcAudienceAlgorithm')
+
+
+class OidcAudienceAlgorithm(PolicyPackageAlgorithms):
+    """
+    Handle OIDC Audience claim construction for an RSE.
+    """
+    _algorithm_type: POLICY_ALGORITHM_TYPES_LITERAL = 'oidc_audience'
+
+    def __init__(self, vo: str = DEFAULT_VO) -> None:
+        super().__init__()
+        self.vo = vo
+
+    def determine_audience_for_rse(self, rse_id: str, oidc_audience_extraction: str = 'def') -> str:
+        """
+        Calls the correct algorithm to generate the Audience claim for an RSE.
+        """
+        fn = None
+        if oidc_audience_extraction == 'def':
+            fn = super()._get_default_algorithm(OidcAudienceAlgorithm._algorithm_type, self.vo)
+        if fn is None:
+            fn = self.get_algorithm(oidc_audience_extraction)
+        return fn(rse_id)
+
+    @classmethod
+    def supports(cls: type[OidcAudienceAlgorithmT], name: str) -> bool:
+        """
+        Checks whether the specified audience extraction algorithm is supported.
+        """
+        return super()._supports(cls._algorithm_type, name)
+
+    @classmethod
+    def _module_init_(cls: type[OidcAudienceAlgorithmT]) -> None:
+        """
+        Registers the included audience extraction algorithms.
+        """
+        cls.register('def', cls.determine_audience_for_rse_default)
+
+    @classmethod
+    def get_algorithm(cls: type[OidcAudienceAlgorithmT], name: str) -> 'Callable[[str], str]':
+        """
+        Looks up an audience extraction algorithm by name.
+        """
+        return super()._get_one_algorithm(cls._algorithm_type, name)
+
+    @classmethod
+    def register(cls: type[OidcAudienceAlgorithmT], name: str, fn: 'Callable[[str], str]') -> None:
+        """
+        Register a new audience extraction algorithm.
+        """
+        algorithm_dict = {name: fn}
+        super()._register(cls._algorithm_type, algorithm_dict)
+
+    @staticmethod
+    def determine_audience_for_rse_default(rse_id: str) -> str:
+        """Construct the Audience claim for an RSE."""
+        from rucio.core.rse import determine_audience_for_rse
+        return determine_audience_for_rse(rse_id)
+
+
+OidcAudienceAlgorithm._module_init_()
+
+
+OidcScopeAlgorithmT = TypeVar('OidcScopeAlgorithmT', bound='OidcScopeAlgorithm')
+
+
+class OidcScopeAlgorithm(PolicyPackageAlgorithms):
+    """
+    Handle OIDC Scope claim construction for an RSE.
+    """
+    _algorithm_type: POLICY_ALGORITHM_TYPES_LITERAL = 'oidc_scope'
+
+    def __init__(self, vo: str = DEFAULT_VO) -> None:
+        super().__init__()
+        self.vo = vo
+
+    def determine_scope_for_rse(
+        self,
+        rse_id: str,
+        scopes: 'Iterable[str]',
+        extra_scopes: Optional['Iterable[str]'] = None,
+        file_url: Optional[str] = None,
+        oidc_scope_extraction: str = 'def'
+    ) -> str:
+        """
+        Calls the correct algorithm to generate the Scope claim for an RSE.
+        """
+        fn = None
+        if oidc_scope_extraction == 'def':
+            fn = super()._get_default_algorithm(OidcScopeAlgorithm._algorithm_type, self.vo)
+        if fn is None:
+            fn = self.get_algorithm(oidc_scope_extraction)
+        return fn(rse_id, scopes, extra_scopes, file_url)
+
+    @classmethod
+    def supports(cls: type[OidcScopeAlgorithmT], name: str) -> bool:
+        """
+        Checks whether the specified scope extraction algorithm is supported.
+        """
+        return super()._supports(cls._algorithm_type, name)
+
+    @classmethod
+    def _module_init_(cls: type[OidcScopeAlgorithmT]) -> None:
+        """
+        Registers the included scope extraction algorithms.
+        """
+        cls.register('def', cls.determine_scope_for_rse_default)
+
+    @classmethod
+    def get_algorithm(cls: type[OidcScopeAlgorithmT], name: str) -> 'Callable[[str, Iterable[str], Optional[Iterable[str]], Optional[str]], str]':
+        """
+        Looks up a scope extraction algorithm by name.
+        """
+        return super()._get_one_algorithm(cls._algorithm_type, name)
+
+    @classmethod
+    def register(cls: type[OidcScopeAlgorithmT], name: str, fn: 'Callable[[str, Iterable[str], Optional[Iterable[str]], Optional[str]], str]') -> None:
+        """
+        Register a new scope extraction algorithm.
+        """
+        algorithm_dict = {name: fn}
+        super()._register(cls._algorithm_type, algorithm_dict)
+
+    @staticmethod
+    def determine_scope_for_rse_default(
+        rse_id: str,
+        scopes: 'Iterable[str]',
+        extra_scopes: Optional['Iterable[str]'] = None,
+        file_url: Optional[str] = None
+    ) -> str:
+        """Construct the Scope claim for an RSE."""
+        _ = file_url
+        from rucio.core.rse import determine_scope_for_rse
+        return determine_scope_for_rse(rse_id, scopes, extra_scopes)
+
+
+OidcScopeAlgorithm._module_init_()
+
+
+OidcRequestTokenAlgorithmT = TypeVar('OidcRequestTokenAlgorithmT', bound='OidcRequestTokenAlgorithm')
+
+
+class OidcRequestTokenAlgorithm(PolicyPackageAlgorithms):
+    """
+    Handle OIDC token requests for RSE access.
+    """
+    _algorithm_type: POLICY_ALGORITHM_TYPES_LITERAL = 'oidc_request_token'
+
+    def __init__(self, vo: str = DEFAULT_VO) -> None:
+        super().__init__()
+        self.vo = vo
+
+    def request_token(
+        self,
+        audience: str,
+        scope: str,
+        use_cache: bool = True,
+        oidc_token_extraction: str = 'def'
+    ) -> Optional[str]:
+        """
+        Calls the correct algorithm to request an OIDC token for RSE access.
+        """
+        fn = None
+        if oidc_token_extraction == 'def':
+            fn = super()._get_default_algorithm(OidcRequestTokenAlgorithm._algorithm_type, self.vo)
+        if fn is None:
+            fn = self.get_algorithm(oidc_token_extraction)
+        return fn(audience, scope, use_cache)
+
+    @classmethod
+    def supports(cls: type[OidcRequestTokenAlgorithmT], name: str) -> bool:
+        """
+        Checks whether the specified token request algorithm is supported.
+        """
+        return super()._supports(cls._algorithm_type, name)
+
+    @classmethod
+    def _module_init_(cls: type[OidcRequestTokenAlgorithmT]) -> None:
+        """
+        Registers the included token request algorithms.
+        """
+        cls.register('def', cls.request_token_default)
+
+    @classmethod
+    def get_algorithm(cls: type[OidcRequestTokenAlgorithmT], name: str) -> 'Callable[[str, str, bool], Optional[str]]':
+        """
+        Looks up a token request algorithm by name.
+        """
+        return super()._get_one_algorithm(cls._algorithm_type, name)
+
+    @classmethod
+    def register(cls: type[OidcRequestTokenAlgorithmT], name: str, fn: 'Callable[[str, str, bool], Optional[str]]') -> None:
+        """
+        Register a new token request algorithm.
+        """
+        algorithm_dict = {name: fn}
+        super()._register(cls._algorithm_type, algorithm_dict)
+
+    @staticmethod
+    def request_token_default(audience: str, scope: str, use_cache: bool = True) -> Optional[str]:
+        """Request a token from the provider for RSE access."""
+        from rucio.core.oidc import request_token
+        return request_token(audience, scope, use_cache)
+
+
+OidcRequestTokenAlgorithm._module_init_()
+
+
+def get_oidc_audience_for_rse(rse_id: str, oidc_audience_extraction: str = 'def', vo: str = DEFAULT_VO) -> str:
+    """
+    Get the OIDC audience for an RSE.
+
+    :param rse_id: The RSE id.
+    :param oidc_audience_extraction: The algorithm name to use.
+    :param vo: The VO.
+    :returns: The audience string.
+    """
+    algorithms = OidcAudienceAlgorithm(vo)
+    if not OidcAudienceAlgorithm.supports(oidc_audience_extraction):
+        oidc_audience_extraction = 'def'
+    return algorithms.determine_audience_for_rse(rse_id, oidc_audience_extraction)
+
+
+def get_oidc_scope_for_rse(
+    rse_id: str,
+    scopes: 'Iterable[str]',
+    extra_scopes: Optional['Iterable[str]'] = None,
+    oidc_scope_extraction: str = 'def',
+    file_url: Optional[str] = None,
+    vo: str = DEFAULT_VO
+) -> str:
+    """
+    Get the OIDC scope for an RSE.
+
+    :param rse_id: The RSE id.
+    :param scopes: The base scopes.
+    :param extra_scopes: Additional scopes.
+    :param oidc_scope_extraction: The algorithm name to use.
+    :param vo: The VO.
+    :returns: The scope string.
+    """
+    algorithms = OidcScopeAlgorithm(vo)
+    if not OidcScopeAlgorithm.supports(oidc_scope_extraction):
+        oidc_scope_extraction = 'def'
+    return algorithms.determine_scope_for_rse(
+            rse_id=rse_id,
+            scopes=scopes,
+            extra_scopes=extra_scopes,
+            file_url=file_url,                       # ← pass through
+            oidc_scope_extraction=oidc_scope_extraction,
+        )
+
+
+def get_oidc_token_for_rse(
+    audience: str,
+    scope: str,
+    use_cache: bool = True,
+    oidc_token_extraction: str = 'def',
+    vo: str = DEFAULT_VO
+) -> Optional[str]:
+    """
+    Request an OIDC token for RSE access.
+
+    :param audience: The audience claim.
+    :param scope: The scope claim.
+    :param use_cache: Whether to use token caching.
+    :param oidc_token_extraction: The algorithm name to use.
+    :param vo: The VO.
+    :returns: The token string or None.
+    """
+    algorithms = OidcRequestTokenAlgorithm(vo)
+    if not OidcRequestTokenAlgorithm.supports(oidc_token_extraction):
+        oidc_token_extraction = 'def'
+    return algorithms.request_token(audience, scope, use_cache, oidc_token_extraction)

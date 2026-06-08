@@ -36,19 +36,19 @@ import rucio.db.sqla.util
 from rucio.db.sqla.constants import DatabaseOperationType
 from rucio.db.sqla.session import db_session
 from rucio.common.cache import MemcacheRegion
-from rucio.common.config import config_get_bool, config_get_int
+from rucio.common.config import config_get, config_get_bool, config_get_int
 from rucio.common.constants import RseAttr, DEFAULT_VO
 from rucio.common.exception import DatabaseException, ReplicaNotFound, ReplicaUnAvailable, ResourceTemporaryUnavailable, RSEAccessDenied, RSENotFound, RSEProtocolNotSupported, ServiceUnavailable, SourceNotFound, VONotFound
 from rucio.common.logging import setup_logging
 from rucio.common.stopwatch import Stopwatch
-from rucio.common.utils import chunks
+from rucio.common.utils import chunks, get_oidc_audience_for_rse, get_oidc_scope_for_rse, get_oidc_token_for_rse
+
 from rucio.core.credential import get_signed_url
 from rucio.core.heartbeat import list_payload_counts
 from rucio.core.message import add_message
 from rucio.core.monitor import MetricManager
-from rucio.core.oidc import request_token
 from rucio.core.replica import delete_replicas, list_and_mark_unlocked_replicas
-from rucio.core.rse import RseData, determine_audience_for_rse, determine_scope_for_rse, list_rses
+from rucio.core.rse import RseData, list_rses
 from rucio.core.rse_expression_parser import parse_expression
 from rucio.core.rule import get_evaluation_backlog
 from rucio.core.vo import list_vos
@@ -618,11 +618,22 @@ def _run_once(
             rse.ensure_loaded(load_info=True, load_attributes=True)
             prot = rsemgr.create_protocol(rse.info, 'delete', scheme=scheme, logger=logger)
             if rse.attributes.get(RseAttr.OIDC_SUPPORT) is True and prot.attributes['scheme'] == 'davs':
-                audience = determine_audience_for_rse(rse.id)
+                aud_alg = config_get('policy', 'oidc_audience_extraction', raise_exception=False, default='def')
+                scope_alg = config_get('policy', 'oidc_scope_extraction', raise_exception=False, default='def')
+                oidc_token_extraction_alg = config_get('policy', 'oidc_token_extraction', raise_exception=False, default='def')
+
+                audience = get_oidc_audience_for_rse(
+                            rse.id, oidc_audience_extraction=aud_alg
+                )
                 # FIXME: At the time of writing, StoRM requires `storage.read`
                 # in order to perform a stat operation.
-                scope = determine_scope_for_rse(rse.id, scopes=['storage.modify', 'storage.read'])
-                auth_token = request_token(audience, scope)
+                scope = get_oidc_scope_for_rse(
+                            rse.id,
+                            scopes=['storage.modify', 'storage.read'],
+                            extra_scopes=['offline_access'],
+                            oidc_scope_extraction=scope_alg,
+                )
+                auth_token = get_oidc_token_for_rse(audience=audience, scope=scope, oidc_token_extraction=oidc_token_extraction_alg)
                 if auth_token:
                     logger(logging.INFO, 'Using a token to delete on RSE %s', rse.name)
                     prot = rsemgr.create_protocol(rse.info, 'delete', scheme=scheme, auth_token=auth_token, logger=logger)

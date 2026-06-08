@@ -35,11 +35,10 @@ from rucio.common.constants import FTS_COMPLETE_STATE, FTS_JOB_TYPE, FTS_STATE, 
 from rucio.common.exception import DuplicateFileTransferSubmission, TransferToolTimeout, TransferToolWrongAnswer
 from rucio.common.policy import get_policy
 from rucio.common.stopwatch import Stopwatch
-from rucio.common.utils import APIEncoder, chunks, deep_merge_dict
+from rucio.common.utils import APIEncoder, chunks, deep_merge_dict, get_oidc_audience_for_rse, get_oidc_scope_for_rse, get_oidc_token_for_rse
 from rucio.core.monitor import MetricManager
-from rucio.core.oidc import request_token
 from rucio.core.request import get_source_rse, get_transfer_error
-from rucio.core.rse import determine_audience_for_rse, determine_scope_for_rse, get_rse_supported_checksums_from_attributes
+from rucio.core.rse import get_rse_supported_checksums_from_attributes
 from rucio.db.sqla.constants import RequestState
 from rucio.transfertool.fts3_plugins import FTS3TapeMetadataPlugin
 from rucio.transfertool.transfertool import TransferStatusReport, Transfertool, TransferToolBuilder
@@ -911,7 +910,13 @@ class FTS3Transfertool(Transfertool):
         if oidc_support:
             fts_hostname = urlparse(external_host).hostname
             if fts_hostname is not None:
-                token = request_token(audience=fts_hostname, scope='fts')
+                oidc_token_extraction_alg = config_get('policy', 'oidc_token_extraction', raise_exception=False, default='def')
+                # token = request_token(audience=fts_hostname, scope='fts')
+                token = get_oidc_token_for_rse(
+                    audience=fts_hostname,
+                    scope='fts',
+                    oidc_token_extraction=oidc_token_extraction_alg
+                )
                 if token is not None:
                     self.logger(logging.INFO, 'Using a token to authenticate with FTS instance %s', fts_hostname)
                     self.token = token
@@ -1029,16 +1034,43 @@ class FTS3Transfertool(Transfertool):
 
         if self.token:
             t_file['source_tokens'] = []
+            aud_alg = config_get('policy', 'oidc_audience_extraction', raise_exception=False, default='def')
+            scope_alg = config_get('policy', 'oidc_scope_extraction', raise_exception=False, default='def')
+            oidc_token_extraction_alg = config_get('policy', 'oidc_token_extraction', raise_exception=False, default='def')
             for source in transfer.sources:
-                src_audience = determine_audience_for_rse(rse_id=source.rse.id)
-                src_scope = determine_scope_for_rse(rse_id=source.rse.id, scopes=['storage.read'], extra_scopes=['offline_access'])
-                t_file['source_tokens'].append(request_token(src_audience, src_scope))
+                src_audience = get_oidc_audience_for_rse(
+                    source.rse.id,
+                    oidc_audience_extraction=aud_alg
+                )
+                src_scope = get_oidc_scope_for_rse(
+                    source.rse.id,
+                    scopes=['storage.read'],
+                    extra_scopes=['offline_access'],
+                    oidc_scope_extraction=scope_alg,
+                    file_url=transfer.source_url(source)
+                )
+                t_file['source_tokens'].append(get_oidc_token_for_rse(audience=src_audience, scope=src_scope, oidc_token_extraction=oidc_token_extraction_alg))
 
-            dst_audience = determine_audience_for_rse(transfer.dst.rse.id)
+            dst_audience = get_oidc_audience_for_rse(
+                transfer.dst.rse.id,
+                oidc_audience_extraction=aud_alg
+            )
             # FIXME: At the time of writing, StoRM requires `storage.read` in
             # order to perform a stat operation.
-            dst_scope = determine_scope_for_rse(transfer.dst.rse.id, scopes=['storage.modify', 'storage.read'], extra_scopes=['offline_access'])
-            t_file['destination_tokens'] = [request_token(dst_audience, dst_scope)]
+            dst_scope = get_oidc_scope_for_rse(
+                transfer.dst.rse.id,
+                scopes=['storage.modify', 'storage.read'],
+                extra_scopes=['offline_access'],
+                oidc_scope_extraction=scope_alg,
+                file_url=transfer.dest_url
+            )
+            t_file['destination_tokens'] = [
+                get_oidc_token_for_rse(
+                    audience=dst_audience,
+                    scope=dst_scope,
+                    oidc_token_extraction=oidc_token_extraction_alg
+                )
+            ]
 
         if isinstance(self.scitags_exp_id, int):
             activity_id = self.scitags_activity_ids.get(rws.activity)

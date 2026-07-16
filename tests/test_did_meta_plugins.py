@@ -405,6 +405,7 @@ def elastic_meta():
             hosts=['http://elasticsearch_meta:9200'],
             user="elastic",
             password="rucio",
+            refresh=True,
         )
 
 

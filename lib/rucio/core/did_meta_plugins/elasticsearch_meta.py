@@ -57,7 +57,8 @@ class ElasticDidMeta(DidMetaPlugin):
         client_key: Optional[str] = None,
         request_timeout: int = 100,
         max_retries: int = 3,
-        retry_on_timeout: bool = False
+        retry_on_timeout: bool = False,
+        refresh: Optional[bool] = None
     ) -> None:
         super(ElasticDidMeta, self).__init__()
         hosts = hosts or [config.config_get('metadata', 'elastic_service_hosts')]
@@ -69,10 +70,11 @@ class ElasticDidMeta(DidMetaPlugin):
         ca_certs = ca_certs or config.config_get('metadata', 'ca_certs', False, None)
         client_cert = client_cert or config.config_get('metadata', 'client_cert', False, None)
         client_key = client_key or config.config_get('metadata', 'client_key', False, None)
+        self.refresh = refresh or config.config_get_bool('metadata', 'elastic_refresh', False, False)
 
         self.es_config = {
             'hosts': hosts,
-            'timeout': request_timeout,
+            'request_timeout': request_timeout,
             'max_retries': max_retries,
             'retry_on_timeout': retry_on_timeout
         }
@@ -92,6 +94,16 @@ class ElasticDidMeta(DidMetaPlugin):
 
         self.client = Elasticsearch(**self.es_config)
         self._plugin_name = "ELASTIC"
+
+    @staticmethod
+    def _doc_id(scope: "InternalScope", name: str) -> str:
+        """
+        Build the canonical document id for a DID.
+
+        Every read/write/delete path MUST use this helper so that the same
+        DID always maps to the same Elasticsearch document id.
+        """
+        return f"{scope.internal}{name}"
 
     def drop_index(self) -> None:
         self.client.indices.delete(index=self.index)
@@ -113,8 +125,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :raises DataIdentifierNotFound: If the DID metadata is not found.
         :raises RucioException: If another error occurs during the process.
         """
-
-        doc_id = f"{scope.internal}{name}"
+        doc_id = self._doc_id(scope, name)
         try:
             doc = self.client.get(index=self.index, id=doc_id)["_source"]
         except elastic_exceptions.NotFoundError as err:
@@ -164,31 +175,31 @@ class ElasticDidMeta(DidMetaPlugin):
         :param meta: dictionary of metadata keypairs to be added
         :param recursive: recurse into DIDs (not supported)
         :param session: The database session in use
-        :raises DataIdentifierNotFound: If the DID is not found.
         :raises UnsupportedOperation: If recursive inserts are requested (currently unsupported).
         :raises RucioException: If an error occurs while setting the metadata.
         """
-        doc_id = f"{scope.internal}{name}"
-        try:
-            # Try to get existing metadata
-            existing_meta = self.get_metadata(scope, name)
-        except exception.DataIdentifierNotFound:
-            existing_meta = {
-                'scope': str(scope.external),
-                'name': name,
-                'vo': scope.vo
-            }
-        for key, value in meta.items():
-            if key not in IMMUTABLE_KEYS:
-                existing_meta[key] = value
+        if recursive:
+            raise exception.UnsupportedOperation(
+                f"'{self._plugin_name}' metadata module does not currently support recursive inserts of metadata"
+            )
 
+        doc_id = self._doc_id(scope, name)
+
+        # Strip immutable keys from the caller-provided metadata.
+        update_doc = {key: value for key, value in meta.items() if key not in IMMUTABLE_KEYS}
+
+        upsert_doc = {
+            'scope': str(scope.external),
+            'name': name,
+            'vo': scope.vo,
+            **update_doc
+        }
         try:
-            self.client.index(index=self.index, body=existing_meta, id=doc_id, refresh="true")
+            self.client.update(index=self.index, id=doc_id,
+                               doc=update_doc, upsert=upsert_doc,
+                               refresh=self.refresh)
         except Exception as err:
             raise exception.RucioException(err)
-
-        if recursive:
-            raise exception.UnsupportedOperation(f"'{self.name}' metadata module does not currently support recursive inserts of metadata")
 
     def delete_metadata(
         self,
@@ -207,21 +218,17 @@ class ElasticDidMeta(DidMetaPlugin):
         :raises DataIdentifierNotFound: If the DID is not found.
         :raises RucioException: If an error occurs while setting the metadata.
         """
-        doc_id = f"{scope.internal}{name}"
+        doc_id = self._doc_id(scope, name)
         try:
-            # First, get the current document
             doc = self.client.get(index=self.index, id=doc_id)
 
-            # Check if the key exists in the document
             if key in doc['_source']:
-                # Use script to remove the field
                 script = {
-                    "script": {
-                        "source": f"ctx._source.remove('{key}')",
-                        "lang": "painless"
-                    }
+                    "source": "ctx._source.remove(params.key)",
+                    "lang": "painless",
+                    "params": {"key": key}
                 }
-                self.client.update(index=self.index, id=doc_id, body=script)
+                self.client.update(index=self.index, id=doc_id, script=script, refresh=self.refresh)
         except elastic_exceptions.NotFoundError as err:
             raise exception.DataIdentifierNotFound(f"No metadata found for DID '{scope}:{name}' not found") from err
         except Exception as err:
@@ -249,7 +256,7 @@ class ElasticDidMeta(DidMetaPlugin):
         :param did_type: The type of DID (default is 'collection').
         :param ignore_case: Whether to ignore case (default is False).
         :param limit: The maximum number of DIDs to return.
-        :param offset: The starting point for the search (used for pagination).
+        :param offset: The number of leading results to skip (client-side pagination).
         :param long: Whether to return extended information (scope, name, did_type, bytes, length) (default is False).
         :param recursive: Whether to search recursively (currently unsupported).
         :param ignore_dids: A list of DIDs to ignore (default is an empty list).
@@ -258,9 +265,12 @@ class ElasticDidMeta(DidMetaPlugin):
         :raises UnsupportedOperation: If recursive searches are requested (currently unsupported).
         :raises RucioException: If an error occurs during the search.
         """
+        if recursive:
+            raise exception.UnsupportedOperation(
+                f"'{self._plugin_name}' metadata module does not currently support recursive searches"
+            )
 
-        if not ignore_dids:
-            ignore_dids = []
+        seen_dids = set(ignore_dids) if ignore_dids else set()
 
         # backwards compatibility for filters as single {}.
         if isinstance(filters, dict):
@@ -276,61 +286,62 @@ class ElasticDidMeta(DidMetaPlugin):
         )
         pit = self.client.open_point_in_time(index=self.index, keep_alive="2m")
         pit_id = pit["id"]
-        # Base query with point in time (pit) paramter.
-        # sort is needed for search_after, so we use scope sort (random choice)
-        query = {
+
+        # Base query with point in time (pit) parameter.
+        # A sort is required for search_after; sort on _shard_doc (the most
+        # efficient tiebreaker for PIT pagination).
+        query: dict[str, Any] = {
             "query": elastic_query_str,
-            "sort": [{"scope.keyword": "asc"}],
-            "_source": ["scope", "name"] if not long else ["scope", "name", "did_type", "bytes", "length"],
-            "pit": {"id": pit_id, "keep_alive": "2m"}
+            "sort": [{"_shard_doc": "asc"}],
+            "source": ["scope", "name"] if not long else ["scope", "name", "did_type", "bytes", "length"],
+            "pit": {"id": pit_id, "keep_alive": "2m"},
+            "size": 10000
         }
 
-        # Add sorting and pagination
-        if offset:
-            query["from"] = offset
-        size = limit if limit else 10000
-        query["size"] = size
+        # 'from' cannot be combined with search_after/PIT pagination, so
+        # offset is applied client-side by skipping leading hits.
+        to_skip = offset or 0
+        yielded = 0
         search_after = None
-        total_processed = 0
         try:
             while True:
                 if search_after:
                     query["search_after"] = search_after
-                    query.pop("from", None)
-                # Execute search
-                results = self.client.search(body=query)
+                results = self.client.search(**query)
                 hits = results['hits']['hits']
                 if not hits:
                     break
 
                 for hit in hits:
-                    did_full = f"{hit['_source']['scope']}:{hit['_source']['name']}"
-                    if did_full not in ignore_dids:
-                        ignore_dids.append(did_full)
-                        if long:
-                            yield {
-                                'scope': (hit['_source']['scope']),
-                                'name': hit['_source']['name'],
-                                'did_type': hit['_source'].get('did_type', 'N/A'),
-                                'bytes': hit['_source'].get('bytes', 'N/A'),
-                                'length': hit['_source'].get('length', 'N/A')
-                            }
-                        else:
-                            yield hit['_source']['name']
+                    if to_skip > 0:
+                        to_skip -= 1
+                        continue
 
-                    total_processed += 1
-                    if limit and total_processed >= limit:
-                        break
+                    did_full = f"{hit['_source']['scope']}:{hit['_source']['name']}"
+                    if did_full in seen_dids:
+                        continue
+                    seen_dids.add(did_full)
+
+                    if long:
+                        yield {
+                            'scope': hit['_source']['scope'],
+                            'name': hit['_source']['name'],
+                            'did_type': hit['_source'].get('did_type', 'N/A'),
+                            'bytes': hit['_source'].get('bytes', 'N/A'),
+                            'length': hit['_source'].get('length', 'N/A')
+                        }
+                    else:
+                        yield hit['_source']['name']
+
+                    yielded += 1
+                    if limit and yielded >= limit:
+                        return
 
                 # Update search_after for the next iteration
                 search_after = hits[-1]["sort"]
-
         finally:
             # Always delete the point in time when done
-            self.client.close_point_in_time(body={"id": pit_id})
-
-        if recursive:
-            raise exception.UnsupportedOperation(f"'{self.name}' metadata module does not currently support recursive searches")
+            self.client.close_point_in_time(id=pit_id)
 
     def on_delete(
         self,
@@ -346,9 +357,9 @@ class ElasticDidMeta(DidMetaPlugin):
         :param name: The name of the document
         :param archive: Whether to archive the document before deletion
         :raises DataIdentifierNotFound: If the DID is not found.
-        :raises RucioException: If an error occurs while setting the metadata.
+        :raises RucioException: If an error occurs while deleting the metadata.
         """
-        doc_id = f"{scope}{name}"
+        doc_id = self._doc_id(scope, name)
 
         try:
             doc = self.client.get(index=self.index, id=doc_id)
@@ -356,9 +367,9 @@ class ElasticDidMeta(DidMetaPlugin):
             if archive:
                 archived_doc = doc['_source']
                 archived_doc['deleted_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                self.client.index(index=self.archive_index, id=doc_id, body=archived_doc)
+                self.client.index(index=self.archive_index, id=doc_id, document=archived_doc, refresh=self.refresh)
 
-            self.client.delete(index=self.index, id=doc_id)
+            self.client.delete(index=self.index, id=doc_id, refresh=self.refresh)
 
         except elastic_exceptions.NotFoundError as err:
             raise exception.DataIdentifierNotFound(f"No metadata found for DID '{scope}:{name}' not found") from err
@@ -370,23 +381,22 @@ class ElasticDidMeta(DidMetaPlugin):
         scope: "InternalScope",
         name: str,
         session: "Optional[Session]" = None
-    ) -> None:
+    ) -> dict[str, Any]:
         """
         Retrieve archived metadata for a given scope and name.
 
         :param scope: The scope of the document
         :param name: The name of the document
-        :return: The archived metadata or None if not found
+        :return: The archived metadata
         :raises DataIdentifierNotFound: If the DID is not found.
-        :raises RucioException: If an error occurs while setting the metadata.
+        :raises RucioException: If an error occurs while reading the metadata.
         """
-        doc_id = f"{scope}{name}"
+        doc_id = self._doc_id(scope, name)
 
         try:
-            doc = self.client.get(index=self.archive_index, id=doc_id)["_source"]
-            return doc
+            return self.client.get(index=self.archive_index, id=doc_id)["_source"]
         except elastic_exceptions.NotFoundError as err:
-            raise exception.DataIdentifierNotFound(f"No metadata found for DID '{scope}:{name}' not found") from err
+            raise exception.DataIdentifierNotFound(f"No metadata found for DID '{scope}:{name}'") from err
         except Exception as err:
             raise exception.RucioException(err)
 

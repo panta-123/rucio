@@ -224,7 +224,7 @@ class ElasticDidMeta(DidMetaPlugin):
 
             if key in doc['_source']:
                 script = {
-                    "source": "ctx._source.remove(params.key)",
+                    "source": "ctx._source.remove(params['key'])",
                     "lang": "painless",
                     "params": {"key": key}
                 }
